@@ -669,16 +669,24 @@ void AttitudeController::pwmTestCallback(const std_msgs::Float32& pwm_msg)
 
 void AttitudeController::pwmIndivTestCallback(const spinal::PwmState& pwm_msg)
 {
-  if (pwm_msg.index_length == pwm_msg.percentage_length)
-    {
-      for(int i = 0; i < pwm_msg.index_length; i++)
-        {
-          size_t index = pwm_msg.index[i];
-          target_pwm_[index] = pwm_msg.percentage[i];
-          // target_pwm_[pwm_msg.index[i]] = pwm_msg.percentage[i];
-        }
-      return;
-    }
+#ifdef SIMULATION
+  if (pwm_msg.index.size() == pwm_msg.percentage.size())
+#else
+    if (pwm_msg.index_length == pwm_msg.percentage_length)
+#endif
+      {
+#ifdef SIMULATION
+        for(int i = 0; i < pwm_msg.index.size(); i++)
+#else
+          for(int i = 0; i < pwm_msg.index_length; i++)
+#endif
+            {
+              size_t index = pwm_msg.index[i];
+              target_pwm_[index] = pwm_msg.percentage[i];
+              // target_pwm_[pwm_msg.index[i]] = pwm_msg.percentage[i];
+            }
+        return;
+      }
 }
 
 
