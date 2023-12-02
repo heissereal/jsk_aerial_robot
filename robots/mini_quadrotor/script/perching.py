@@ -3,7 +3,7 @@
 import rospy
 from std_msgs.msg import UInt8
 from spinal.msg import PwmState
-
+from std_msgs.msg import Empty
 from sensor_msgs.msg import Joy
 
 class Perching():
@@ -12,13 +12,13 @@ class Perching():
         # self.flight_state_msg = UInt8()
         # self.flight_state_flag = False
 
-        self.PWM_pub = rospy.Publisher('/pwm_indiv_test',PwmState,queue_size=1)
+        self.PWM_pub = rospy.Publisher('/quadrotor/pwm_indiv_test',PwmState,queue_size=1)
         self.PWM_msg = PwmState()
         self.PWM = 0.6
         self.init_PWM = 0.6
 
-        # self.joy_sub = rospy.Subscriber('/joy', Joy, self.joy_cb)
-        # self.joy = Joy()
+        self.halt_pub = rospy.Publisher('/quadrotor/teleop_command/halt',Empty, queue_size=1)
+
         
         ##self.timer = rospy.Timer(rospy.Duration(0.05),self.timerCallback)
 
@@ -56,13 +56,8 @@ class Perching():
         while not rospy.is_shutdown():
             # self.flight_state()
             # if self.flight_state_flag:
-            #     if self.joy.buttons[3] == 1:
-            rospy.sleep(0.3)
-            self.stop_propeller_start_pump()
-            rospy.sleep(2.0)
-            self.stop_pump() #push button and stop 
-            rospy.sleep(1.0)
-            break
+                self.halt_pub.publish(Empty())
+                print("halt")
 
 if __name__ == '__main__':
     rospy.init_node("Perching")
