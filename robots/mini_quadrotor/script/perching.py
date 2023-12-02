@@ -43,13 +43,13 @@ class Perching():
 
 
     def stop_propeller_start_pump(self):
-        # self.PWM_msg.index = [0,1,2,3,4]
-        # self.PWM_msg.percentage = [0.6,0.6,0.6,0.6,0.3]
-        self.PWM_msg.index = []
-        self.PWM_msg.percentage = []
-        for i in range(5):
-            self.PWM_msg.index.append(i)
-            self.PWM_msg.percentage.append(self.init_PWM)
+        self.PWM_msg.index = [4]
+        self.PWM_msg.percentage = [0.6]
+        # self.PWM_msg.index = []
+        # self.PWM_msg.percentage = []
+        # for i in range(5):
+        #     self.PWM_msg.index.append(i)
+        #     self.PWM_msg.percentage.append(self.init_PWM)
         print(self.PWM_msg.percentage)
         self.PWM_pub.publish(self.PWM_msg)
 
@@ -64,8 +64,19 @@ class Perching():
             # self.flight_state()
             # if self.flight_state_flag:
             if self.joy_flag:
+                rospy.sleep(0.3)
+                self.stop_propeller_start_pump()
+                rospy.sleep(1.0)
                 self.halt_pub.publish(Empty())
                 print("halt")
+                rospy.sleep(0.1)
+                self.stop_propeller_start_pump()
+                rospy.sleep(3.0)
+                self.stop_pump() #push button and stop 
+                rospy.sleep(1.0)
+                break
+            else:
+                continue
 
 if __name__ == '__main__':
     rospy.init_node("Perching")
