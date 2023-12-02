@@ -19,6 +19,9 @@ class Perching():
 
         self.halt_pub = rospy.Publisher('/quadrotor/teleop_command/halt',Empty, queue_size=1)
 
+        self.joy_sub = rospy.Subscriber('/quadrotor/joy', Joy, self.joy_cb)
+        self.joy = Joy()
+        self.joy_flag = False
         
         ##self.timer = rospy.Timer(rospy.Duration(0.05),self.timerCallback)
 
@@ -27,6 +30,10 @@ class Perching():
 
     def joy_cb(self,msg):
         self.joy = msg
+        if self.joy.buttons[3] == 1:
+            self.joy_flag = True
+        else:
+            self.joy_flag = False
 
     # def flight_state(self):
     #     if self.flight_state_msg.data == 5:
@@ -56,6 +63,7 @@ class Perching():
         while not rospy.is_shutdown():
             # self.flight_state()
             # if self.flight_state_flag:
+            if self.joy_flag:
                 self.halt_pub.publish(Empty())
                 print("halt")
 
