@@ -59,21 +59,21 @@ Visualization Manager:
         All Enabled: true
         quadrotor/battery:
           Value: true
+        quadrotor/camera_depth_frame:
+          Value: true
+        quadrotor/camera_depth_optical_frame:
+          Value: true
+        quadrotor/camera_link:
+          Value: true
+        quadrotor/camera_rgb_frame:
+          Value: true
+        quadrotor/camera_rgb_optical_frame:
+          Value: true
         quadrotor/cog:
           Value: true
         quadrotor/fc:
           Value: true
         quadrotor/main_body:
-          Value: true
-        quadrotor/realsence_color_frame:
-          Value: true
-        quadrotor/realsence_color_optical_frame:
-          Value: true
-        quadrotor/realsence_depth_frame:
-          Value: true
-        quadrotor/realsence_depth_optical_frame:
-          Value: true
-        quadrotor/realsence_link:
           Value: true
         quadrotor/root:
           Value: true
@@ -101,15 +101,15 @@ Visualization Manager:
             quadrotor/main_body:
               quadrotor/battery:
                 {}
+              quadrotor/camera_link:
+                quadrotor/camera_depth_frame:
+                  quadrotor/camera_depth_optical_frame:
+                    {}
+                quadrotor/camera_rgb_frame:
+                  quadrotor/camera_rgb_optical_frame:
+                    {}
               quadrotor/fc:
                 {}
-              quadrotor/realsence_link:
-                quadrotor/realsence_depth_frame:
-                  quadrotor/realsence_color_frame:
-                    quadrotor/realsence_color_optical_frame:
-                      {}
-                  quadrotor/realsence_depth_optical_frame:
-                    {}
               quadrotor/thrust1:
                 {}
               quadrotor/thrust2:
@@ -135,6 +135,26 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
+        camera_depth_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        camera_depth_optical_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        camera_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        camera_rgb_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        camera_rgb_optical_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
         fc:
           Alpha: 1
           Show Axes: false
@@ -144,26 +164,6 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
-        realsence_color_frame:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        realsence_color_optical_frame:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        realsence_depth_frame:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        realsence_depth_optical_frame:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        realsence_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
         root:
           Alpha: 1
           Show Axes: false
@@ -196,7 +196,7 @@ Visualization Manager:
       Visual Enabled: true
     - Class: rviz/Image
       Enabled: true
-      Image Topic: /realsence/depth_camera/color/image_raw
+      Image Topic: /camera/color/image_raw
       Max Value: 1
       Median window: 5
       Min Value: 0
@@ -208,7 +208,7 @@ Visualization Manager:
       Value: true
     - Class: rviz/Image
       Enabled: true
-      Image Topic: /realsence/depth_camera/depth/image_raw
+      Image Topic: /camera/depth/image_raw
       Max Value: 1
       Median window: 5
       Min Value: 0
@@ -217,6 +217,34 @@ Visualization Manager:
       Queue Size: 2
       Transport Hint: raw
       Unreliable: false
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: RGB8
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: PointCloud2
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.009999999776482582
+      Style: Flat Squares
+      Topic: /camera/depth/points
+      Unreliable: false
+      Use Fixed Frame: true
+      Use rainbow: true
       Value: true
   Enabled: true
   Global Options:
