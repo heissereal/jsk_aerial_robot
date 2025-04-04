@@ -43,6 +43,7 @@
 #include "sensors/encoder/mag_encoder.h"
 
 #include "battery_status/battery_status.h"
+#include "solenoid_valve/solenoid_valve.h"
 
 #include "state_estimate/state_estimate.h"
 #include "flight_control/flight_control.h"
@@ -90,6 +91,7 @@ osThreadId idleTaskHandle;
 osThreadId rosPublishHandle;
 osThreadId voltageHandle;
 osThreadId canRxHandle;
+osThreadId solenoidValveHandle;
 osTimerId coreTaskTimerHandle;
 osMutexId rosPubMutexHandle;
 osMutexId flightControlMutexHandle;
@@ -109,7 +111,7 @@ ICM20948 imu_;
 Baro baro_;
 GPS gps_;
 BatteryStatus battery_status_;
-
+SolenoidValve solenoid_valve_;
 
 StateEstimate estimator_;
 FlightControl controller_;
@@ -136,6 +138,7 @@ void idleTaskFunc(void const * argument);
 void rosPublishTask(void const * argument);
 void voltageTask(void const * argument);
 void canRxTask(void const * argument);
+void solenoidValveTask(void const * argument);
 void coreTaskEvokeCb(void const * argument);
 
 /* USER CODE BEGIN PFP */
@@ -239,6 +242,7 @@ int main(void)
   baro_.init(&hi2c1, &nh_, BAROCS_GPIO_Port, BAROCS_Pin);
   gps_.init(&huart3, &nh_, LED2_GPIO_Port, LED2_Pin);
   battery_status_.init(&hadc1, &nh_);
+  solenoid_valve_.init(&huart3, &nh_);
   estimator_.init(&imu_, &baro_, &gps_, &nh_);  // imu + baro + gps => att + alt + pos(xy)
   controller_.init(&htim1, &htim4, &estimator_, &battery_status_, &nh_, &flightControlMutexHandle);
 
@@ -320,6 +324,10 @@ int main(void)
   /* definition and creation of canRx */
   osThreadDef(canRx, canRxTask, osPriorityRealtime, 0, 256);
   canRxHandle = osThreadCreate(osThread(canRx), NULL);
+
+  /* definition and creation of solenoidValve */
+  osThreadDef(solenoidValve, solenoidValveTask, osPriorityIdle, 0, 128);
+  solenoidValveHandle = osThreadCreate(osThread(solenoidValve), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -911,17 +919,17 @@ static void MX_USART3_UART_Init(void)
 
   /* USER CODE END USART3_Init 1 */
   huart3.Instance = USART3;
-  huart3.Init.BaudRate = 19200;
-  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.BaudRate = 1250000;
+  huart3.Init.WordLength = UART_WORDLENGTH_9B;
   huart3.Init.StopBits = UART_STOPBITS_1;
-  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Parity = UART_PARITY_EVEN;
   huart3.Init.Mode = UART_MODE_TX_RX;
   huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart3.Init.OverSampling = UART_OVERSAMPLING_16;
   huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
   huart3.Init.ClockPrescaler = UART_PRESCALER_DIV1;
   huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart3) != HAL_OK)
+  if (HAL_HalfDuplex_Init(&huart3) != HAL_OK)
   {
     Error_Handler();
   }
@@ -929,11 +937,11 @@ static void MX_USART3_UART_Init(void)
   {
     Error_Handler();
   }
-  if (HAL_UARTEx_SetRxFifoThreshold(&huart3, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart3, UART_RXFIFO_THRESHOLD_8_8) != HAL_OK)
   {
     Error_Handler();
   }
-  if (HAL_UARTEx_DisableFifoMode(&huart3) != HAL_OK)
+  if (HAL_UARTEx_EnableFifoMode(&huart3) != HAL_OK)
   {
     Error_Handler();
   }
@@ -1031,6 +1039,8 @@ static void MX_GPIO_Init(void)
 /* USER CODE END Header_coreTaskFunc */
 void coreTaskFunc(void const * argument)
 {
+  /* init code for LWIP */
+  //MX_LWIP_Init();
   /* USER CODE BEGIN 5 */
 #ifdef USE_ETH
   /* init code for LWIP */
@@ -1194,6 +1204,25 @@ __weak void canRxTask(void const * argument)
     osDelay(1000);
   }
   /* USER CODE END canRxTask */
+}
+
+/* USER CODE BEGIN Header_solenoidValveTask */
+/**
+* @brief Function implementing the solenoidValve thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_solenoidValveTask */
+__weak void solenoidValveTask(void const * argument)
+{
+  /* USER CODE BEGIN solenoidValveTask */
+  /* Infinite loop */
+  for(;;)
+  {
+	  solenoid_valve_.update();
+	  osDelay(SV_UPDATE_INTERVAL);
+  }
+  /* USER CODE END solenoidValveTask */
 }
 
 /* coreTaskEvokeCb function */
