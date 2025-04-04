@@ -43,6 +43,7 @@ add_message_files(
   DesireCoord.msg
   FlightConfigCmd.msg
   Vector3Int16.msg
+  ValveControlCmd.msg
   TorqueAllocationMatrixInv.msg
   )
 
