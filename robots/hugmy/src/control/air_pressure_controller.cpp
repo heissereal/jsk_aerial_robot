@@ -4,8 +4,8 @@ AirPressureController::AirPressureController(ros::NodeHandle& nh) {
     sensor_joint_sub_ = nh.subscribe("/sensor", 1, &AirPressureController::sensorCb, this);
     sensor_bottom_sub_ = nh.subscribe("/sensor_1", 1, &AirPressureController::sensor1Cb, this);
     pwm_air_pub_ = nh.advertise<spinal::PwmTest>("/pwm_cmd/air", 1);
-    pwm_pub_ = nh.advertise<spinal::PwmTest>("/quadrotor/pwm_test", 1);
-    // pwm_pub_ = nh.advertise<spinal::PwmTest>("/pwm_test", 1);
+    // pwm_pub_ = nh.advertise<spinal::PwmTest>("/quadrotor/pwm_test", 1);
+    pwm_pub_ = nh.advertise<spinal::PwmTest>("/pwm_test", 1);
     joint_filtered_pub_  = nh.advertise<std_msgs::Float32>("/quadrotor/arm/pressure_cmd", 1);
 
     pwm_air_cmd_.motor_index.clear();
@@ -455,16 +455,15 @@ void AirPressureController::controlLoopCb(const ros::TimerEvent& e)
   }
 
   if(has_target_bottom_){
-    startAllSV();
-    int error = target_bottom_cmd_ - air_pressure_bottom_;
-    calPressure(target_bottom_cmd_, 1);
-    adjustPump();
-    // if (error >= 0){
-    // }else{
-    //   output_ = std::max(error*0.02 + 0.20, 0.0);
-    //   adjustPump();
-    // }
+    startSVSwitch();
+    if (target_bottom_cmd_ - air_pressure_bottom_ >= 0){
+      calPressure(target_bottom_cmd_, 0);
+      adjustPump();
+    }else{
+      stopPump();
+    }
   }
+  publishAirPwmMerged();
   if(has_target_joint_){
     stopAllSV();
     if (target_joint_cmd_ - air_pressure_joint_ >= 0){
