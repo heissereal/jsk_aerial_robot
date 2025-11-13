@@ -2,10 +2,12 @@
   <node pkg="hugmy" type="random_haptics_threshold_node"
         name="random_haptics_threshold" output="screen">
     <param name="thrust_strength" value="5.0" />
-    <param name="min_total_thrust" value="3.0" />
-    <param name="max_total_thrust" value="3.5" />
+    # <param name="min_total_thrust" value="2.25" />
+    # <param name="max_total_thrust" value="3.25" />
+    <param name="min_total_thrust" value="1.0" />
+    <param name="max_total_thrust" value="4.0" />
     <param name="inter_trial_interval" value="1.0" />
     <param name="rate_hz" value="50" />
-    <param name="log_file" value="/home/leus/ros/jsk_aerial_robot_ws/src/jsk_aerial_robot/robots/hugmy/haptics_feeling_log_suzuki.csv" />
+    <param name="log_file" value="/home/leus/ros/jsk_aerial_robot_ws/src/jsk_aerial_robot/robots/hugmy/haptics_feeling_log_konishi2.csv" />
   </node>
 </launch>

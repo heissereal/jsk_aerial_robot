@@ -7,66 +7,22 @@
 #include <iostream>
 #include <fstream>
 #include <string>
-
+#include <algorithm>
+#include <iomanip>
 #include <sys/select.h>
 #include <unistd.h>
 #include <std_msgs/Int8.h>
 #include <std_msgs/Float32.h>
 #include <std_msgs/Float32MultiArray.h>
 
+struct Trial {
+  int dir_idx;      // 0..7
+  double thrust;    // 6段階の強度
+};
 
-Eigen::Vector4d computeAlphaFixedTotal(const Eigen::Vector2d& dir, double total_thrust_c)
-{
-    Eigen::Vector4d alpha = Eigen::Vector4d::Zero();
-    double n = dir.norm();
-    if (n < 1e-6) {
-        return alpha;
-    }
-
-
-    Eigen::Matrix<double, 2, 4> motor_dirs_base;
-    motor_dirs_base <<  1, -1, -1,  1,
-                       -1, -1,  1,  1;
-    Eigen::Matrix<double, 2, 4> motor_dirs = motor_dirs_base;
-
-    Eigen::Vector2d d = dir / n;
-
-    int best_idx = -1;
-    double best_cos = -1.0;
-    for (int i = 0; i < 4; ++i) {
-        Eigen::Vector2d col = motor_dirs.col(i);
-        double col_norm = col.norm();
-        if (col_norm < 1e-6) continue;
-
-        Eigen::Vector2d col_unit = col / col_norm;
-        double cos_angle = col_unit.dot(d);
-
-        if (cos_angle > best_cos) {
-            best_cos = cos_angle;
-            best_idx = i;
-        }
-    }
-
-    const double single_rotor_threshold = 0.999; // 角度 ~ 2.6度以内
-
-    if (best_idx >= 0 && best_cos > single_rotor_threshold) {
-        alpha[best_idx] = total_thrust_c;
-        return alpha;
-    }
-
-    Eigen::Matrix<double,3,4> A;
-    A.block<2,4>(0,0) = motor_dirs;
-    A.block<1,4>(2,0) = Eigen::RowVector4d::Ones();
-
-    Eigen::Matrix3d AAT = A * A.transpose();
-    Eigen::Vector3d b;
-    b << (total_thrust_c * d.x()), (total_thrust_c * d.y()), total_thrust_c;
-
-    alpha = A.transpose() * AAT.ldlt().solve(b);
-
-    return alpha;
-}
-
+std::vector<Trial> trials;
+size_t trial_idx = 0;
+ros::Time trial_start_time;
 
 Eigen::Vector4d computeAlphaFixedTotal(const Eigen::Vector2d& dir, double total_thrust_c)
 {
@@ -77,44 +33,41 @@ Eigen::Vector4d computeAlphaFixedTotal(const Eigen::Vector2d& dir, double total_
 
     double n = dir.norm();
     if (n < eps || E < eps) return alpha;
-    Eigen::Vector2d d = dir / n
+    Eigen::Vector2d d = dir / n;
 
     Eigen::Matrix<double,2,4> M;
     M <<  1, -1, -1,  1,
          -1, -1,  1,  1;
 
-    // --- 1本ロータ優先（方向ほぼ一致） ---
     int best_idx = -1;
     double best_cos = -1.0;
     for (int i = 0; i < 4; ++i) {
-        Eigen::Vector2d ui = M.col(i).normalized();  // ±[1,1]/√2 等
+        Eigen::Vector2d ui = M.col(i).normalized();
         double c = ui.dot(d);
         if (c > best_cos) { best_cos = c; best_idx = i; }
     }
-    // 方向ほぼ一致（≈2.6°以内）は 1 本のみ動作: ||alpha||2 = E ⇒ その1本 = E
+
     const double single_thr = 0.999;
     if (best_idx >= 0 && best_cos > single_thr) {
         alpha[best_idx] = E;
         return alpha;
     }
 
-    // --- 2本ペアで方向を作る（非負βを優先） ---
     bool found_pair = false;
     double best_err = 1e9;
     int bi=-1, bj=-1; Eigen::Vector2d bsol(0,0);
 
-    // ここでは大きさは一旦気にせず「方向だけ」合わせる:
-    // P * beta ≈ d  を解いて、あとで ||alpha||2 = E に正規化する
+
     for (int i = 0; i < 4; ++i) {
         for (int j = i+1; j < 4; ++j) {
             Eigen::Matrix2d P;
             P.col(0) = M.col(i);
             P.col(1) = M.col(j);
             double det = P.determinant();
-            if (std::abs(det) < eps) continue;  // ほぼ平行
+            if (std::abs(det) < eps) continue;
 
-            Eigen::Vector2d beta = P.inverse() * d;  // 方向再現用の係数
-            if (beta[0] < -1e-9 || beta[1] < -1e-9) continue; // 非負優先
+            Eigen::Vector2d beta = P.inverse() * d;
+            if (beta[0] < -1e-9 || beta[1] < -1e-9) continue;
 
             Eigen::Vector2d errv = P * beta - d;
             double err = errv.norm();
@@ -125,33 +78,27 @@ Eigen::Vector4d computeAlphaFixedTotal(const Eigen::Vector2d& dir, double total_
     }
 
     if (found_pair) {
-        // ||[bsol0, bsol1]||2 を E に合わせてスケール
         double norm_b = std::sqrt(std::max(0.0, bsol.squaredNorm()));
         if (norm_b < eps) return alpha;
         alpha[bi] = (bsol[0] / norm_b) * E;
         alpha[bj] = (bsol[1] / norm_b) * E;
-        // 微小負は丸め
         for (int k=0;k<4;++k) if (alpha[k] < 0 && alpha[k] > -1e-9) alpha[k] = 0.0;
         return alpha;
     }
 
-    // --- フォールバック：最小二乗で方向合わせ → 正規化 ---
-    // 方向のみ合わせたいので M alpha ≈ d を最小二乗
     Eigen::Matrix2d MMt = M * M.transpose();
     Eigen::Vector2d x = MMt.ldlt().solve(d);
     alpha = M.transpose() * x;
 
-    // 負の微小を丸め
     for (int k=0;k<4;++k) if (alpha[k] < 0 && alpha[k] > -1e-9) alpha[k] = 0.0;
 
-    // ノルムを E に正規化
     double na = std::sqrt(std::max(0.0, alpha.squaredNorm()));
     if (na >= eps) alpha *= (E / na); else alpha.setZero();
 
     return alpha;
 }
 
-	 
+
 double calThrustPower(double alpha, double thrust_strength)
 {
     double thrust = thrust_strength * std::abs(alpha);
@@ -182,8 +129,7 @@ int main(int argc, char** argv)
     ros::Publisher thrust_pub = nh.advertise<std_msgs::Float32>("/haptics_thrust", 1);
     ros::Publisher dir_pub = nh.advertise<std_msgs::Int8>("/haptics_direction", 1);
     ros::Publisher alpha_pub = nh.advertise<std_msgs::Float32MultiArray>("/alpha", 1);
-    
-    double total_thrust_;
+
     double min_total_thrust, max_total_thrust;
     double inter_trial_interval;
     int    rate_hz;
@@ -200,8 +146,8 @@ int main(int argc, char** argv)
     double manual_total_thrust = 0.0;
 
     nh.param("total_thrust",       total_thrust_,        1.0);
-    nh.param("min_total_thrust",      min_total_thrust,      2.0);
-    nh.param("max_total_thrust",      max_total_thrust,      2.5);
+    nh.param("min_total_thrust",      min_total_thrust,      1.0);
+    nh.param("max_total_thrust",      max_total_thrust,      2.0);
     nh.param("inter_trial_interval",  inter_trial_interval,  2.0);
     nh.param("rate_hz",               rate_hz,               50);
     nh.param("log_file",              log_file,              std::string("haptics_threshold_log.csv"));
@@ -214,24 +160,56 @@ int main(int argc, char** argv)
         ofs << "#dir_idx,angle_deg,total_thrust,response(0/1)\n";
     }
 
-    std::mt19937 rng(static_cast<unsigned int>(
-        ros::Time::now().toNSec() & 0xffffffff));
-    // std::uniform_int_distribution<int> dir_dist(0, 7); // 8方向
-    // int min_thre = static_cast<int>(min_total_thrust * 10);
-    // int max_thre = static_cast<int>(max_total_thrust * 10);
-    // std::uniform_int_distribution<int> thrust_dist(min_thre, max_thre);
+    std::mt19937 rng(static_cast<unsigned int>(ros::Time::now().toNSec() & 0xffffffff));
+    // // std::uniform_int_distribution<int> dir_dist(0, 7); // 8方向
+    // // int min_thre = static_cast<int>(min_total_thrust * 10);
+    // // int max_thre = static_cast<int>(max_total_thrust * 10);
+    // // std::uniform_int_distribution<int> thrust_dist(min_thre, max_thre);
     
+    // // std::vector<double> thrust_levels;
+    // // for (double t = min_total_thrust; t <= max_total_thrust + 1e-6; t += 0.1)
+    // //   thrust_levels.push_back(std::round(t * 10.0) / 10.0);
+
+    // // std::uniform_int_distribution<int> thrust_dist(0, thrust_levels.size() - 1);
+    // std::vector<int> dir_indices = {0,1,2,3,4,5,6,7};
+
+    // // std::vector<int> thrust_set_even = {8,16,24,32,40};
+    // // std::vector<int> thrust_set_odd  = {8,12,16,20,24};
+    // std::vector<int> thrust_set_even  = {100,125,150,175,200};
+    // std::vector<int> thrust_set_odd  = {200,225,250,275,300};
+
+    // const int LEVELS = 5;
     // std::vector<double> thrust_levels;
-    // for (double t = min_total_thrust; t <= max_total_thrust + 1e-6; t += 0.1)
-    //   thrust_levels.push_back(std::round(t * 10.0) / 10.0);
+    // thrust_levels.reserve(LEVELS);
+    // if (max_total_thrust < min_total_thrust) std::swap(max_total_thrust, min_total_thrust);
+    // for (int i = 0; i < LEVELS; ++i) {
+    //   double v = (LEVELS == 1)
+    //     ? min_total_thrust
+    //     : min_total_thrust + (max_total_thrust - min_total_thrust) * (double(i) / double(LEVELS - 1));
+    //   v = std::round(v * 1000.0) / 1000.0;
+    //   thrust_levels.push_back(v);
+    // }
 
-    // std::uniform_int_distribution<int> thrust_dist(0, thrust_levels.size() - 1);
-    std::vector<int> dir_indices = {0,1,2,3,4,5,6,7};
+    // std::vector<double> thrust_levels = {1.0, 1.5, 2.0, 3.5, 4.0};
 
-    // std::vector<int> thrust_set_even = {8,16,24,32,40};
-    // std::vector<int> thrust_set_odd  = {8,12,16,20,24};
-    std::vector<int> thrust_set_even  = {100,125,150,175,200};
-    std::vector<int> thrust_set_odd  = {200,225,250,275,300};
+    std::vector<double> thrust_levels = {2.25, 2.5, 2.75, 3.0, 3.25};
+
+    trials.clear();
+    // trials.reserve(8 * LEVELS);
+    trials.reserve(8*thrust_levels.size());
+    for (int d = 0; d < 8; ++d) {
+      for (double t : thrust_levels) {
+        trials.push_back(Trial{d, t});
+      }
+    }
+
+    std::shuffle(trials.begin(), trials.end(), rng);
+    trial_idx = 0;
+    ROS_INFO("Prepared %zu randomized unique trials.", trials.size());
+
+    for (size_t i=0;i<trials.size();++i) {
+      ROS_INFO("trial[%zu]: dir=%d thrust=%.3f", i, trials[i].dir_idx, trials[i].thrust);
+    }
 
     int current_dir_idx_ = 0;
     int repeat_in_dir_ = 0;
@@ -245,7 +223,7 @@ int main(int argc, char** argv)
 
     Eigen::Vector2d current_dir(1.0, 0.0);
     double current_total_thrust = 0.0;
-o
+
     ros::Rate rate(rate_hz);
 
     while (ros::ok()) {
@@ -257,32 +235,37 @@ o
             neutral.motor_index = {0,1,2,3};
             neutral.pwms = {0.5,0.5,0.5,0.5};
             pwm_pub.publish(neutral);
-
+ 
             if ((now - state_start).toSec() >= inter_trial_interval) {
-                int dir_idx = dir_indices[current_dir_idx_];
-                double angle = dir_idx * M_PI / 4.0;  // 0,45,...315 [rad]
-                std_msgs::Int8 dir_msg;
-                dir_msg.data = angle;
-                dir_pub.publish(dir_msg);
-                current_dir = Eigen::Vector2d(std::cos(angle), std::sin(angle));
+              if (trial_idx >= trials.size()) {
+                ROS_INFO("All %zu trials completed.", trials.size());
+                break;
+              }
 
-                if (repeat_in_dir_ == 0) {
-                    const std::vector<int>& base = (use_even_set ? thrust_set_even : thrust_set_odd);
-                    thrust_seq = base;
-                    std::shuffle(thrust_seq.begin(), thrust_seq.end(), rng);
+              const Trial& tr = trials[trial_idx];
+              current_dir_idx_      = tr.dir_idx;
+              current_total_thrust  = tr.thrust;
 
-                    ROS_INFO("Direction %d (%.1f deg): thrust sequence = %d, %d, %d", current_dir_idx_, angle * 180.0 / M_PI, thrust_seq[0], thrust_seq[1], thrust_seq[2]);
-                }
+              double angle = current_dir_idx_ * M_PI / 4.0; // [rad]
+              current_dir = Eigen::Vector2d(std::cos(angle), std::sin(angle));
 
-                int thrust_raw = thrust_seq[repeat_in_dir_];
-                current_total_thrust = thrust_raw / 10.0;
+              std_msgs::Int8 dir_msg;
+              dir_msg.data = static_cast<int8_t>(current_dir_idx_);
+              dir_pub.publish(dir_msg);
 
-                std_msgs::Float32 thrust_msg;
-                thrust_msg.data = static_cast<float>(current_total_thrust);
-                thrust_pub.publish(thrust_msg);
+              std_msgs::Float32 thrust_msg;
+              thrust_msg.data = static_cast<float>(current_total_thrust);
+              thrust_pub.publish(thrust_msg);
 
-                state = STIMULUS;
-                state_start = now;
+              trial_start_time = now;
+              stim_on = true;
+              toggle_time = now;
+
+              state = STIMULUS;
+              state_start = now;
+
+              ROS_INFO("Trial %zu/%zu: dir=%d (%.1f deg), thrust=%.3f",
+                       trial_idx + 1, trials.size(), current_dir_idx_, angle * 180.0 / M_PI, current_total_thrust);
             }
         }
         else if (state == STIMULUS) {
@@ -339,8 +322,9 @@ o
 	      int response = -1;
 	      if (!line.empty()) {
 		char c = line[0];
-		if (c == '0' || c == '1') {
-		  response = (c == '1') ? 1 : 0;
+
+		if (c >= '0' && c <= '8') {
+		  response = c - '0';
 		} else if (c == 's') {
 		  paused = !paused;
 		  if (paused) {
@@ -393,41 +377,37 @@ o
 		}
 	      }
 
+	      if (!test_mode && response >= 0 && response <= 8) {
+                double angle_deg = current_dir_idx_ * 45.0;
+                double rt_sec = (ros::Time::now() - trial_start_time).toSec();
 
-	      if (response == 0 || response == 1) {
-		double angle_deg = current_dir_idx_ * 45.0;
-		ROS_INFO("Response: %d (angle=%.1f deg, total_thrust=%.3f)",
-			 response, angle_deg, current_total_thrust);
-		
-		if (ofs) {
-		  ofs << current_dir_idx_ << ","
-		      << angle_deg << ","
-		      << current_total_thrust << ","
-		      << response << "\n";
-		  ofs.flush();
-		}
-		
-		spinal::PwmTest neutral;
-		neutral.motor_index = {0, 1, 2, 3};
-		neutral.pwms = {0.5, 0.5, 0.5, 0.5};
-		pwm_pub.publish(neutral);
-		
-		stim_on = true;
-		toggle_time = now;
-		repeat_in_dir_++;
-		if (repeat_in_dir_ >= 3) {
-		  repeat_in_dir_ = 0;
-		  current_dir_idx_++;
-		  use_even_set = !use_even_set;
-		}
-		if (current_dir_idx_ >= 8) {
-		  ROS_INFO("All directions completed.");
-		  break;
-		}
-		state = INTER_TRIAL;
-		state_start = now;
-		
-	      }
+                if (ofs) {
+                  ofs << (trial_idx + 1) << ","                  // trial number 1..48
+                      << current_dir_idx_ << ","
+                      << std::fixed << std::setprecision(1) << angle_deg << ","
+                      << std::setprecision(3) << current_total_thrust << ","
+                      << response << ","
+                      << std::setprecision(3) << rt_sec
+                      << "\n";
+                  ofs.flush();
+                }
+
+                spinal::PwmTest neutral;
+                neutral.motor_index = {0,1,2,3};
+                neutral.pwms = {0.5,0.5,0.5,0.5};
+                pwm_pub.publish(neutral);
+
+                ++trial_idx;
+                if (trial_idx >= trials.size()) {
+                  ROS_INFO("All %zu trials completed.", trials.size());
+                  break;
+                }
+
+                state = INTER_TRIAL;
+                state_start = now;
+                stim_on = true;
+                toggle_time = now;
+              }
 	      if (shutdown) {
 		ROS_ERROR("== Experiment terminated by user (h pressed) ==");
 		spinal::PwmTest neutral;
