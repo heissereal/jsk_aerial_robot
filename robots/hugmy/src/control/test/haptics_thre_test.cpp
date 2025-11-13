@@ -190,9 +190,9 @@ int main(int argc, char** argv)
     //   thrust_levels.push_back(v);
     // }
 
-    // std::vector<double> thrust_levels = {1.0, 1.5, 2.0, 3.5, 4.0};
+    std::vector<double> thrust_levels = {1.0, 1.5, 2.0, 3.5, 4.0};
 
-    std::vector<double> thrust_levels = {2.25, 2.5, 2.75, 3.0, 3.25};
+    // std::vector<double> thrust_levels = {2.25, 2.5, 2.75, 3.0, 3.25};
 
     trials.clear();
     // trials.reserve(8 * LEVELS);
