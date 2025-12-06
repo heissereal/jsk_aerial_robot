@@ -39,6 +39,7 @@ HapticsController::HapticsController(ros::NodeHandle& nh){
     }
 
     current_wp_idx_ = 0;
+    emotion_lock_until_ = ros::Time(0);
 }
 
 void HapticsController::publishHapticsPwm(const std::vector<uint8_t>& indices, const std::vector<float>& pwms) {
@@ -82,8 +83,10 @@ void HapticsController::odomCb(const nav_msgs::Odometry::ConstPtr& msg){
 
 //thrust_strength_をわからなさに応じて変更できるようにする
 double HapticsController::calThrustPower(double alpha) {
-    thrust_ = std::min(5.0, base_thrust_ * thrust_strength_ * forward_gain_ * std::abs(alpha));
-    ROS_ERROR("base_thrust: %.2f, thrust_strength: %.2f, forward_gain: %.2f, total_thrust: %.2f", base_thrust_,thrust_strength_, forward_gain_, thrust_);
+    // thrust_ = std::min(5.0, base_thrust_ * thrust_strength_ * forward_gain_ * std::abs(alpha));
+    // ROS_ERROR("base_thrust: %.2f, thrust_strength: %.2f, forward_gain: %.2f, total_thrust: %.2f", base_thrust_,thrust_strength_, forward_gain_, thrust_);
+    thrust_ = std::min(5.0, base_thrust_ * thrust_strength_ * std::abs(alpha));
+    ROS_ERROR("base_thrust: %.2f, thrust_strength: %.2f, total_thrust: %.2f", base_thrust_,thrust_strength_, thrust_);
     double pwm = -0.000679 * thrust_ * thrust_ + 0.044878 * thrust_ + 0.5;
     return std::min(pwm, 0.7);
 }
@@ -134,6 +137,17 @@ void HapticsController::controlAuto() {
       }
       
       last_pos_ = pose_.position;
+
+      segment_start_pos_ = pose_.position;
+
+
+      Eigen::Vector2d start(segment_start_pos_.x, segment_start_pos_.y);
+      Eigen::Vector2d goal(target_x_, target_y_);
+      segment_total_dist_ = (goal - start).norm();
+      if (segment_total_dist_ < 1e-3) {
+	segment_total_dist_ = 1e-3;
+      }
+
       pos_flag_ = false;
       ROS_INFO("Current position: (%.2f, %.2f)", pose_.position.x, pose_.position.y);
       ROS_INFO("Target position : (%.2f, %.2f)", target_x_, target_y_);
@@ -153,21 +167,45 @@ void HapticsController::controlAuto() {
       ROS_INFO("Waypoint %d reached (%.2f, %.2f).", current_wp_idx_, target_x_, target_y_);
       if (!waypoints_.empty() && current_wp_idx_ + 1 < (int)waypoints_.size()) {
 	current_wp_idx_++;
+
+	v_ = 1.0;
+	a_ = 0.8;
+	d_ = 0.0;
+	
+	emotion_msg_.data.resize(3);
+	emotion_msg_.data[0] = v_;
+	emotion_msg_.data[1] = a_;
+	emotion_msg_.data[2] = d_;
+	emotion_pub_.publish(emotion_msg_);
+	emotion_lock_until_ = ros::Time::now() + ros::Duration(1.0);
+	
 	const Eigen::Vector2d& wp = waypoints_[current_wp_idx_];
 
 	target_x_ = wp.x();
 	target_y_ = wp.y();
+
+	segment_start_pos_ = pose_.position;
+
+
+	Eigen::Vector2d start(segment_start_pos_.x, segment_start_pos_.y);
+	Eigen::Vector2d goal(target_x_, target_y_);
+	segment_total_dist_ = (goal - start).norm();
+	if (segment_total_dist_ < 1e-3) {
+	  segment_total_dist_ = 1e-3;
+	}
 
 	first_haptics_done_ = false;
 	haptics_finished_flag_ = false;
 	finished_cnt_ = 0;
 	min_target_norm_ = std::numeric_limits<double>::infinity();
 	ROS_INFO("Switching to waypoint %d: (%.2f, %.2f)", current_wp_idx_, target_x_, target_y_);
+	return;
+	
       } else {
 	ROS_ERROR("Final waypoint reached, stopping motors.");
 	vibratePwms();
 	finished_cnt_ += 1;
-	if (finished_cnt_ > 100){
+	if (finished_cnt_ > 200){
 	  haptics_finished_flag_ = true;
 	  publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
 	}
@@ -195,11 +233,65 @@ void HapticsController::controlAuto() {
       first_haptics_done_ = true;
     }
 
-    if ((ros::Time::now() - last_check_time_).toSec() > 1.0) {  // 5s
+    double denom = std::max(segment_total_dist_, 1e-6);
+    double raw = 1.0 - target_norm / denom;
+    if (mode_switch_ == 0){
+      bool emotion_locked = (ros::Time::now() < emotion_lock_until_);
+      if (!emotion_locked_) {
+
+	
+	if (raw < 0.0) {
+	  double v_neg = raw;
+	  v_ = std::max(-1.0, v_neg);
+	} else {
+	  double progress = std::min(raw, 1.0);
+	  double u = std::min(progress / 0.85, 1.0);
+	  const double k = 0.32;
+	  double shaped = std::pow(u, k);
+	  v_ = shaped;
+	}
+	v_ = std::max(-0.1, std::min(1.0, v_));
+	
+	ROS_INFO("[V] total=%.3f, now=%.3f, raw=%.3f, v=%.3f",
+		 segment_total_dist_, target_norm, raw, v_);
+      } else {
+	ROS_INFO_THROTTLE(1.0, "[V] emotion locked until %.2f, keeping v=%.3f,a=%.3f,d=%.3f",
+			  emotion_lock_until_.toSec(), v_, a_, d_);
+      }
+      
+    }else{
+      double progress = std::min(1.0, std::max(0.0, raw));
+
+      const double near_thr = 0.7; 
+      const double far_thr  = 0.0; 
+
+      if (progress >= near_thr) {
+        v_ = 1.0;
+        a_ = 0.4;
+        d_ = 0.0;
+      } else if (progress <= far_thr) {
+        v_ = -1.0;
+        a_ = 0.0;
+        d_ = 0.0;
+      } else {
+        v_ = 0.0;
+        a_ = 0.0;
+        d_ = 0.0;
+      }
+    }
+    if (!emotion_locked_ &&
+	(ros::Time::now() - last_check_time_).toSec() > 2.0) {
       publishEmotion(target_vec,target_norm);
       approaching_target_flag_ = false;
       last_check_time_ = ros::Time::now();
     }
+      
+    emotion_msg_.data.resize(3);
+    emotion_msg_.data[0] = v_;
+    emotion_msg_.data[1] = a_;
+    emotion_msg_.data[2] = d_;
+    emotion_pub_.publish(emotion_msg_);
+    
     
     //チェックはずっとやっていて，この状態がくるときは挙動を変えるようにする
     //もしtrue→true 出力しないまま
@@ -221,9 +313,9 @@ void HapticsController::controlAuto() {
 	emotion_msg_.data[0] = 1.0;
 	emotion_msg_.data[1] = 0.8;
 	emotion_msg_.data[2] = 0.0;
-	
+	emotion_lock_until_ = ros::Time::now() + ros::Duration(5.0);
 	emotion_pub_.publish(emotion_msg_);
-        if (finished_cnt_ > 100){
+        if (finished_cnt_ > 200){
             haptics_finished_flag_ = true;
             publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
         }
@@ -285,41 +377,38 @@ double HapticsController::computeDirectionGain(const Eigen::Vector2d& d_body)
 
 void HapticsController::publishEmotion(const Eigen::Vector2d& target_vec, double target_norm)
 {
-  Eigen::Vector2d last_vec = target_vec - Eigen::Vector2d(last_pos_.x, last_pos_.y);
-  Eigen::Vector2d delta_vec = Eigen::Vector2d(pose_.position.x, pose_.position.y) - Eigen::Vector2d(last_pos_.x, last_pos_.y);
-
+  Eigen::Vector2d cur_pos(pose_.position.x, pose_.position.y);
+  Eigen::Vector2d last_pos(last_pos_.x, last_pos_.y);
+  
+  Eigen::Vector2d to_target = target_vec;
 
   const double eps = 1e-6;
 
-  if (last_vec.norm() > target_norm) {
-    if (delta_vec.norm() < move_distance_threshold_) {
-      a_ = 0.0;
-    } else {
-      a_ = 1.0;
-    }
+  Eigen::Vector2d move_vec = cur_pos - last_pos;
+  double move_dist = move_vec.norm();
 
-    if (last_vec.norm() > eps && delta_vec.norm() > eps) {
-      v_ = last_vec.normalized().dot(delta_vec.normalized());
-      v_ = std::max(-1.0, std::min(1.0, v_));
-    } else {
-      v_ = 0.0;
-    }
+  
+  d_ = 0.0;
+
+  if (move_dist < move_distance_threshold_) {
+    d_ = -1.0;
   } else {
-    double normalized = std::min(1.0, std::max(0.0,(target_norm - waypoint_reached_thresh_) / 3.0));
-    double min_d = -1.0;
-    double max_d = 1.0;
-    d_ = min_d + normalized * (max_d - min_d); 
-    d_ = std::max(-1.0, std::min(1.0, d_));
+    // 動いている場合
+    // 実際の移動方向
+    Eigen::Vector2d move_dir = move_vec.normalized();
+
+    if (to_target.norm() > eps) {
+      Eigen::Vector2d target_dir = to_target.normalized();
+      double dot = target_dir.dot(move_dir);
+      a_ = std::max(-0.2, std::min(0.4, dot));
+    } else {
+      a_ = 0.0;
+    }
+    d_ = 0.0;
+
+    last_pos_ = pose_.position;
   }
-  emotion_msg_.data.resize(3);
-  emotion_msg_.data[0] = v_;
-  emotion_msg_.data[1] = a_;
-  emotion_msg_.data[2] = d_;
-
-  emotion_pub_.publish(emotion_msg_);
-  ROS_INFO("[HapticsController] emotion v=%.3f, a=%.3f, d=%.3f", v_, a_, d_);
 }
-
 
 
 std::vector<float> HapticsController::computeMotorPwm(const Eigen::Vector2d& target_vec){
@@ -405,9 +494,10 @@ Eigen::Vector4d HapticsController::computeAlphaFixedTotal(const Eigen::Vector2d&
     ROS_INFO("x_scaled: %.2f, y: %.2f", d_body_scaled.x(), d_body_scaled.y());
 
     if (d_body_scaled.norm() > eps) {
-        d_world = (R * d_body_scaled).normalized();
+        // d_world = (R * d_body_scaled).normalized();
+      d_world = dir / n;
     } else {
-        d_world = dir / n;
+      d_world = dir / n;
     }
 
     int best_idx = -1;
