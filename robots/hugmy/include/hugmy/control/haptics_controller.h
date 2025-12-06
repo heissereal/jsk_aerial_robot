@@ -28,6 +28,7 @@ public:
     void stopAllMotors();
     void setJoy(const sensor_msgs::Joy& msg) { joy_ = msg; };
     void setNormModeSwitch(int norm_switch) { norm_mode_switch_ = norm_switch; };
+    void setModeSwitch(int mode_switch) { mode_switch_ = mode_switch; };
     void setBaseThrust(double base_thrust) { base_thrust_ = base_thrust; };
     void setEmotionSwitch(bool emotion_switch) {emotion_switch_ = emotion_switch; };
     spinal::PwmTest getHapticsPwm() const {return last_published_pwm_; }
@@ -74,6 +75,8 @@ protected:
     geometry_msgs::Pose pose_;
     geometry_msgs::Vector3 euler_;
     geometry_msgs::Point last_pos_;
+    geometry_msgs::Point segment_start_pos_;
+    double segment_total_dist_ = 1.0;
     std_msgs::Float32MultiArray emotion_msg_;
     spinal::Imu imu_;
     double target_x_, target_y_;
@@ -83,6 +86,7 @@ protected:
     int pulse_count_ = 0;
     int pulse_target_ = 2;
     int norm_mode_switch_ = 0;
+    int mode_switch_ = 0;
     std::vector<float> motor_pwms_ = {0.5, 0.5, 0.5, 0.5};
     bool first_haptics_done_ = false;
     bool haptics_finished_flag_ = false;
@@ -107,8 +111,10 @@ protected:
   
     double thrust_strength_ = 1.0;
     double total_thrust_c_ = 1.0;
-
-    double base_thrust_ = 3.0;
+  
+    ros::Time emotion_lock_until_;
+    bool emotion_locked_;
+    double base_thrust_ = 3.5;
     bool emotion_switch_ = false;
     double v_ = 0.0;
     double a_ = 0.0;

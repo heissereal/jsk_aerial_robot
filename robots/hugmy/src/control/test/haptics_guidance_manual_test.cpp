@@ -23,6 +23,7 @@ public:
   joy_sub_ = nh_.subscribe("/quadrotor/joy", 1, &GuidanceManualController::joyCb, this);
   ros::NodeHandle pnh("~");
   pnh.param("norm_control_switch", haptics_norm_mode_switch_, 0);
+  pnh.param("mode_control_switch", haptics_mode_switch_, 0);
   pnh.param("waypoint_reached_thresh", waypoint_reached_thresh_, 0.8);
   pnh.param("base_thrust", base_thrust_, 3.0);
   pnh.param("emotion_on", emotion_switch_, false);
@@ -35,6 +36,7 @@ void spin(){
   while (ros::ok()){
     ROS_INFO_STREAM("control:" << control_mode_);
     hap_.setNormModeSwitch(haptics_norm_mode_switch_);
+    hap_.setModeSwitch(haptics_mode_switch_);
     if (control_mode_ == 0 || air_.getAirPressureJoint() >= 60 || air_.getAirPressureBottom() >= 50){
       air_.stopAllPneumatics();
       hap_.stopAllMotors();
@@ -74,6 +76,7 @@ private:
   bool emotion_switch_ = false;
   int control_mode_ = 2; // 0: STOP, 1: MANUAL, 2: AUTO
   int haptics_norm_mode_switch_ = 0;
+  int haptics_mode_switch_ = 0;
   double waypoint_reached_thresh_ = 0.8;
   double base_thrust_ = 3.0;
   void joyCb(const sensor_msgs::Joy::ConstPtr& msg){
