@@ -19,7 +19,7 @@ public:
   hap_(nh_)
   
 {
-  pwm_pub_ = nh_.advertise<spinal::PwmTest>("/pwm_test", 1);
+  pwm_pub_ = nh_.advertise<spinal::PwmTest>("/quadrotor/pwm_test", 1);
   joy_sub_ = nh_.subscribe("/quadrotor/joy", 1, &GuidanceManualController::joyCb, this);
   ros::NodeHandle pnh("~");
   pnh.param("norm_control_switch", haptics_norm_mode_switch_, 0);
