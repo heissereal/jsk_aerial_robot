@@ -18,30 +18,32 @@ void HugmyNavigator::initialize(ros::NodeHandle nh, ros::NodeHandle nhp,
   /* initialize the flight control */
   BaseNavigator::initialize(nh, nhp, robot_model, estimator, loop_du);
 
-  perching_flag_sub_ = nh_.subscribe("/perching_state", 1, &HugmyNavigator::perchingFlagCallback, this);
+  perching_flag_sub_ = nh_.subscribe("/interaction/state", 1, &HugmyNavigator::perchingFlagCallback, this);
 }
 
+bool HugmyNavigator::isPerching() const { return perching_flag_; }
 void HugmyNavigator::motorArming()
 {
   if(perching_flag_){
-    // takeoff_height_ = init_height_ + 0.8;
-    takeoff_height_ = estimator_->getPos(Frame::COG, estimate_mode_).z() + 0.1;
+    takeoff_height_ = estimator_->getPos(Frame::COG, estimate_mode_).z() + 1.2;
     setTargetPosZ(takeoff_height_);
     perching_flag_ = false;
     ROS_ERROR_STREAM("second takeoff_height is " << takeoff_height_);
-    std::cout << "second takeoff_height is " << takeoff_height_ << std::endl;
+    // std::cout << "second takeoff_height is " << takeoff_height_ << std::endl;
   }
   BaseNavigator::motorArming();
 }
 
-void HugmyNavigator::perchingFlagCallback(const std_msgs::UInt8& msg)
+
+
+void HugmyNavigator::perchingFlagCallback(const std_msgs::Int8& msg)
 {
   // ROS_ERROR("Received perching_state: %d", msg.data);
   if(msg.data == 4){
-    ROS_ERROR("perching");
+    // ROS_ERROR("perching");
     std::cout << "4" << std::endl;
     perching_flag_ = true;
-    ROS_ERROR("perching is %o", perching_flag_);
+    ROS_ERROR("perching is %d", perching_flag_);
   }
 }
 
