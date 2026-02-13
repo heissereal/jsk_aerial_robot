@@ -58,6 +58,9 @@ namespace aerial_robot_navigation
                             double loop_du);
     virtual void update();
 
+    virtual bool isPerching() const { return false; }
+
+
     ros::Publisher& getFlightConfigPublisher() { return flight_config_pub_; }
 
     inline uint8_t getNaviState(){  return navi_state_;}

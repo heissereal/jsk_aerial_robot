@@ -1,3 +1,4 @@
+
 // -*- mode: c++ -*-
 /*********************************************************************
  * Software License Agreement (BSD License)
@@ -255,6 +256,10 @@ namespace aerial_robot_control
         err_v_z = 0;
         target_acc_.setZ(0);
       }
+
+    // if (navigator_ && navigator_->isPerching()) {
+    //   compensate_gravity_ = true;
+    // }
 
     double gravity_term = compensate_gravity_?robot_model_->getGravity3d().z():0;
 
