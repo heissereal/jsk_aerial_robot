@@ -1,6 +1,11 @@
 #include <hugmy/control/haptics_controller.h>
 
 HapticsController::HapticsController(ros::NodeHandle& nh){
+    ros::NodeHandle pnh("~");
+    pnh.param("thrust_strength", thrust_strength_, 1.0);
+    pnh.param("use_lidar", lidar_flag_, true);
+    pnh.param("use_yaml", yaml_mode_, false);
+
     pwm_haptic_pub_ = nh.advertise<spinal::PwmTest>("/pwm_cmd/haptic", 1);
     emotion_pub_ = nh.advertise<std_msgs::Float32MultiArray>("/vad", 1);
     marker_pub_ = nh.advertise<visualization_msgs::Marker>("/target_marker", 1);
@@ -8,38 +13,39 @@ HapticsController::HapticsController(ros::NodeHandle& nh){
     thrust_pub_ = nh.advertise<spinal::Thrust>("/motor_haptics_thrust", 1);
 
     interaction_pub_ = nh.advertise<std_msgs::Int8>("/interaction/state", 1);
-    
-    odom_sub_ = nh.subscribe("/quadrotor/uav/cog/odom", 1, &HapticsController::odomCb, this);
-    // odom_sub_ = nh.subscribe("/Odometry", 1, &HapticsController::odomCb, this);
+
+    std::string odom_topic = lidar_flag_ ? "/Odometry" : "/quadrotor/uav/cog/odom";
+    odom_sub_ = nh.subscribe(odom_topic, 1, &HapticsController::odomCb, this);
     imu_sub_ = nh.subscribe("/imu", 1, &HapticsController::imuCb, this);
+
+    wpt_sub_ = nh.subscribe("/waypoints", 1, &HapticsController::wptCb, this);
 
     target_x_ = 0.0;
     target_y_ = 0.0;
     pos_flag_ = true;
     output_ = 0.0;
     motor_pwms_.assign(4,0.5f);
-    ros::NodeHandle pnh("~");
 
-    pnh.param("thrust_strength", thrust_strength_, 1.0);
-
-    XmlRpc::XmlRpcValue wp_list;
-    if (pnh.getParam("waypoints", wp_list)){
+    //yaml
+    if (yaml_mode_){
+      XmlRpc::XmlRpcValue wp_list;
+      if (pnh.getParam("waypoints", wp_list)){
 	if (wp_list.getType() != XmlRpc::XmlRpcValue::TypeArray){
-	    ROS_ERROR("~waypoints must be an array");
+          ROS_ERROR("~waypoints must be an array");
 	}else{
 	  for (int i = 0; i < wp_list.size(); ++i){
 	    if (wp_list[i].getType() != XmlRpc::XmlRpcValue::TypeArray || wp_list[i].size() != 2){
 	      continue;
 	    }
 	    double x = static_cast<double>(wp_list[i][0]);
-	    double y = static_cast<double>(wp_list[i][1]);	     
+	    double y = static_cast<double>(wp_list[i][1]);
 	    waypoints_.emplace_back(x, y);
-	    }
+          }
 	}
-    }else{
-      ROS_WARN("No ~waypoints parameter, auto mode will have no targets");
+      }else{
+        ROS_WARN("No ~waypoints parameter, auto mode will have no targets");
+      }
     }
-
     current_wp_idx_ = 0;
 }
 
@@ -80,6 +86,23 @@ void HapticsController::odomCb(const nav_msgs::Odometry::ConstPtr& msg){
     euler_.x = roll;
     euler_.y = pitch;
     euler_.z = yaw;
+}
+
+void HapticsController::wptCb(const geometry_msgs::PoseArray::ConstPtr& msg){
+  if (!msg->poses.empty()){
+    get_wpt_flag_ = true; 
+  }else{
+    get_wpt_flag_ = false;
+  }
+  if(get_wpt_flag_){
+    waypoints_.clear();
+    for (int i = 0; i < msg->poses.size(); ++i){
+      const geometry_msgs::Pose wpt_pose = msg->poses[i];
+      double x = wpt_pose.position.x;
+      double y = wpt_pose.position.y;
+      waypoints_.emplace_back(x, y);
+    }
+  }
 }
 
 //thrust_strength_をわからなさに応じて変更できるようにする

@@ -6,6 +6,7 @@
 #include <spinal/Thrust.h>
 #include <spinal/Imu.h>
 #include <geometry_msgs/Pose.h>
+#include <geometry_msgs/PoseArray.h>
 #include <geometry_msgs/Vector3.h>
 #include <nav_msgs/Odometry.h>
 #include <visualization_msgs/Marker.h>
@@ -34,6 +35,9 @@ public:
     spinal::PwmTest getHapticsPwm() const {return last_published_pwm_; }
     bool getHapticsFinished() const { return haptics_finished_flag_; }
     bool pos_flag_;
+    bool get_wpt_flag_;
+    bool lidar_flag_;
+    bool yaml_mode_;
     void vibratePwms();
     Eigen::Vector4d computeAlphaFixedTotal(const Eigen::Vector2d& target_vec, double total_thrust_c);
     std::vector<float> computeMotorPwmFixedTotal(const Eigen::Vector2d& target_vec, double total_thrust_c);
@@ -46,6 +50,7 @@ public:
 protected:
     void odomCb(const nav_msgs::Odometry::ConstPtr& msg);
     void imuCb(const spinal::Imu::ConstPtr& msg);
+    void wptCb(const geometry_msgs::PoseArray::ConstPtr& msg);
     void publishHapticsPwm(const std::vector<uint8_t>& indices, const std::vector<float>& pwms);
     double calThrustPower(double alpha);
     std::vector<float> computeMotorPwm(const Eigen::Vector2d& target_force);
@@ -70,7 +75,7 @@ protected:
     ros::Publisher thrust_pub_;
     ros::Publisher interaction_pub_;
     ros::Subscriber odom_sub_;
-    ros::Subscriber imu_sub_;
+    ros::Subscriber imu_sub_, wpt_sub_;
 
     sensor_msgs::Joy joy_;
     geometry_msgs::Pose pose_;
