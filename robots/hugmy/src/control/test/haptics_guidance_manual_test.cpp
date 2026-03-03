@@ -21,6 +21,7 @@ public:
 {
   pwm_pub_ = nh_.advertise<spinal::PwmTest>("/quadrotor/pwm_test", 1);
   joy_sub_ = nh_.subscribe("/quadrotor/joy", 1, &GuidanceManualController::joyCb, this);
+  airstop_pub_ = nh_.advertise<std_msgs::Bool>("/air/stop", 1);
   ros::NodeHandle pnh("~");
   pnh.param("norm_control_switch", haptics_norm_mode_switch_, 0);
   pnh.param("waypoint_reached_thresh", waypoint_reached_thresh_, 0.8);
@@ -30,16 +31,26 @@ public:
   hap_.setEmotionSwitch(emotion_switch_);
 }
 
+
+  // control_mode = -1 stop
+  // 0 emergency stop
+  // 1 auto
+  // 2 manual (test)
+  // 3 vibrate (test)
+  // 4 stop only air
+
 void spin(){
   ros::Rate rate(100);
   while (ros::ok()){
     ROS_INFO_STREAM("control:" << control_mode_);
     hap_.setNormModeSwitch(haptics_norm_mode_switch_);
     if (control_mode_ == 0 || air_.getAirPressureJoint() >= 60 || air_.getAirPressureBottom() >= 50){
-      air_.stopAllPneumatics();
+      stop_msg_.data = 1;
+      airstop_pub_.publish(stop_msg_);
       hap_.stopAllMotors();
     }else if (control_mode_ == 4){
-      air_.initializePneumatics();
+      stop_msg_.data = 1;
+      airstop_pub_.publish(stop_msg_);
     } else {
       air_.keepPerching();
       if (vibrate_mode_) {
@@ -67,15 +78,16 @@ private:
   ros::NodeHandle nh_;
   AirPressureController air_;
   HapticsVisualizer hap_;
-  ros::Publisher pwm_pub_;
+  ros::Publisher pwm_pub_, airstop_pub_;
   ros::Subscriber joy_sub_;
   sensor_msgs::Joy joy_;
   bool vibrate_mode_ = false;
   bool emotion_switch_ = false;
   int control_mode_ = 2; // 0: STOP, 1: MANUAL, 2: AUTO
   int haptics_norm_mode_switch_ = 0;
-  double waypoint_reached_thresh_ = 0.8;
-  double base_thrust_ = 3.0;
+  std_msgs::Bool stop_msg_;
+  double waypoint_reached_thresh_ = 0.3;
+  double base_thrust_ = 3.5;
   void joyCb(const sensor_msgs::Joy::ConstPtr& msg){
     joy_ = *msg;
     hap_.setJoy(joy_);
