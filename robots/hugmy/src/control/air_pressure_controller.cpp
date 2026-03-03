@@ -592,32 +592,30 @@ void AirPressureController::startPerching()
 
 void AirPressureController::keepPerching()
 {
-    // ROS_INFO("%d", cnt_);
-    // cnt_ += 1;
-    // if (cnt_ >= 50) {
-    //     cnt_ = 0;
-    //     ros::Duration(1.0).sleep();
-    //     ROS_INFO("deperch ready");
-    //     perching_flag_ = 4;
-    // } else {
-    if (air_pressure_bottom_ <= bottom_perching_pressure_) {
-      startSVSwitch();
-      calPressure(bottom_perching_pressure_, 1);
+  if(!external_mode_) return;
+  failsafe();
+  ROS_INFO("emergency %d", static_cast<int>(emergency_stop_));
+  if (emergency_stop_) {
+    initializePneumatics();
+    return;
+  }
+  if (air_pressure_bottom_ <= bottom_perching_pressure_) {
+    startSVSwitch();
+    calPressure(bottom_perching_pressure_, 1);
+    adjustPump();
+    publishAirPwmMerged();
+  } else {
+    if (air_pressure_joint_ < joint_perching_pressure_) {
+      stopSVSwitch();
+      stopSVExhaust();
+      calPressure(joint_perching_pressure_, 0);
       adjustPump();
       publishAirPwmMerged();
     } else {
-      if (air_pressure_joint_ < joint_perching_pressure_) {
-        stopSVSwitch();
-        stopSVExhaust();
-        calPressure(joint_perching_pressure_, 0);
-        adjustPump();
-        publishAirPwmMerged();
-      } else {
-        stopPump();
-        publishAirPwmMerged();
-      }
-    failsafe();
+      stopPump();
+      publishAirPwmMerged();
     }
+  }
 }
 
 void AirPressureController::failsafe(){
