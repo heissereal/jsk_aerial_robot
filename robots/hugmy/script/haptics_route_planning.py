@@ -40,7 +40,7 @@ class PathUI:
         self._ui_timer = rospy.Timer(rospy.Duration(1.0/self.rebuild_rate), self._ui_tick)
 
         # state
-        self.frame = rospy.get_param("~frame_id", "map") ###### should change
+        self.frame = rospy.get_param("~frame_id", "camera_init") ###### should change
         self.wp_radius_vis = rospy.get_param("~wp_radius_vis", 0.08)
         self.obs_default_r = rospy.get_param("~obs_default_radius", 0.35)
         self.obstacles = []  # list of dict: {"name": str, "x": float, "y": float, "r": float}
@@ -60,6 +60,7 @@ class PathUI:
 
         # initial seeds
         init_wps = rospy.get_param("~init_waypoints", [[0,0,0],[2,0,0],[2,2,0]])
+        self.wp0_fixed = rospy.get_param("~wp0_fixed_xyz", [0.0, 0.0, 0.0])
         for i, p in enumerate(init_wps):
            self.add_waypoint(p[0], p[1], p[2])
 
@@ -95,7 +96,7 @@ class PathUI:
         button.id = 0
         button.type = Marker.CUBE
         button.pose.orientation.w = 1.0
-        button.scale.x = 0.35; button.scale.y = 0.18; button.scale.z = 0.06
+        button.scale.x = 0.18; button.scale.y = 0.35; button.scale.z = 0.06
         button.color.r = 0.2; button.color.g = 0.2; button.color.b = 0.2; button.color.a = 1.0
 
         text = Marker()
@@ -196,8 +197,8 @@ class PathUI:
         im.description = ""
         im.scale = 1.0
 
-        im.pose.position.x = 0.0
-        im.pose.position.y = 0.0
+        im.pose.position.x = 2.0
+        im.pose.position.y = 2.0
         im.pose.position.z = 0.6
         im.pose.orientation.w = 1.0
 
@@ -269,8 +270,16 @@ class PathUI:
         if not name.startswith(WAYPOINT_PREFIX):
             return
 
+        try:
+            i = int(name[len(WAYPOINT_PREFIX):])
+        except ValueError:
+            return
+
+        if i == 0:
+            return  # wp_0 is fixed
+
         with self._lock:
-            i = self.find_wp(name)
+            # i = self.find_wp(name)
             x = fb.pose.position.x; y = fb.pose.position.y; z = fb.pose.position.z
             if i >= 0 and i < len(self.user_set_waypoints):
                 self.user_set_waypoints[i]["x"]=x; self.user_set_waypoints[i]["y"]=y; self.user_set_waypoints[i]["z"]=z
@@ -334,7 +343,16 @@ class PathUI:
         if not name.startswith(WAYPOINT_PREFIX):
             return
 
-        i = self.find_wp(name)
+        try:
+            i = int(name[len(WAYPOINT_PREFIX):])
+        except ValueError:
+            return
+
+        if i == 0:
+            rospy.logwarn("wp_0 is fixed and cannot be deleted.")
+            return
+
+        # i = self.find_wp(name)
         with self._lock:
             if i >= 0 and i < len(self.user_set_waypoints):
                 self.user_set_waypoints.pop(i)
