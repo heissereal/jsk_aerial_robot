@@ -46,14 +46,15 @@ public:
     double auto_target_y_= 0.5;
     std::vector<Eigen::Vector2d> waypoints_;
     int current_wp_idx_ = 0;
-    double waypoint_reached_thresh_ = 0.8;
+    double waypoint_reached_thresh_ = 0.3;
+    double thrust_strength_ = 1.0;
+    double base_thrust_ = 4.0;
 protected:
     void odomCb(const nav_msgs::Odometry::ConstPtr& msg);
     void imuCb(const spinal::Imu::ConstPtr& msg);
     void wptCb(const geometry_msgs::PoseArray::ConstPtr& msg);
     void publishHapticsPwm(const std::vector<uint8_t>& indices, const std::vector<float>& pwms);
     double calThrustPower(double alpha);
-    std::vector<float> computeMotorPwm(const Eigen::Vector2d& target_force);
     void outputPulsePattern(double target_force_norm, const std::vector<float>& motor_pwms);
     void isApproachingTarget(const Eigen::Vector2d& target_vec, double target_norm);
     bool isArmRaised();
@@ -112,10 +113,7 @@ protected:
     double cooldown_duration_sec_ = 1.0; 
     double forward_gain_ = 1.0;
   
-    double thrust_strength_ = 1.0;
     double total_thrust_c_ = 1.0;
-
-    double base_thrust_ = 4.0;
     bool emotion_switch_ = false;
     double v_ = 0.0;
     double a_ = 0.0;
