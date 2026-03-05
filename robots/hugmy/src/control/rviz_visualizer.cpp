@@ -17,12 +17,12 @@ void HapticsVisualizer::updateRviz() {
   geometry_msgs::Point current_pos;
   current_pos.x = pose_.position.x;
   current_pos.y = pose_.position.y;
-  current_pos.z = 0.8;
+  current_pos.z = 0.1;
   
   geometry_msgs::Point target_pos;
   target_pos.x = target_x_;
   target_pos.y = target_y_;
-  target_pos.z = 0.8;
+  target_pos.z = 0.1;
 
   // target_vec
   Eigen::Vector2d target_vec = Eigen::Vector2d(target_x_, target_y_) - Eigen::Vector2d(current_pos.x, current_pos.y);
@@ -34,7 +34,7 @@ void HapticsVisualizer::updateRviz() {
   geometry_msgs::Point last_pos;
   last_pos.x = last_pos_.x;
   last_pos.y = last_pos_.y;
-  last_pos.z = 0.8;
+  last_pos.z = 0.1;
   publishVectorArrow(last_vec, last_pos, "last_vector", 1, 0.0, 1.0, 0.0);
 
   visualization_msgs::Marker current_point;
@@ -68,7 +68,7 @@ void HapticsVisualizer::updateRviz() {
   target_point.pose.orientation.w = 1.0;
   target_point.scale.x = 0.12;
   target_point.scale.y = 0.12;
-  target_point.scale.z = 0.12;
+  target_point.scale.z = 0.1;
   target_point.color.r = 1.0;
   target_point.color.g = 0.0;
   target_point.color.b = 0.0;
@@ -89,12 +89,12 @@ void HapticsVisualizer::updateRviz() {
 
       wp_marker.pose.position.x = waypoints_[i].x();
       wp_marker.pose.position.y = waypoints_[i].y();
-      wp_marker.pose.position.z = 0.8;
+      wp_marker.pose.position.z = 0.1;
       wp_marker.pose.orientation.w = 1.0;
 
-      wp_marker.scale.x = 0.8;
-      wp_marker.scale.y = 0.8;
-      wp_marker.scale.z = 0.8;
+      wp_marker.scale.x = 0.5;
+      wp_marker.scale.y = 0.5;
+      wp_marker.scale.z = 0.5;
       
       if (static_cast<int>(i) == current_wp_idx_) {
 	wp_marker.color.r = 1.0;
@@ -128,13 +128,13 @@ void HapticsVisualizer::updateRviz() {
     
     p.x = current_pos.x;
     p.y = current_pos.y;
-    p.z = 0.8;
+    p.z = 0.1;
     path_marker.points.push_back(p);
     
     for (size_t i = 0; i < waypoints_.size(); ++i) {
       p.x = waypoints_[i].x();
       p.y = waypoints_[i].y();
-      p.z = 0.8;
+      p.z = 0.1;
       path_marker.points.push_back(p);
     }
     
