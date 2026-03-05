@@ -1,8 +1,13 @@
 #include <hugmy/control/haptics_controller.h>
 
+// ボタンでリセットをかけれるようにする
+// waypointのpubが来た時のタイミンリセット時に受け付けれるようにする
+
 HapticsController::HapticsController(ros::NodeHandle& nh){
     ros::NodeHandle pnh("~");
     pnh.param("thrust_strength", thrust_strength_, 1.0);
+    pnh.param("waypoint_reached_thresh", waypoint_reached_thresh_, 0.3);
+    pnh.param("base_thrust", base_thrust_, 4.0);
     pnh.param("use_lidar", lidar_flag_, true);
     pnh.param("use_yaml", yaml_mode_, false);
 
@@ -168,6 +173,8 @@ void HapticsController::controlAuto() {
     Eigen::Vector2d tgt_pos(target_x_, target_y_);
     ROS_INFO("Current position: (%.2f, %.2f)", pose_.position.x, pose_.position.y);
     ROS_INFO("Target position : (%.2f, %.2f)", target_x_, target_y_);
+    ROS_WARN_STREAM("base_thrust:"<< base_thrust_);
+    ROS_WARN_STREAM("waypoint_reached_thresh_:"<< waypoint_reached_thresh_);
     Eigen::Vector2d target_vec = tgt_pos - cur_pos;
     double target_norm = target_vec.norm();
     ROS_INFO("Target vector: (%.2f, %.2f), norm: %.2f", target_vec.x(), target_vec.y(), target_norm);
@@ -192,7 +199,7 @@ void HapticsController::controlAuto() {
 	ROS_ERROR("Final waypoint reached, stopping motors.");
 	vibratePwms();
 	finished_cnt_ += 1;
-	if (finished_cnt_ > 50){
+	if (finished_cnt_ > 500){
 	  haptics_finished_flag_ = true;
 	  publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
 	  interaction_state_ = 4;
@@ -246,7 +253,7 @@ void HapticsController::controlAuto() {
 	emotion_msg_.data[2] = 0.0;
 	
 	emotion_pub_.publish(emotion_msg_);
-        if (finished_cnt_ > 100){
+        if (finished_cnt_ > 300){
             haptics_finished_flag_ = true;
             publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
         }
