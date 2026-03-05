@@ -1,4 +1,6 @@
-#include <hugmy/control/air_pressure_controller.h>
+// #include <hugmy/control/air_pressure_controller.h>
+
+//手順をはっきりさせる
 #include <hugmy/control/haptics_controller.h>
 #include <hugmy/control/haptics_visualizer.h>
 
@@ -15,18 +17,23 @@ class GuidanceManualController {
 public:
   GuidanceManualController()
   : nh_(),
-  air_(nh_),
+  // air_(nh_),
   hap_(nh_)
   
 {
   pwm_pub_ = nh_.advertise<spinal::PwmTest>("/quadrotor/pwm_test", 1);
   joy_sub_ = nh_.subscribe("/quadrotor/joy", 1, &GuidanceManualController::joyCb, this);
   airstop_pub_ = nh_.advertise<std_msgs::Bool>("/air/stop", 1);
+
+  pressure_cmd_bottom_pub_ = nh_.advertise<std_msgs::Int8>("/air/target_bottom", 1);
+  pressure_cmd_joint_pub_ = nh_.advertise<std_msgs::Int8>("/air/target_joint", 1);
+  
   ros::NodeHandle pnh("~");
   pnh.param("norm_control_switch", haptics_norm_mode_switch_, 0);
-  pnh.param("waypoint_reached_thresh", waypoint_reached_thresh_, 0.8);
-  pnh.param("base_thrust", base_thrust_, 3.0);
+  pnh.param("waypoint_reached_thresh", waypoint_reached_thresh_, 0.3);
+  pnh.param("base_thrust", base_thrust_, 4.0);
   pnh.param("emotion_on", emotion_switch_, false);
+  pnh.param("use_lidar", lidar_flag_, true);
   hap_.setBaseThrust(base_thrust_);
   hap_.setEmotionSwitch(emotion_switch_);
 }
@@ -44,7 +51,7 @@ void spin(){
   while (ros::ok()){
     ROS_INFO_STREAM("control:" << control_mode_);
     hap_.setNormModeSwitch(haptics_norm_mode_switch_);
-    if (control_mode_ == 0 || air_.getAirPressureJoint() >= 60 || air_.getAirPressureBottom() >= 50){
+    if (control_mode_ == 0 ){// || air_.getAirPressureJoint() >= 60 || air_.getAirPressureBottom() >= 50){
       stop_msg_.data = 1;
       airstop_pub_.publish(stop_msg_);
       hap_.stopAllMotors();
@@ -52,13 +59,19 @@ void spin(){
       stop_msg_.data = 1;
       airstop_pub_.publish(stop_msg_);
     } else {
-      air_.keepPerching();
+      // air_.keepPerching();
+      stop_msg_.data = 0;
+      airstop_pub_.publish(stop_msg_);
+      msg_bottom_P_.data = 20;
+      msg_joint_P_.data = 20; //for test
+      pressure_cmd_bottom_pub_.publish(msg_bottom_P_);
+      pressure_cmd_joint_pub_.publish(msg_joint_P_);
+
       if (vibrate_mode_) {
         ROS_INFO("Vibrate mode: output vibration pattern.");
         hap_.vibratePwms();
       } else{
         vibrate_mode_ = false;
-        air_.keepPerching();
 	if(control_mode_ == 1){
 	  hap_.controlAuto();
 	}else if(control_mode_ == 3){
@@ -76,24 +89,28 @@ void spin(){
 
 private:
   ros::NodeHandle nh_;
-  AirPressureController air_;
+  // AirPressureController air_;
   HapticsVisualizer hap_;
   ros::Publisher pwm_pub_, airstop_pub_;
   ros::Subscriber joy_sub_;
   sensor_msgs::Joy joy_;
   bool vibrate_mode_ = false;
   bool emotion_switch_ = false;
+  bool lidar_flag_ = true;
   int control_mode_ = 2; // 0: STOP, 1: MANUAL, 2: AUTO
   int haptics_norm_mode_switch_ = 0;
+  ros::Publisher pressure_cmd_bottom_pub_;
+  ros::Publisher pressure_cmd_joint_pub_;
   std_msgs::Bool stop_msg_;
   double waypoint_reached_thresh_ = 0.3;
   double base_thrust_ = 3.5;
+  std_msgs::Int8 msg_joint_P_, msg_bottom_P_;
   void joyCb(const sensor_msgs::Joy::ConstPtr& msg){
     joy_ = *msg;
     hap_.setJoy(joy_);
     if (joy_.buttons[1] == 1){
       control_mode_ = 0;
-      air_.stopAllPneumatics();
+      // air_.stopAllPneumatics();
       hap_.stopAllMotors();
       ROS_INFO("Emergency stop");
     }else if (joy_.buttons[0] == 1) {
@@ -118,7 +135,7 @@ private:
   // pwmをパーチング時以外で使うと飛べないので注意
   // keep_perching の所以外は力覚提示とマージする必要はない
   void publishMergedPwm() {
-    spinal::PwmTest air_pwm_msg = air_.getAirPwm();
+    // spinal::PwmTest air_pwm_msg = air_.getAirPwm();
     spinal::PwmTest haptics_pwm_msg = hap_.getHapticsPwm();
     ROS_INFO("Manual haptics: merge");
 
@@ -126,9 +143,9 @@ private:
     for (size_t i = 0; i < haptics_pwm_msg.motor_index.size(); ++i) {
       merged_pwm[haptics_pwm_msg.motor_index[i]] = haptics_pwm_msg.pwms[i];
     }
-    for (size_t i = 0; i < air_pwm_msg.motor_index.size(); ++i) {
-      merged_pwm[air_pwm_msg.motor_index[i]] = air_pwm_msg.pwms[i];
-    }
+    // for (size_t i = 0; i < air_pwm_msg.motor_index.size(); ++i) {
+    //   merged_pwm[air_pwm_msg.motor_index[i]] = air_pwm_msg.pwms[i];
+    // }
     spinal::PwmTest merged_msg;
     for (const auto& pair : merged_pwm) {
       merged_msg.motor_index.push_back(pair.first);
