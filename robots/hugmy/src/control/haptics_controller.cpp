@@ -5,7 +5,7 @@
 
 HapticsController::HapticsController(ros::NodeHandle& nh){
     ros::NodeHandle pnh("~");
-    pnh.param("thrust_strength", thrust_strength_, 1.0);
+    pnh.param("thrust_strength", thrust_strength_, 1.2);
     pnh.param("waypoint_reached_thresh", waypoint_reached_thresh_, 0.3);
     pnh.param("base_thrust", base_thrust_, 4.0);
     pnh.param("use_lidar", lidar_flag_, true);
@@ -100,6 +100,7 @@ void HapticsController::wptCb(const geometry_msgs::PoseArray::ConstPtr& msg){
     get_wpt_flag_ = false;
   }
   if(get_wpt_flag_){
+    resetNavigationState();
     waypoints_.clear();
     for (int i = 0; i < msg->poses.size(); ++i){
       const geometry_msgs::Pose wpt_pose = msg->poses[i];
@@ -112,10 +113,10 @@ void HapticsController::wptCb(const geometry_msgs::PoseArray::ConstPtr& msg){
 
 //thrust_strength_をわからなさに応じて変更できるようにする
 double HapticsController::calThrustPower(double alpha) {
-    thrust_ = std::min(5.0, base_thrust_ * thrust_strength_ * forward_gain_ * std::abs(alpha));
+    thrust_ = std::min(8.0, base_thrust_ * thrust_strength_ * forward_gain_ * std::abs(alpha));
     ROS_ERROR("base_thrust: %.2f, thrust_strength: %.2f, forward_gain: %.2f, total_thrust: %.2f", base_thrust_,thrust_strength_, forward_gain_, thrust_);
     double pwm = -0.000679 * thrust_ * thrust_ + 0.044878 * thrust_ + 0.5;
-    return std::min(pwm, 0.8);
+    return std::min(pwm, 0.76);
 }
 
 void HapticsController::controlManual() {
@@ -363,56 +364,6 @@ void HapticsController::publishEmotion(const Eigen::Vector2d& target_vec, double
 }
 
 
-std::vector<float> HapticsController::computeMotorPwm(const Eigen::Vector2d& target_vec){
-    double cos_yaw = cos(euler_.z);
-    double sin_yaw = sin(euler_.z);
-    ROS_INFO("cos_yaw: %.2f, sin_yaw: %.2f", cos_yaw, sin_yaw);
-    Eigen::Matrix<double, 2, 4> motor_dirs_base;
-    motor_dirs_base <<  1, -1, -1,  1,
-                    -1, -1,  1,  1;
-    Eigen::Matrix2d R;
-    R << cos_yaw, -sin_yaw,
-         sin_yaw,  cos_yaw;
-    Eigen::Matrix<double, 2, 4> motor_dirs = R * motor_dirs_base;
-    // std::ostringstream oss;
-    // oss << "motor_dirs:\n";
-    // for (int row = 0; row < motor_dirs.rows(); ++row) {
-    //     for (int col = 0; col < motor_dirs.cols(); ++col) {
-    //         oss << motor_dirs(row, col) << "\t";
-    //     }
-    //     oss << "\n";
-    // }
-    // ROS_INFO_STREAM(oss.str());
-
-    Eigen::Vector4d alpha =  Eigen::Vector4d::Zero();
-    Eigen::Vector2d target_dir = target_vec.normalized();
-    const int max_iter = 100;
-    const double lr = 0.1;
-
-    for (int i = 0; i < max_iter; ++i) {
-        Eigen::Vector2d residual = motor_dirs * alpha - target_dir;
-        Eigen::Vector4d gradient = motor_dirs.transpose() * residual;
-        alpha -= lr * gradient;
-        alpha = alpha.cwiseMax(0.0); // Ensure non-negative thrust
-    }
-    // alpha *= target_norm;
-    
-    for (size_t i = 0; i < 4; ++i) {
-        motor_pwms_[i] = calThrustPower(alpha[i]);
-    }
-
-    //debug
-    spinal::PwmTest alpha_msg;
-    alpha_msg.motor_index = {0, 1, 2, 3};
-    for (size_t i = 0; i < 4; ++i) {
-        alpha_msg.pwms.push_back(static_cast<float>(alpha[i]));
-    }
-    alpha_pub_.publish(alpha_msg);
-
-    return motor_pwms_;
-}
-
-
 Eigen::Vector4d HapticsController::computeAlphaFixedTotal(const Eigen::Vector2d& dir, double total_thrust_c)
 {
     double cos_yaw = cos(euler_.z);
@@ -428,10 +379,10 @@ Eigen::Vector4d HapticsController::computeAlphaFixedTotal(const Eigen::Vector2d&
     Eigen::Vector2d d_world = dir / n;
 
     Eigen::Matrix<double,2,4> motor_base;
-    motor_base <<  1, -1, -1,  1,
-         -1, -1,  1,  1;
-        // motor_base <<  -1, 1, 1, -1,
-    //   1, 1,  -1,  -1;
+    // motor_base <<  1, -1, -1,  1,
+    //      -1, -1,  1,  1;
+    motor_base <<  -1, 1, 1, -1,
+      1, 1,  -1,  -1;
     Eigen::Matrix2d R;
     R << cos_yaw, -sin_yaw,
          sin_yaw,  cos_yaw;
@@ -570,11 +521,11 @@ void HapticsController::outputPulsePattern(double target_norm, const std::vector
 
 
     if (pulse_count_ == 0) {
-        if (target_norm < 1.5) {
+        if (target_norm < 0.4) {
             pulse_target_ = 1 * 2;
-        } else if (target_norm < 2.0) {
+        } else if (target_norm < 0.8) {
             pulse_target_ = 2 * 2;
-	} else if (target_norm < 2.5) {
+	} else if (target_norm < 1.2) {
             pulse_target_ = 3 * 2;
         } else {
             pulse_target_ = 4 * 2;
@@ -613,7 +564,7 @@ void HapticsController::outputPulseLengthPattern(double target_norm, const std::
     static const int min_on_interval = 10;
     static const int max_on_interval = 110;
 
-    double normalized = std::min(1.0, std::max(0.0, target_norm / 3.0));
+    double normalized = std::min(1.0, std::max(0.0, target_norm / 1.2));
     int on_interval = min_on_interval + normalized * (max_on_interval - min_on_interval);
 
     outputPulse(motor_pwms, on_interval);
@@ -642,8 +593,8 @@ void HapticsController::outputPulse(const std::vector<float>& motor_pwms, int on
 
 void HapticsController::outputStrength(double target_norm)
 {
-    const double d_max = 5.0;
-    double x = std::min(std::max(0.001, target_norm/d_max),1.0);
+    const double d_max = 0.6;
+    double x = std::min(std::max(0.001, target_norm/d_max), 1.0);
     const double r_min = 2.5;
     const double r_max = 4.0;
     double rating = r_min + (r_max - r_min) * x;
@@ -655,7 +606,7 @@ void HapticsController::outputStrength(double target_norm)
     
     double raw_strength = F_des / base_thrust_;
 
-    thrust_strength_ = std::min(1.2, std::max(0.53, raw_strength));
+    thrust_strength_ = std::min(1.2, std::max(0.7, raw_strength));
 }
 
 void HapticsController::warnWrongDirectionPattern()
@@ -794,5 +745,44 @@ bool HapticsController::isArmRaised() {
 
 void HapticsController::stopAllMotors() {
     ROS_INFO("Stopping all motors.");
+    publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
+}
+
+
+void HapticsController::resetNavigationState() {
+    ROS_WARN("Resetting haptics navigation state.");
+
+    pos_flag_ = true;
+    get_wpt_flag_ = false;
+
+    first_haptics_done_ = false;
+    haptics_finished_flag_ = false;
+    approaching_target_flag_ = false;
+
+    finished_cnt_ = 0;
+    emotion_cnt_ = 0;
+    pulse_count_ = 0;
+    pulse_target_ = 0;
+    rest_count_ = 0;
+    vibrate_count_ = 0;
+
+    rest_toggle_ = false;
+    vibrate_toggle_ = false;
+    in_cooldown_ = false;
+
+    min_target_norm_ = std::numeric_limits<double>::infinity();
+    stuck_time_sec_ = 0.0;
+    dot_ = 0.0;
+    forward_gain_ = 1.0;
+
+    current_wp_idx_ = 0;
+    target_x_ = 0.0;
+    target_y_ = 0.0;
+
+    nav_state_ = NavState::APPROACHING;
+
+    last_check_time_ = ros::Time(0);
+    last_nav_check_time_ = ros::Time(0);
+
     publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
 }

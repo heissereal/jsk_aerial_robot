@@ -39,6 +39,7 @@ public:
     bool lidar_flag_;
     bool yaml_mode_;
     void vibratePwms();
+    void resetNavigationState();
     Eigen::Vector4d computeAlphaFixedTotal(const Eigen::Vector2d& target_vec, double total_thrust_c);
     std::vector<float> computeMotorPwmFixedTotal(const Eigen::Vector2d& target_vec, double total_thrust_c);
 

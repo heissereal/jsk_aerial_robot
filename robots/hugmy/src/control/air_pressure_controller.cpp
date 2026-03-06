@@ -25,7 +25,7 @@ AirPressureController::AirPressureController(ros::NodeHandle& nh) {
     pnh.param("u_limit",   u_limit_,   0.8);
 
 
-    pnh.param("leak_calib_enable",   leak_calib_enable_,   true);
+    pnh.param("leak_calib_enable",   leak_calib_enable_,   false);
     pnh.param("calib_sensor_index",  calib_sensor_index_,  0);
     pnh.param("calib_target_pressure", calib_target_pressure_, 20);
     pnh.param("calib_duration",      calib_duration_,      8.0);
@@ -38,7 +38,7 @@ AirPressureController::AirPressureController(ros::NodeHandle& nh) {
     pnh.param("alpha_sched",         alpha_sched_,         0.1);
     pnh.param("kp_leak_scale",       kp_leak_scale_,       0.0);
     pnh.param("ki_leak_scale",       ki_leak_scale_,       0.02);
-    pnh.param("external_mode",       external_mode_,       false); //if external_mode = true, control_loop is turning on  
+    pnh.param("external_mode",       external_mode_,       true); //if external_mode = true, control_loop is turning on  
     pnh.param("control_rate_hz",     control_rate_hz_,     50.0);
 
     pnh.param("lpf_tau",  lpf_tau_,  0.05);
