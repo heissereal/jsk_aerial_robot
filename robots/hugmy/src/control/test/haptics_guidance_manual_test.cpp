@@ -1,5 +1,3 @@
-// #include <hugmy/control/air_pressure_controller.h>
-
 //手順をはっきりさせる
 #include <hugmy/control/haptics_controller.h>
 #include <hugmy/control/haptics_visualizer.h>
@@ -24,6 +22,7 @@ public:
   pwm_pub_ = nh_.advertise<spinal::PwmTest>("/quadrotor/pwm_test", 1);
   joy_sub_ = nh_.subscribe("/quadrotor/joy", 1, &GuidanceManualController::joyCb, this);
   airstop_pub_ = nh_.advertise<std_msgs::Bool>("/air/stop", 1);
+  reset_done_pub_ = nh_.advertise<std_msgs::Empty>("/guidance/reset_done", 1);
 
   pressure_cmd_bottom_pub_ = nh_.advertise<std_msgs::Int8>("/air/target_bottom", 1);
   pressure_cmd_joint_pub_ = nh_.advertise<std_msgs::Int8>("/air/target_joint", 1);
@@ -36,6 +35,9 @@ public:
   pnh.param("use_lidar", lidar_flag_, true);
   hap_.setBaseThrust(base_thrust_);
   hap_.setEmotionSwitch(emotion_switch_);
+
+  reset_done_pub_.publish(init_msg_);
+  ROS_WARN("Published guidance init/reset topic.");
 }
 
 
@@ -96,21 +98,24 @@ private:
   sensor_msgs::Joy joy_;
   bool vibrate_mode_ = false;
   bool emotion_switch_ = false;
+  bool prev_reset_button_ = false;
   bool lidar_flag_ = true;
   int control_mode_ = 2; // 0: STOP, 1: MANUAL, 2: AUTO
   int haptics_norm_mode_switch_ = 0;
   ros::Publisher pressure_cmd_bottom_pub_;
   ros::Publisher pressure_cmd_joint_pub_;
+  ros::Publisher reset_done_pub_;
   std_msgs::Bool stop_msg_;
   double waypoint_reached_thresh_ = 0.3;
   double base_thrust_ = 3.5;
+  std_msgs::Empty init_msg_;
   std_msgs::Int8 msg_joint_P_, msg_bottom_P_;
   void joyCb(const sensor_msgs::Joy::ConstPtr& msg){
     joy_ = *msg;
     hap_.setJoy(joy_);
+    bool reset_pressed = (joy_.buttons[6] == 1);
     if (joy_.buttons[1] == 1){
-      control_mode_ = 0;
-      // air_.stopAllPneumatics();
+      control_mode_ = 0; //left-up
       hap_.stopAllMotors();
       ROS_INFO("Emergency stop");
     }else if (joy_.buttons[0] == 1) {
@@ -123,12 +128,19 @@ private:
       vibrate_mode_ = false; //only_air
       control_mode_ = 2;
     }else if(joy_.buttons[4] == 1) {
-      vibrate_mode_ = false; //demo_manual
+      vibrate_mode_ = false; //demo_manual_left_down
       control_mode_ = 3;
     }else if(joy_.buttons[5] == 1) {
-      vibrate_mode_ = false; //exhaust_air
+      vibrate_mode_ = false; //exhaust_air, right_down
       control_mode_ = 4;
     }
+    if (reset_pressed && !prev_reset_button_) {
+       vibrate_mode_ = false;
+       reset_done_pub_.publish(init_msg_);
+       ROS_WARN("Published guidance init/reset topic.");
+       hap_.resetNavigationState();
+    }
+    prev_reset_button_ = reset_pressed;
   }
 
 

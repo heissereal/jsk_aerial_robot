@@ -100,6 +100,7 @@ void HapticsController::wptCb(const geometry_msgs::PoseArray::ConstPtr& msg){
     get_wpt_flag_ = false;
   }
   if(get_wpt_flag_){
+    resetNavigationState();
     waypoints_.clear();
     for (int i = 0; i < msg->poses.size(); ++i){
       const geometry_msgs::Pose wpt_pose = msg->poses[i];
@@ -744,5 +745,44 @@ bool HapticsController::isArmRaised() {
 
 void HapticsController::stopAllMotors() {
     ROS_INFO("Stopping all motors.");
+    publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
+}
+
+
+void HapticsController::resetNavigationState() {
+    ROS_WARN("Resetting haptics navigation state.");
+
+    pos_flag_ = true;
+    get_wpt_flag_ = false;
+
+    first_haptics_done_ = false;
+    haptics_finished_flag_ = false;
+    approaching_target_flag_ = false;
+
+    finished_cnt_ = 0;
+    emotion_cnt_ = 0;
+    pulse_count_ = 0;
+    pulse_target_ = 0;
+    rest_count_ = 0;
+    vibrate_count_ = 0;
+
+    rest_toggle_ = false;
+    vibrate_toggle_ = false;
+    in_cooldown_ = false;
+
+    min_target_norm_ = std::numeric_limits<double>::infinity();
+    stuck_time_sec_ = 0.0;
+    dot_ = 0.0;
+    forward_gain_ = 1.0;
+
+    current_wp_idx_ = 0;
+    target_x_ = 0.0;
+    target_y_ = 0.0;
+
+    nav_state_ = NavState::APPROACHING;
+
+    last_check_time_ = ros::Time(0);
+    last_nav_check_time_ = ros::Time(0);
+
     publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
 }
