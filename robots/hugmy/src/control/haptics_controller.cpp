@@ -363,56 +363,6 @@ void HapticsController::publishEmotion(const Eigen::Vector2d& target_vec, double
 }
 
 
-std::vector<float> HapticsController::computeMotorPwm(const Eigen::Vector2d& target_vec){
-    double cos_yaw = cos(euler_.z);
-    double sin_yaw = sin(euler_.z);
-    ROS_INFO("cos_yaw: %.2f, sin_yaw: %.2f", cos_yaw, sin_yaw);
-    Eigen::Matrix<double, 2, 4> motor_dirs_base;
-    motor_dirs_base <<  1, -1, -1,  1,
-                    -1, -1,  1,  1;
-    Eigen::Matrix2d R;
-    R << cos_yaw, -sin_yaw,
-         sin_yaw,  cos_yaw;
-    Eigen::Matrix<double, 2, 4> motor_dirs = R * motor_dirs_base;
-    // std::ostringstream oss;
-    // oss << "motor_dirs:\n";
-    // for (int row = 0; row < motor_dirs.rows(); ++row) {
-    //     for (int col = 0; col < motor_dirs.cols(); ++col) {
-    //         oss << motor_dirs(row, col) << "\t";
-    //     }
-    //     oss << "\n";
-    // }
-    // ROS_INFO_STREAM(oss.str());
-
-    Eigen::Vector4d alpha =  Eigen::Vector4d::Zero();
-    Eigen::Vector2d target_dir = target_vec.normalized();
-    const int max_iter = 100;
-    const double lr = 0.1;
-
-    for (int i = 0; i < max_iter; ++i) {
-        Eigen::Vector2d residual = motor_dirs * alpha - target_dir;
-        Eigen::Vector4d gradient = motor_dirs.transpose() * residual;
-        alpha -= lr * gradient;
-        alpha = alpha.cwiseMax(0.0); // Ensure non-negative thrust
-    }
-    // alpha *= target_norm;
-    
-    for (size_t i = 0; i < 4; ++i) {
-        motor_pwms_[i] = calThrustPower(alpha[i]);
-    }
-
-    //debug
-    spinal::PwmTest alpha_msg;
-    alpha_msg.motor_index = {0, 1, 2, 3};
-    for (size_t i = 0; i < 4; ++i) {
-        alpha_msg.pwms.push_back(static_cast<float>(alpha[i]));
-    }
-    alpha_pub_.publish(alpha_msg);
-
-    return motor_pwms_;
-}
-
-
 Eigen::Vector4d HapticsController::computeAlphaFixedTotal(const Eigen::Vector2d& dir, double total_thrust_c)
 {
     double cos_yaw = cos(euler_.z);
