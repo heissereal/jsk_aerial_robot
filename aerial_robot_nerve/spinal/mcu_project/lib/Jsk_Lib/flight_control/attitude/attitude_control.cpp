@@ -22,6 +22,7 @@ void AttitudeController::init(ros::NodeHandle* nh, StateEstimate* estimator)
   estimator_ = estimator;
 
   pwms_pub_ = nh_->advertise<spinal::Pwms>("motor_pwms", 1);
+  thrust_pub_ = nh_->advertise<spinal::Thrust>("target_thrust", 1);
   control_term_pub_ = nh_->advertise<spinal::RollPitchYawTerms>("rpy/pid", 1);
   control_feedback_state_pub_ = nh_->advertise<spinal::RollPitchYawTerm>("rpy/feedback_state", 1);
   anti_gyro_pub_ = nh_->advertise<std_msgs::Float32MultiArray>("gyro_moment_compensation", 1);
@@ -41,6 +42,7 @@ void AttitudeController::init(ros::NodeHandle* nh, StateEstimate* estimator)
 
 AttitudeController::AttitudeController():
   pwms_pub_("motor_pwms", &pwms_msg_),
+  thrust_pub_("target_thrust", &thrust_msg_),
   control_term_pub_("rpy/pid", &control_term_msg_),
   control_feedback_state_pub_("rpy/feedback_state", &control_feedback_state_msg_),
   four_axis_cmd_sub_("four_axes/command", &AttitudeController::fourAxisCommandCallback, this ),
@@ -106,6 +108,7 @@ void AttitudeController::init(TIM_HandleTypeDef* htim1, TIM_HandleTypeDef* htim2
   HAL_TIM_PWM_Start(pwm_htim2_,TIM_CHANNEL_4);
 
   nh_->advertise(pwms_pub_);
+  nh_->advertise(thrust_pub_);
   nh_->advertise(control_term_pub_);
   nh_->advertise(control_feedback_state_pub_);
   nh_->advertise(esc_telem_pub_);
@@ -183,6 +186,11 @@ void AttitudeController::pwmsControl(void)
       pwm_pub_last_time_ = HAL_GetTick();
       pwms_pub_.publish(pwms_msg_);
     }
+  if(HAL_GetTick() - thrust_pub_last_time_ > THRUST_PUB_INTERVAL)
+    {
+      thrust_pub_last_time_ = HAL_GetTick();
+      thrust_pub_.publish(thrust_msg_);
+    }
 
 #else
   /* control result publish */
@@ -207,6 +215,11 @@ void AttitudeController::pwmsControl(void)
     {
       pwm_pub_last_time_ = HAL_GetTick();
       pwms_pub_.publish(&pwms_msg_);
+    }
+  if(HAL_GetTick() - thrust_pub_last_time_ > THRUST_PUB_INTERVAL)
+    {
+      thrust_pub_last_time_ = HAL_GetTick();
+      thrust_pub_.publish(&thrust_msg_);
     }
 
   if(dshot_)
@@ -434,8 +447,13 @@ void AttitudeController::reset(void)
   for(int i = 0; i < MAX_MOTOR_NUMBER; i++)
     {
       target_thrust_[i] = 0;
-      target_pwm_[i] = IDLE_DUTY;
-      pwm_test_value_[i] = IDLE_DUTY;
+      if (i < 4){
+        target_pwm_[i] = IDLE_DUTY;
+        pwm_test_value_[i] = IDLE_DUTY;
+      }else{
+        target_pwm_[i] = 0.0;
+        pwm_test_value_[i] = 0.0;
+      }
 
       base_thrust_term_[i] = 0;
       roll_pitch_term_[i] = 0;
@@ -526,14 +544,19 @@ void AttitudeController::fourAxisCommandCallback( const spinal::FourAxisCommand 
   target_angle_[X] = cmd_msg.angles[0];
   target_angle_[Y] = cmd_msg.angles[1];
 
+  int max_yaw_term_index = max_yaw_term_index_;
+  float max_yaw_thrust_d_gain = thrust_d_gain_[max_yaw_term_index_][Z];
+
   for(int i = 0; i < motor_number_; i++)
     {
       // base thrust is about the z control
       base_thrust_term_[i] = cmd_msg.base_thrust[i];
 
       // reconstruct the pi term for yaw (temporary measure for pwm saturation avoidance)
-      if(max_yaw_term_index_ != -1)
-        extra_yaw_pi_term_[i] = cmd_msg.angles[Z] * thrust_d_gain_[i][Z] / thrust_d_gain_[max_yaw_term_index_][Z];
+      // if(max_yaw_term_index_ != -1)
+      //   extra_yaw_pi_term_[i] = cmd_msg.angles[Z] * thrust_d_gain_[i][Z] / thrust_d_gain_[max_yaw_term_index_][Z];
+      if(max_yaw_term_index != -1)
+        extra_yaw_pi_term_[i] = cmd_msg.angles[Z] * thrust_d_gain_[i][Z] / max_yaw_thrust_d_gain;
     }
 
 #ifndef SIMULATION
@@ -712,17 +735,17 @@ void AttitudeController::maxYawGainIndex()
 void AttitudeController::pwmTestCallback(const spinal::PwmTest& pwm_msg)
 {
 #ifndef SIMULATION  
-  if(pwm_msg.pwms_length && !pwm_test_flag_)
-    {
-      pwm_test_flag_ = true;
-      nh_->logwarn("Enter pwm test mode");
-    }
-  else if(!pwm_msg.pwms_length && pwm_test_flag_)
-    {
-      pwm_test_flag_ = false;
-      nh_->logwarn("Escape from pwm test mode");
-      return;
-    }
+  // if(pwm_msg.pwms_length && !pwm_test_flag_)
+  //   {
+  //     pwm_test_flag_ = true;
+  //     nh_->logwarn("Enter pwm test mode");
+  //   }
+  // else if(!pwm_msg.pwms_length && pwm_test_flag_)
+  //   {
+  //     pwm_test_flag_ = false;
+  //     nh_->logwarn("Escape from pwm test mode");
+  //     return;
+  //   }
 
   if(pwm_msg.motor_index_length)
     {
@@ -734,33 +757,57 @@ void AttitudeController::pwmTestCallback(const spinal::PwmTest& pwm_msg)
         }
       for(int i = 0; i < pwm_msg.motor_index_length; i++){
         int motor_index = pwm_msg.motor_index[i];
-                /*fail safe*/
-        if (pwm_msg.pwms[i] >= IDLE_DUTY && pwm_msg.pwms[i] <= MAX_PWM)
+        if (motor_index < 4)
           {
-            pwm_test_value_[motor_index] = pwm_msg.pwms[i];
+            if (pwm_msg.pwms[i] >= IDLE_DUTY && pwm_msg.pwms[i] < MAX_PWM)
+              {
+                pwm_test_value_[motor_index] = pwm_msg.pwms[i];
+              }
+            else
+              {
+                nh_->logwarn("The value of pwm is invalid for motors");
+                pwm_test_value_[motor_index] = IDLE_DUTY;
+              }
           }
         else
           {
-            nh_->logwarn("FAIL SAFE!  Invaild PWM value for motor");
-            pwm_test_value_[motor_index] = IDLE_DUTY;
+            pwm_test_value_[motor_index] = pwm_msg.pwms[i];
+          }
+        if (!pwm_test_flag_)
+          {
+            target_pwm_[motor_index] = pwm_test_value_[motor_index];
           }
       }
     }
   else
     {
       /*Simultaneous test mode*/
-      for(int i = 0; i < MAX_MOTOR_NUMBER; i++){
-        /*fail safe*/
-        if (pwm_msg.pwms[0] >= IDLE_DUTY && pwm_msg.pwms[0] <= MAX_PWM)
-          {
-            pwm_test_value_[i] = pwm_msg.pwms[0];
+      if(pwm_msg.pwms_length)
+        {
+          if(!pwm_test_flag_){
+            pwm_test_flag_ = true;
+            nh_->logwarn("Enter pwm test mode");
           }
-        else
-          {
-            nh_->logwarn("FAIL SAFE!  Invaild PWM value for motors");
-            pwm_test_value_[i] = IDLE_DUTY;
+          /*Simultaneous test mode*/
+          for(int i = 0; i < MAX_MOTOR_NUMBER; i++){
+            /*fail safe*/
+              if (pwm_msg.pwms[0] >= IDLE_DUTY && pwm_msg.pwms[0] < MAX_PWM)
+                {
+                  pwm_test_value_[i] = pwm_msg.pwms[0];
+                }
+              else
+                {
+                  nh_->logwarn("The value of pwm is invalid for motors");
+                  pwm_test_value_[i] = IDLE_DUTY;
+                }
+            // pwm_test_value_[i] = pwm_msg.pwms[0];
           }
-      }
+        }
+      else if(!pwm_msg.pwms_length && pwm_test_flag_)
+        {
+          pwm_test_flag_ = false;
+          nh_->logwarn("Escape from pwm test mode");
+        }
     }
 #endif
 }
@@ -795,11 +842,14 @@ void AttitudeController::setMotorNumber(uint8_t motor_number)
 
 #ifdef SIMULATION
       pwms_msg_.motor_value.resize(motor_number);
+      thrust_msg_.thrust.resize(motor_number);
       control_term_msg_.motors.resize(control_term_msg_size);
 #else
       pwms_msg_.motor_value_length = motor_number;
+      thrust_msg_.thrust_length = motor_number;
       control_term_msg_.motors_length = control_term_msg_size;
       pwms_msg_.motor_value = new uint16_t[motor_number];
+      thrust_msg_.thrust = new float[motor_number];
       control_term_msg_.motors = new spinal::RollPitchYawTerm[control_term_msg_size];
 #endif
       for(int i = 0; i < motor_number; i++) pwms_msg_.motor_value[i] = 0;
@@ -1061,6 +1111,7 @@ void AttitudeController::pwmConversion()
         }
 
       /* for ros */
+      thrust_msg_.thrust[i] = target_thrust_[i];
       pwms_msg_.motor_value[i] = (target_pwm_[i] * 2000);
     }
 }
