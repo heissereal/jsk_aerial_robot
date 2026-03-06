@@ -5,7 +5,7 @@
 
 HapticsController::HapticsController(ros::NodeHandle& nh){
     ros::NodeHandle pnh("~");
-    pnh.param("thrust_strength", thrust_strength_, 1.0);
+    pnh.param("thrust_strength", thrust_strength_, 1.2);
     pnh.param("waypoint_reached_thresh", waypoint_reached_thresh_, 0.3);
     pnh.param("base_thrust", base_thrust_, 4.0);
     pnh.param("use_lidar", lidar_flag_, true);
@@ -112,10 +112,10 @@ void HapticsController::wptCb(const geometry_msgs::PoseArray::ConstPtr& msg){
 
 //thrust_strength_をわからなさに応じて変更できるようにする
 double HapticsController::calThrustPower(double alpha) {
-    thrust_ = std::min(5.0, base_thrust_ * thrust_strength_ * forward_gain_ * std::abs(alpha));
+    thrust_ = std::min(8.0, base_thrust_ * thrust_strength_ * forward_gain_ * std::abs(alpha));
     ROS_ERROR("base_thrust: %.2f, thrust_strength: %.2f, forward_gain: %.2f, total_thrust: %.2f", base_thrust_,thrust_strength_, forward_gain_, thrust_);
     double pwm = -0.000679 * thrust_ * thrust_ + 0.044878 * thrust_ + 0.5;
-    return std::min(pwm, 0.8);
+    return std::min(pwm, 0.76);
 }
 
 void HapticsController::controlManual() {
@@ -378,10 +378,10 @@ Eigen::Vector4d HapticsController::computeAlphaFixedTotal(const Eigen::Vector2d&
     Eigen::Vector2d d_world = dir / n;
 
     Eigen::Matrix<double,2,4> motor_base;
-    motor_base <<  1, -1, -1,  1,
-         -1, -1,  1,  1;
-        // motor_base <<  -1, 1, 1, -1,
-    //   1, 1,  -1,  -1;
+    // motor_base <<  1, -1, -1,  1,
+    //      -1, -1,  1,  1;
+    motor_base <<  -1, 1, 1, -1,
+      1, 1,  -1,  -1;
     Eigen::Matrix2d R;
     R << cos_yaw, -sin_yaw,
          sin_yaw,  cos_yaw;
@@ -520,11 +520,11 @@ void HapticsController::outputPulsePattern(double target_norm, const std::vector
 
 
     if (pulse_count_ == 0) {
-        if (target_norm < 1.5) {
+        if (target_norm < 0.4) {
             pulse_target_ = 1 * 2;
-        } else if (target_norm < 2.0) {
+        } else if (target_norm < 0.8) {
             pulse_target_ = 2 * 2;
-	} else if (target_norm < 2.5) {
+	} else if (target_norm < 1.2) {
             pulse_target_ = 3 * 2;
         } else {
             pulse_target_ = 4 * 2;
@@ -563,7 +563,7 @@ void HapticsController::outputPulseLengthPattern(double target_norm, const std::
     static const int min_on_interval = 10;
     static const int max_on_interval = 110;
 
-    double normalized = std::min(1.0, std::max(0.0, target_norm / 3.0));
+    double normalized = std::min(1.0, std::max(0.0, target_norm / 1.2));
     int on_interval = min_on_interval + normalized * (max_on_interval - min_on_interval);
 
     outputPulse(motor_pwms, on_interval);
@@ -592,8 +592,8 @@ void HapticsController::outputPulse(const std::vector<float>& motor_pwms, int on
 
 void HapticsController::outputStrength(double target_norm)
 {
-    const double d_max = 5.0;
-    double x = std::min(std::max(0.001, target_norm/d_max),1.0);
+    const double d_max = 0.6;
+    double x = std::min(std::max(0.001, target_norm/d_max), 1.0);
     const double r_min = 2.5;
     const double r_max = 4.0;
     double rating = r_min + (r_max - r_min) * x;
@@ -605,7 +605,7 @@ void HapticsController::outputStrength(double target_norm)
     
     double raw_strength = F_des / base_thrust_;
 
-    thrust_strength_ = std::min(1.2, std::max(0.53, raw_strength));
+    thrust_strength_ = std::min(1.2, std::max(0.7, raw_strength));
 }
 
 void HapticsController::warnWrongDirectionPattern()
