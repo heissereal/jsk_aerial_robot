@@ -18,8 +18,8 @@ class PathUI:
         self.pub_wps = rospy.Publisher("/nav/waypoints", PoseArray, queue_size=1, latch=True)
         self.pub_obs = rospy.Publisher("/nav/obstacles/circles", Float32MultiArray, queue_size=1, latch=True)
         self.field_pub = rospy.Publisher("/nav/field", Marker, queue_size=1, latch=True)
-        self.text_pub = rospy.Publisher("/nav/text", MarkerArray, queue_size=1, latch=True)
-        self.path_pub = rospy.Publisher("/nav/path_marker", Marker, queue_size=1, latch=True)
+        self.text_pub = rospy.Publisher("/nav/text", MarkerArray, queue_size=1, latch=False)
+        self.path_pub = rospy.Publisher("/nav/path_marker", Marker, queue_size=1, latch=False)
         self.path_pts_pub = rospy.Publisher("/nav/path_points", PoseArray, queue_size=1, latch=True)
 
         self.waypoint_for_robot_pub = rospy.Publisher("/waypoints", PoseArray, queue_size=1)
@@ -31,7 +31,7 @@ class PathUI:
 
 
         self.rebuild_delay = rospy.get_param("~rebuild_delay", 0.05)
-        self.rebuild_rate  = rospy.get_param("~rebuild_rate", 20.0)
+        self.rebuild_rate  = rospy.get_param("~rebuild_rate", 30.0)
 
         self._lock = threading.RLock()
         self._dirty = False
@@ -41,6 +41,7 @@ class PathUI:
 
         # state
         self.frame = rospy.get_param("~frame_id", "camera_init") ###### should change
+        # self.frame = rospy.get_param("~frame_id", "world") ###### should change
         self.wp_radius_vis = rospy.get_param("~wp_radius_vis", 0.08)
         self.obs_default_r = rospy.get_param("~obs_default_radius", 0.35)
         self.obstacles = []  # list of dict: {"name": str, "x": float, "y": float, "r": float}
@@ -126,7 +127,7 @@ class PathUI:
         m.type = Marker.LINE_STRIP
         m.action = Marker.ADD
 
-        m.scale.x = 0.03# line width
+        m.scale.x = 0.03 # line width
 
         m.color.r = 1.0
         m.color.g = 0.5
@@ -146,12 +147,14 @@ class PathUI:
         ctrl.always_visible = True
         if self.mode == "edit":
             ctrl.interaction_mode = InteractiveMarkerControl.MOVE_PLANE
-            ctrl.orientation.w = 1.0
+            s = 1.0 / math.sqrt(2.0)
+            ctrl.orientation.w = s
             ctrl.orientation.x = 0.0
-            ctrl.orientation.y = 1.0  # XY平面でドラッグ
+            ctrl.orientation.y = s  # XY平面でドラッグ
             ctrl.orientation.z = 0.0
         else:
             ctrl.interaction_mode = InteractiveMarkerControl.NONE
+            ctrl.orientation.w = 1.0
         return ctrl
 
     def insert_im(self, name, pose, marker, is_obstacle=False):
@@ -188,13 +191,15 @@ class PathUI:
     def add_waypoint(self, x,y,z):
         with self._lock:
             self.user_set_waypoints.append({"name":"","x":x,"y":y,"z":z, "auto": False})
+        self.update_all_marker()
+        self.server.applyChanges()
         self.request_rebuild(delay=0.02)
 
     def add_mode_button(self):
         im = InteractiveMarker()
         im.header.frame_id = self.frame
         im.name = "btn_mode"
-        im.description = ""
+        im.description = "mode"
         im.scale = 1.0
 
         im.pose.position.x = 2.0
@@ -221,18 +226,18 @@ class PathUI:
         m.header.stamp = rospy.Time.now()
         m.id = 0
         m.ns = "FIELD"
-        m.pose = Pose(); m.pose.position.x=0.0; m.pose.position.y=0.0; m.pose.position.z=0.0; m.pose.orientation.w=1.0
+        m.pose = Pose(); m.pose.position.x=1.75; m.pose.position.y=0.0; m.pose.position.z=0.0; m.pose.orientation.w=1.0
         m.type = Marker.CUBE
         m.action = Marker.ADD
-        m.scale.x = 4.0; m.scale.y = 4.0; m.scale.z = 0.01
-        m.color.r = 0.0; m.color.g = 1.0; m.color.b = 0.0; m.color.a = 0.2
+        m.scale.x = 4.0; m.scale.y = 2.5; m.scale.z = 0.01
+        m.color.r = 0.0; m.color.g = 2.0; m.color.b = 0.0; m.color.a = 0.2
         self.field_pub.publish(m)
 
     def add_waypoint_name(self):
         text_array = MarkerArray()
         for i, wp in enumerate(self.waypoints):
             name = wp.get("name", "")
-            if not name:
+            if (not name) or (not str(name).strip()):
                 name = f"{WAYPOINT_PREFIX}{i}"
                 wp["name"] = name
             text = Marker()
@@ -244,9 +249,18 @@ class PathUI:
             text.type = Marker.TEXT_VIEW_FACING
             text.action = Marker.ADD
             text.scale.z = 0.15
-            text.text = wp["name"]
+            text.text = name
             text.color.r = 0.0; text.color.g = 0.5; text.color.b = 0.8; text.color.a = 1.0
             text_array.markers.append(text)
+
+        for j in range(len(self.waypoints),self.last_text_cnt):
+            m = Marker()
+            m.header.frame_id = self.frame
+            m.header.stamp = rospy.Time.now()
+            m.ns = "wp_text"
+            m.id = j
+            m.action = Marker.DELETE
+            text_array.markers.append(m)
 
         self.text_pub.publish(text_array)
         self.last_text_cnt = len(self.waypoints)
@@ -276,6 +290,14 @@ class PathUI:
             return
 
         if i == 0:
+            fx, fy, fz = self.wp0_fixed
+            pose = Pose()
+            pose.position.x = fx
+            pose.position.y = fy
+            pose.position.z = fz
+            pose.orientation.w = 1.0
+            self.server.setPose(name, pose)
+            self.server.applyChanges()
             return  # wp_0 is fixed
 
         with self._lock:
@@ -287,7 +309,9 @@ class PathUI:
                 i = self.find_obs(name)
                 if i >= 0:
                     self.obstacles[i]["x"]=x; self.obstacles[i]["y"]=y
-        self.request_rebuild(delay=0.0)
+        self._dirty = True
+        self._next_rebuild_time = rospy.Time.now() + rospy.Duration(self.rebuild_delay)
+        # self.request_rebuild(delay=0.0)
 
     def fb_button(self, fb):
         if fb.marker_name != "btn_mode":
@@ -296,6 +320,8 @@ class PathUI:
             return
 
         self.mode = "plan" if self.mode == "edit" else "edit"
+        self.update_all_marker()
+        self.server.applyChanges()
         self.request_rebuild(delay=0.08)
 
     def request_rebuild(self, delay=None):
@@ -326,8 +352,8 @@ class PathUI:
                 wps = copy.deepcopy(self.user_set_waypoints)
                 self.waypoints = self.add_compensate_waypoints(wps)
 
-        self.clear_all_text()
-        self.update_all_marker()
+        # self.clear_all_text()
+        # self.update_all_marker()
         self.publish_arrays()
 
     # ---------- menu callbacks ----------
@@ -357,6 +383,8 @@ class PathUI:
             if i >= 0 and i < len(self.user_set_waypoints):
                 self.user_set_waypoints.pop(i)
 
+        self.update_all_marker()
+        self.server.applyChanges()
         self.request_rebuild(delay=0.02)
 
         # # self.server.erase(name)
@@ -376,7 +404,20 @@ class PathUI:
             self.server.clear()
             self.add_mode_button()
 
-        for i, wp in enumerate(self.waypoints):
+        if self.mode == "edit":
+            draw_wps = copy.deepcopy(self.user_set_waypoints)
+        else:
+            draw_wps = self.add_compensate_waypoints(copy.deepcopy(self.user_set_waypoints))
+
+        if len(draw_wps) > 0:
+            fx, fy, fz = self.wp0_fixed
+            draw_wps[0]["x"] = fx
+            draw_wps[0]["y"] = fy
+            draw_wps[0]["z"] = fz
+            draw_wps[0]["auto"] = False
+
+
+        for i, wp in enumerate(draw_wps):
             wp["name"] = f"{WAYPOINT_PREFIX}{i}"
             pose = Pose()
             pose.position.x = wp["x"]
