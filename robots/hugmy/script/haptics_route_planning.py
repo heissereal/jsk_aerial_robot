@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+# guidance testがresetとinit時に立ち上げ直した時にtopicが出せれて，そのtopicが出された時にplanにいたらpubを出す
 import rospy, copy, math, threading
 from interactive_markers.interactive_marker_server import *
 from interactive_markers.menu_handler import *
 from visualization_msgs.msg import InteractiveMarker, InteractiveMarkerControl, Marker,MarkerArray
 from geometry_msgs.msg import Pose, PoseArray,Point
 from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Empty
 
 WAYPOINT_PREFIX = "wp_"
 OBST_PREFIX = "obs_"
@@ -22,11 +24,13 @@ class PathUI:
         self.path_pub = rospy.Publisher("/nav/path_marker", Marker, queue_size=1, latch=False)
         self.path_pts_pub = rospy.Publisher("/nav/path_points", PoseArray, queue_size=1, latch=True)
 
+        self.done_sub = rospy.Subscriber("/guidance/reset_done",Empty,self.reset_cb, queue_size=1)
+
         self.waypoint_for_robot_pub = rospy.Publisher("/waypoints", PoseArray, queue_size=1)
 
         self.mode = rospy.get_param("~mode", "edit")  # "edit" or "plan"
 
-        self.max_seg_len = rospy.get_param("~max_seg_len", 0.5)
+        self.max_seg_len = rospy.get_param("~max_seg_len", 1.0)
         self.path_z = rospy.get_param("~path_z", 0.0)
 
 
@@ -70,6 +74,14 @@ class PathUI:
             self.add_obstacle(x,y,r)
 
         self.add_field()
+
+    def reset_cb(self,msg):
+        rospy.logwarn("Received /guidance/reset_done")
+        if self.mode == "plan":
+            rospy.logwarn("Current mode is plan, re-publishing plan topics")
+            self.publish_arrays()
+        else:
+            rospy.logwarn("Current mode is not plan, do nothing")
 
     def clear_all_text(self):
         ma = MarkerArray()
