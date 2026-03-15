@@ -1,13 +1,9 @@
 <?xml version="1.0"?>
 <launch>
-  <arg name="robot_id" default="1"/>
-  <arg name="robot_ns" value="quadrotor$(arg robot_id)"/>
-  <arg name="config_dir" default="$(find hugmy)/config"/>
-  <include file="$(find aerial_robot_model)/launch/aerial_robot_model.launch">
-    <arg name="headless" value="false" />
-    <arg name="robot_model" value="$(find hugmy)/urdf/robot.urdf.xacro"/>
-    <arg name="robot_ns" value="$(arg robot_ns)" />
-    <arg name="rviz_config" value="$(arg config_dir)/rviz_config.rviz"/>
-    <arg name="rviz_init_pose" value="$(arg config_dir)/RvizInit.yaml"/>
-  </include>
+  <!-- <arg name="headless" default="true" /> -->
+  <arg name="config_dir" default="$(find hugmy)/config" />
+  <arg name="rviz_config" value="$(arg config_dir)/rviz_interactive_ui.rviz"/>
+  <!-- rviz -->
+  <node name="$(anon rviz)" pkg="rviz" type="rviz" args="-d $(arg rviz_config)" respawn="true"/> <!-- unless="$(arg headless)"/> -->
+  <!-- <node pkg="hugmy" type ="haptics_route_planning.py" name="path_ui" output="screen" /> -->
 </launch>
