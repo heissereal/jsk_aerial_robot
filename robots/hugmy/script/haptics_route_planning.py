@@ -64,7 +64,7 @@ class PathUI:
         self.publish_arrays()
 
         # initial seeds
-        init_wps = rospy.get_param("~init_waypoints", [[0,0,0],[2,0,0],[2,2,0]])
+        init_wps = rospy.get_param("~init_waypoints", [[0,0,0],[2,0,0],[2,1,0]])
         self.wp0_fixed = rospy.get_param("~wp0_fixed_xyz", [0.0, 0.0, 0.0])
         for i, p in enumerate(init_wps):
            self.add_waypoint(p[0], p[1], p[2])
@@ -109,17 +109,19 @@ class PathUI:
         button.id = 0
         button.type = Marker.CUBE
         button.pose.orientation.w = 1.0
-        button.scale.x = 0.18; button.scale.y = 0.35; button.scale.z = 0.06
-        button.color.r = 0.2; button.color.g = 0.2; button.color.b = 0.2; button.color.a = 1.0
+        button.pose.position.x = -3.0; button.pose.position.y = -3.0
+        button.scale.x = 0.20; button.scale.y = 0.60; button.scale.z = 0.01
+        button.color.r = 1.0; button.color.g = 1.0; button.color.b = 1.0; button.color.a = 1.0
 
         text = Marker()
         text.ns = "btn"
         text.id = 1
         text.type = Marker.TEXT_VIEW_FACING
         text.pose.position.z = 0.06
+        text.pose.position.x = -3.0; text.pose.position.y = -3.0
         text.pose.orientation.w = 1.0
-        text.scale.z = 0.10
-        text.color.r = 1.0; text.color.g = 1.0; text.color.b = 1.0; text.color.a = 1.0
+        text.scale.z = 0.1
+        text.color.r = 1.0; text.color.g = 0.7; text.color.b = 0.0; text.color.a = 1.0
         text.text = label
         return button, text
 
@@ -539,7 +541,6 @@ class PathUI:
 
         self.waypoint_for_robot_pub.publish(pa)
 
-        
 
 if __name__ == "__main__":
     rospy.init_node("path_ui")
