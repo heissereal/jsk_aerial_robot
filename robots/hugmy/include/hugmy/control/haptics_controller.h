@@ -63,7 +63,7 @@ protected:
     double computeDirectionGain(const Eigen::Vector2d& d_body);
 
     void outputStrength(double target_norm);
-    void outputPulse(const std::vector<float>& motor_pwms, int on_interval);
+    void outputPulse(const std::vector<float>& motor_pwms, int on_interval, int base_interval);
     void outputPulseLengthPattern(double target_norm, const std::vector<float>& motor_pwms);
 
     void publishEmotion(const Eigen::Vector2d& target_vec, double target_norm);
@@ -143,6 +143,26 @@ protected:
     int emotion_cnt_ = 0;
 
     int interaction_state_;
+
+  void looseDownStart(const std::vector<float>& from_pwms);
+  bool tickLooseDown();
+  void outputProximityPattern(double target_norm, const std::vector<float>& motor_pwms);
+  void outputBrakePulse(const Eigen::Vector2d& target_vec);
+  void handleWrongDirection(const Eigen::Vector2d& target_vec, double target_norm);
+  void outputCorrectionAfterBrake(const Eigen::Vector2d& target_vec, double target_norm);
+  int distanceToPause(double target_norm);
+
+  std::vector<float> ramp_from_;
+  bool loose_down_ = false;
+  int loose_down_step_ = 0;
+  int all_loose_down_steps_ = 12;
+  int brake_ramp_ = 2;
+
+  double cooldown_short_sec_ = 1.0;
+  double cooldown_long_sec_ = 2.0;
+
+  bool was_wrong_dir_ = false;
+  
 };
 
 #endif

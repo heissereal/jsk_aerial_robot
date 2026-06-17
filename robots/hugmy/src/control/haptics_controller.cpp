@@ -141,7 +141,8 @@ void HapticsController::controlManual() {
       outputStrength(target_norm);
       motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
       int on_interval_default = 50;
-      outputPulse(motor_pwms_, on_interval_default);
+      int off_interval_default = 50;
+      outputPulse(motor_pwms_, on_interval_default, off_interval_default);
     }else{
       motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
       if (norm_mode_switch_ == 1){
@@ -185,30 +186,30 @@ void HapticsController::controlAuto() {
     if (min_target_norm_ < waypoint_reached_thresh_) {
       ROS_INFO("Waypoint %d reached (%.2f, %.2f).", current_wp_idx_, target_x_, target_y_);
       if (!waypoints_.empty() && current_wp_idx_ + 1 < (int)waypoints_.size()) {
-	current_wp_idx_++;
-	const Eigen::Vector2d& wp = waypoints_[current_wp_idx_];
+        current_wp_idx_++;
+        const Eigen::Vector2d& wp = waypoints_[current_wp_idx_];
 
-	target_x_ = wp.x();
-	target_y_ = wp.y();
+        target_x_ = wp.x();
+        target_y_ = wp.y();
 
-	first_haptics_done_ = false;
-	haptics_finished_flag_ = false;
-	finished_cnt_ = 0;
-	min_target_norm_ = std::numeric_limits<double>::infinity();
-	ROS_INFO("Switching to waypoint %d: (%.2f, %.2f)", current_wp_idx_, target_x_, target_y_);
+        first_haptics_done_ = false;
+        haptics_finished_flag_ = false;
+        finished_cnt_ = 0;
+        min_target_norm_ = std::numeric_limits<double>::infinity();
+        ROS_INFO("Switching to waypoint %d: (%.2f, %.2f)", current_wp_idx_, target_x_, target_y_);
       } else {
-	ROS_ERROR("Final waypoint reached, stopping motors.");
-	vibratePwms();
-	finished_cnt_ += 1;
-	if (finished_cnt_ > 500){
-	  haptics_finished_flag_ = true;
-	  publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
-	  interaction_state_ = 4;
-	  std_msgs::Int8 interaction_msg;
-	  interaction_msg.data = interaction_state_;
-	  interaction_pub_.publish(interaction_msg); 
-	}
-	return;
+        ROS_ERROR("Final waypoint reached, stopping motors.");
+        vibratePwms();
+        finished_cnt_ += 1;
+        if (finished_cnt_ > 500){
+          haptics_finished_flag_ = true;
+          publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
+          interaction_state_ = 4;
+          std_msgs::Int8 interaction_msg;
+          interaction_msg.data = interaction_state_;
+          interaction_pub_.publish(interaction_msg); 
+        }
+        return;
       }
       tgt_pos << target_x_, target_y_;
       target_vec = tgt_pos - cur_pos;
@@ -220,7 +221,8 @@ void HapticsController::controlAuto() {
 	outputStrength(target_norm);
 	motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
 	int on_interval_default = 50;
-	outputPulse(motor_pwms_, on_interval_default);
+        int off_interval_default = 50;
+	outputPulse(motor_pwms_, on_interval_default, off_interval_default);
       }else{
 	motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
 	if (norm_mode_switch_ == 1){
@@ -261,38 +263,44 @@ void HapticsController::controlAuto() {
         return;
     }else{
         isApproachingTarget(target_vec, target_norm);
-	if (nav_state_ == NavState::APPROACHING) {
-	  ROS_INFO("Approaching target, not outputting haptics.");
-	  publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
-	} else if (nav_state_ == NavState::WRONG_DIR) {
-	  ROS_WARN("Wrong direction. Warn + show correct direction with long pulse.");
-	  warnWrongDirectionPattern();
-	  if (isArmRaised()) {
-	    outputStrength(target_norm);
-	    motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
-	    int on_interval = dotAwareOnInterval(dot_);
-	    outputPulse(motor_pwms_, on_interval);
-	  }else{
-	    // 腕を下げている場合 → 振動パターン
-	    ROS_INFO("Arm is down, vibrating haptics.");
-	    vibratePwms();
-	  }
-	} else { // STUCK
-	  ROS_WARN("Stuck. Increasing pulse length gradually.");
-	  if (!isArmRaised()) {
-	    vibratePwms();
-	  } else {
-	    outputStrength(target_norm);
-	    motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
-	    int on_interval = stuckAwareOnInterval();
-	    outputPulse(motor_pwms_, on_interval);
-	  }
-	}
-	if ((ros::Time::now() - last_check_time_).toSec() > 1.0) {  // 5s
-	  publishEmotion(target_vec,target_norm);
-	  last_check_time_ = ros::Time::now();
-    }
-    
+        if (nav_state_ == NavState::APPROACHING) {
+          ROS_INFO("Approaching target, not outputting haptics.");
+          publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
+        } else if (nav_state_ == NavState::WRONG_DIR) {
+          ROS_WARN("Wrong direction. Warn + show correct direction with long pulse.");
+          handleWrongDirection(target_vec, target_norm); //make human stop -> STUCK // TODO if human dont stop, what do next?
+          // warnWrongDirectionPattern();
+          // if (isArmRaised()) {
+          //   outputStrength(target_norm);
+          //   motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
+          //   int on_interval = dotAwareOnInterval(dot_);
+          //   outputPulse(motor_pwms_, on_interval);
+          // }else{
+          //   // 腕を下げている場合 → 振動パターン
+          //   ROS_INFO("Arm is down, vibrating haptics.");
+          //   vibratePwms();
+          // }
+
+        } else { // STUCK
+          ROS_WARN("Stuck. Increasing pulse length gradually.");
+          if (!isArmRaised()) {
+            vibratePwms();
+          }else if (was_wrong_dir_){
+            outputCorrectionAfterBrake(target_vec, target_norm);
+          }else{
+          // } else {
+	  //   outputStrength(target_norm);
+            motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
+            outputProximityPattern(target_norm, motor_pwms_);
+	  //   int on_interval = stuckAwareOnInterval();
+	  //   outputPulse(motor_pwms_, on_interval);
+	  // }
+          }
+        }
+        if ((ros::Time::now() - last_check_time_).toSec() > 1.0) {  // 5s
+          publishEmotion(target_vec,target_norm);
+          last_check_time_ = ros::Time::now();
+        }
     }
 }
 
@@ -377,7 +385,6 @@ Eigen::Vector4d HapticsController::computeAlphaFixedTotal(const Eigen::Vector2d&
     double n = dir.norm();
     if (n < eps || E < eps) return alpha;
     Eigen::Vector2d d_world = dir / n;
-
     Eigen::Matrix<double,2,4> motor_base;
     // motor_base <<  1, -1, -1,  1,
     //      -1, -1,  1,  1;
@@ -387,26 +394,7 @@ Eigen::Vector4d HapticsController::computeAlphaFixedTotal(const Eigen::Vector2d&
     R << cos_yaw, -sin_yaw,
          sin_yaw,  cos_yaw;
     Eigen::Matrix<double, 2, 4> M = R * motor_base;
-    
     Eigen::Vector2d d_body = R.transpose() * d_world;
-
-    const double kx = 1.7;
-    const double ky = 1.0;
-    Eigen::Vector2d d_body_scaled(kx * d_body.x(), ky * d_body.y());
-    ROS_INFO("x: %.2f, y: %.2f", d_body.x(), d_body.y());
-    ROS_INFO("x_scaled: %.2f, y: %.2f", d_body_scaled.x(), d_body_scaled.y());
-
-    if (d_body_scaled.norm() > eps) {
-        d_world = (R * d_body_scaled).normalized();
-    } else {
-        d_world = dir / n;
-    }
-
-    if (d_body.norm() > eps) {
-        d_world = (R * d_body).normalized();
-    } else {
-        d_world = dir / n;
-    }
 
     int best_idx = -1;
     double best_cos = -1.0;
@@ -502,7 +490,7 @@ void HapticsController::vibratePwms(){
     ROS_INFO("Vibration pattern completed.");
 }
 void HapticsController::outputPulsePattern(double target_norm, const std::vector<float>& motor_pwms){
-    static const int rest_toggle_interval = 50;
+  static const int rest_toggle_interval = 50; // method 3
 
     if (in_cooldown_) {
         double elapsed = (ros::Time::now() - cooldown_start_).toSec();
@@ -560,40 +548,21 @@ void HapticsController::outputPulsePattern(double target_norm, const std::vector
     }
 }
 
-void HapticsController::outputPulseLengthPattern(double target_norm, const std::vector<float>& motor_pwms){
-    static const int min_on_interval = 10;
-    static const int max_on_interval = 110;
-
-    double normalized = std::min(1.0, std::max(0.0, target_norm / 1.2));
-    int on_interval = min_on_interval + normalized * (max_on_interval - min_on_interval);
-
-    outputPulse(motor_pwms, on_interval);
-}
-
-void HapticsController::outputPulse(const std::vector<float>& motor_pwms, int on_interval){
-    static const int base_interval = 50;
-    static const int rest_toggle_interval = 50;
-
-    rest_count_ += 1;
-    if (rest_toggle_) {
-      publishHapticsPwm({0,1,2,3}, motor_pwms_);
-      if (rest_count_ > on_interval) {
-        rest_toggle_ = false;
-        rest_count_ = 0;
-      }
-    } else {
-      publishHapticsPwm({0,1,2,3}, {0.5,0.5,0.5,0.5});
-      if (rest_count_ > base_interval) {
-        rest_toggle_ = true;
-        rest_count_ = 0;
-      }
-    }
-    ROS_INFO("Pulse pattern: ON for %d, OFF for %d" ,on_interval, base_interval);
-}
-
-void HapticsController::outputStrength(double target_norm)
+void HapticsController::outputPulseLengthPattern(double target_norm, const std::vector<float>& motor_pwms)//Method 2
 {
-    const double d_max = 0.6;
+  static const int min_on_interval = 10;
+  static const int max_on_interval = 110;
+  static const int base_interval = 50;
+
+  double normalized = std::min(1.0, std::max(0.0, target_norm / 1.2));
+  int on_interval = min_on_interval + normalized * (max_on_interval - min_on_interval);
+
+  outputPulse(motor_pwms, on_interval, base_interval);
+}
+
+void HapticsController::outputStrength(double target_norm)//Method 1
+{
+  const double d_max = 0.6;
     double x = std::min(std::max(0.001, target_norm/d_max), 1.0);
     const double r_min = 2.5;
     const double r_max = 4.0;
@@ -609,12 +578,78 @@ void HapticsController::outputStrength(double target_norm)
     thrust_strength_ = std::min(1.2, std::max(0.7, raw_strength));
 }
 
+void HapticsController::outputPulse(const std::vector<float>& motor_pwms, int on_interval, int base_interval){
+
+  if(tickLooseDown()) return;
+
+    rest_count_ += 1;
+    if (rest_toggle_) {
+      publishHapticsPwm({0,1,2,3}, motor_pwms_);
+      if (rest_count_ > on_interval) {
+        rest_toggle_ = false;
+        rest_count_ = 0;
+        pulse_count_ += 1;
+        looseDownStart(motor_pwms_);
+      }
+    } else {
+      publishHapticsPwm({0,1,2,3}, {0.5,0.5,0.5,0.5});
+      if (rest_count_ > base_interval) {
+        rest_toggle_ = true;
+        rest_count_ = 0;
+      }
+    }
+    ROS_INFO("Pulse pattern: ON for %d, OFF for %d" ,on_interval, base_interval);
+}
+
+void HapticsController::outputProximityPattern(double target_norm, const std::vector<float>& motor_pwms)
+{
+  static const int on_interval = 30;
+  // static const int min_pause = 15;
+  // static const int max_pause = 120;
+  // static const double d_max = 1.2;
+  static const int pulses_per_cycle = 3; //cooldown rhythm
+
+  if (in_cooldown_) {
+    double elapsed = (ros::Time::now() - cooldown_start_).toSec();
+    if (elapsed < cooldown_duration_sec_) {
+      publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
+      return;
+    }
+    in_cooldown_ = false;
+    pulse_count_ = 0;
+    rest_count_ = 0;
+    rest_toggle_ = false;
+  }
+
+  // // direction -> pause length (discrete)
+  int pause_interval = distanceToPause(target_norm);
+
+  // // dot -> pause length 
+  // int on_interval = dotAwareOnInterval(dot_);
+
+  // // direction -> pause length(continuous)
+  // double x = std::min(1.0, std::max(0.0, target_norm / d_max));
+  // int pause_interval = min_pause + (int)(x *(max_pause - min_pause));
+
+  if(tickLooseDown()) return;
+
+  outputPulse(motor_pwms, on_interval, pause_interval);
+  if (pulse_count_ >= pulses_per_cycle){
+    pulse_count_ = 0;
+    rest_count_ = 0;
+    rest_toggle_ = false;
+    in_cooldown_ = true;
+    cooldown_start_ = ros::Time::now();
+    cooldown_duration_sec_ = cooldown_short_sec_;
+  }
+}
+
+// vibration providing warning
 void HapticsController::warnWrongDirectionPattern()
 {
     static int cnt = 0;
     cnt++;
 
-    // ここは「何ループで何秒か」に依存。仮に100Hzなら 15tick=0.15s
     const int on1 = 10;
     const int off1 = 5;
     const int on2 = 10;
@@ -631,6 +666,60 @@ void HapticsController::warnWrongDirectionPattern()
     } else {
         publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
     }
+}
+
+// provide back haptics direction providing warning
+void HapticsController::outputBrakePulse(const Eigen::Vector2d& target_vec)
+{
+  static const int on1 = 6, off1 = 6;
+  static int cnt =0; cnt++;
+  int phase = cnt % (on1 + off1);
+
+  Eigen::Vector2d brake_dir = -target_vec;
+  std::vector<float> brake_pwms = computeMotorPwmFixedTotal(brake_dir, total_thrust_c_);
+
+  if (phase < on1 - brake_ramp_) {
+    publishHapticsPwm({0,1,2,3}, brake_pwms);
+  } else if (phase < on1) {
+    double t = (double)(phase - (on1 - brake_ramp_)) / (double) brake_ramp_;
+    double e = 1.0 - (1.0 - t)* (1.0 - t);
+    std::vector<float> pwm(4, 0.5f);
+    for (int i = 0; i < 4; ++i) pwm[i] = brake_pwms[i] + (0.5f - brake_pwms[i])* (float)e;
+    publishHapticsPwm({0,1,2,3}, pwm);
+  } else {
+    publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
+  }
+}
+
+void HapticsController::handleWrongDirection(const Eigen::Vector2d& target_vec, double target_norm)
+{
+  if (!isArmRaised()) {
+    vibratePwms();
+    return;
+  }
+
+  was_wrong_dir_ = true;
+  outputBrakePulse(target_vec);
+
+}
+
+void HapticsController::outputCorrectionAfterBrake(const Eigen::Vector2d& target_vec, double target_norm)
+{
+  if (in_cooldown_){
+    double elapsed = (ros::Time::now() - cooldown_start_).toSec();
+    if (elapsed < cooldown_duration_sec_) {
+      publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
+      ROS_INFO_THROTTLE(1.0, "In cooldown (%.2f / %.2f sec)", elapsed, cooldown_duration_sec_);
+      return;
+    }
+    in_cooldown_ = false;
+  }
+
+  motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
+  int on_interval = dotAwareOnInterval(dot_);
+  int pause_interval = distanceToPause(target_norm);
+  if (tickLooseDown()) return;
+  outputPulse(motor_pwms_, on_interval, pause_interval);
 }
 
 int HapticsController::stuckAwareOnInterval()
@@ -651,27 +740,15 @@ int HapticsController::dotAwareOnInterval(double dot)
   return (int)std::round(on_interval);
 }
 
-// void HapticsController::isApproachingTarget(const Eigen::Vector2d& target_vec, double target_norm) {
-//     Eigen::Vector2d last_vec = Eigen::Vector2d(target_x_, target_y_) - Eigen::Vector2d(last_pos_.x, last_pos_.y);
-//     Eigen::Vector2d delta_vec = Eigen::Vector2d(pose_.position.x, pose_.position.y) - Eigen::Vector2d(last_pos_.x, last_pos_.y);
-//     approaching_target_flag_ = false;
-//     // if (last_vec_.norm() > target_norm) {
-//     //     if (delta_vec_.norm() < move_distance_threshold_) {
-//     //         approaching_target_flag_ = false;  // 動いていない
-//     //         return;
-//     //     }
-//     //     double dot = last_vec_.normalized().dot(delta_vec_.normalized());
-//     //     if (dot > direction_threshold_) {
-//     //         last_pos_ = pose_.position;
-//     //         approaching_target_flag_ = true;  // 一定以上方向が合っている
-//     //     }else{
-//     //         approaching_target_flag_ = false;
-//     //     }
-//     // }else{
-//     //     approaching_target_flag_ = false;
-//     // }
-// }
+int HapticsController::distanceToPause(double target_norm){
+  if (target_norm < 0.4) return 15;
+  else if (target_norm < 0.8) return 45;
+  else if (target_norm < 1.2) return 80;
+  else return 120;
+}
 
+
+//******* Human state ***************
 void HapticsController::isApproachingTarget(const Eigen::Vector2d& target_vec, double target_norm)
 {
     const ros::Time now = ros::Time::now();
@@ -692,10 +769,9 @@ void HapticsController::isApproachingTarget(const Eigen::Vector2d& target_vec, d
 
     const double eps = 1e-9;
     Eigen::Vector2d to_target = target_vec;  // tgt - cur
-    double dot = 0.0;
     if (to_target.norm() > eps && delta_vec.norm() > eps) {
         dot_ = to_target.normalized().dot(delta_vec.normalized()); // cos(angle)
-        dot_ = std::max(-1.0, std::min(1.0, dot));
+        dot_ = std::max(-1.0, std::min(1.0, dot_));
     }
 
     Eigen::Vector2d last_cur(last_nav_pos_.x, last_nav_pos_.y);
@@ -704,11 +780,11 @@ void HapticsController::isApproachingTarget(const Eigen::Vector2d& target_vec, d
     const bool progressed = (target_norm + 1e-6) < last_dist;
 
     if (moved < move_distance_threshold_) {
-        stuck_time_sec_ += dt; //動いていない
+        stuck_time_sec_ += dt; //dont move
         nav_state_ = NavState::STUCK;
         approaching_target_flag_ = false;
     } else {
-        // 動いている
+        //move
         stuck_time_sec_ = 0.0;
 
         if (progressed && dot_ > direction_threshold_) {
@@ -727,20 +803,24 @@ void HapticsController::isApproachingTarget(const Eigen::Vector2d& target_vec, d
              (int)nav_state_, moved, dot_, progressed ? 1 : 0, target_norm, last_dist, stuck_time_sec_);
 }
 
+
+bool HapticsController::isArmRaised() {
+    // angle thresh
+    double roll  = imu_.angles[0];
+    double pitch = imu_.angles[1];
+    ROS_INFO("Checking if arm is raised with roll: %.2f, pitch: %.2f", roll,pitch);
+    return (std::abs(roll) < roll_threshold_) && (std::abs(pitch) < pitch_threshold_);
+}
+
+
+
+// ********** others ************
 void HapticsController::toggleSwitch() {
     rest_count_ += 1;
     if (rest_count_ > 50) {
         rest_toggle_ = !rest_toggle_;
         rest_count_ = 0;
     }
-}
-
-bool HapticsController::isArmRaised() {
-    // 角度の閾値を設定
-    double roll  = imu_.angles[0];
-    double pitch = imu_.angles[1];
-    ROS_INFO("Checking if arm is raised with roll: %.2f, pitch: %.2f", roll,pitch);
-    return (std::abs(roll) < roll_threshold_) && (std::abs(pitch) < pitch_threshold_);
 }
 
 void HapticsController::stopAllMotors() {
@@ -785,4 +865,27 @@ void HapticsController::resetNavigationState() {
     last_nav_check_time_ = ros::Time(0);
 
     publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
+}
+
+
+void HapticsController::looseDownStart(const std::vector<float>& from_pwms)
+{
+  ramp_from_ = from_pwms;
+  loose_down_step_ = 0;
+  loose_down_ = true;
+}
+
+
+bool HapticsController::tickLooseDown(){
+  if (!loose_down_) return false;
+  loose_down_step_ += 1;
+  double t = std::min(1.0, (double)loose_down_step_ / (double)all_loose_down_steps_);
+
+  double e = 1.0 - (1.0 -t) *(1.0 - t);
+  std::vector<float> pwm(4, 0.5);
+  for (int i = 0; i < 4; ++i)
+    pwm[i] = ramp_from_[i] + (0.5 - ramp_from_[i])*(float)e;
+  publishHapticsPwm({0,1,2,3},pwm);
+  if (loose_down_step_ >= all_loose_down_steps_){loose_down_ = false;}
+  return true;
 }
