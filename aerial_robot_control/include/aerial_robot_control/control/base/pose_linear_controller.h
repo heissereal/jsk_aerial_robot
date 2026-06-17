@@ -95,6 +95,8 @@ namespace aerial_robot_control
     tf::Vector3 rpy_, target_rpy_;
     tf::Vector3 omega_, target_omega_;
 
+    double computeBuoyancyAcc() const;
+
     virtual void controlCore();
     virtual void sendCmd();
 

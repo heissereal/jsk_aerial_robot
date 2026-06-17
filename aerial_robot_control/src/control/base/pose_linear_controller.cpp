@@ -187,6 +187,14 @@ namespace aerial_robot_control
 
 
     pid_pub_ = nh_.advertise<aerial_robot_msgs::PoseControlPid>("debug/pose/pid", 10);
+
+    ros::NodeHandle env_nh(nh_, "environment");
+    ros::NodeHandle buoy_nh(env_nh, "buoyancy");
+    getParam<double>(nh_,     "robot_volume",    robot_volume_,            0.001);
+    getParam<double>(buoy_nh, "rho_water",       rho_water_,             1000.0);
+    getParam<double>(buoy_nh, "submerged_ratio",  submerged_ratio_,          0.0);
+    getParam<bool>  (buoy_nh, "enabled",          use_gravity_buoyancy_ff_, false);
+    use_gravity_buoyancy_ff_ = use_gravity_buoyancy_ff_ && submerged_ratio_ > 0.0;
   }
 
   void PoseLinearController::reset()
@@ -277,14 +285,8 @@ namespace aerial_robot_control
         target_acc_.setZ(0);
       }
     double z_acc = target_acc_.z();
-    if (use_gravity_buoyancy_ff_) {
-      double g_norm = robot_model_->getGravity().norm();
-      double ratio = std::max(0.0, std::min(submerged_ratio_, 1.0));
-      double buoy_acc = 0.0;
-      if (robot_model_->getMass() > 1e-6)
-        buoy_acc = ratio * rho_water_ * robot_volume_ * g_norm / robot_model_->getMass();
-      z_acc += g_norm - buoy_acc;
-    }
+    if (use_gravity_buoyancy_ff_)
+      z_acc += robot_model_->getGravity().norm() - computeBuoyancyAcc();
     pid_controllers_.at(Z).update(err_z, du_z, err_v_z, z_acc);
     // if(pid_controllers_.at(Z).getErrI() < 0) pid_controllers_.at(Z).setErrI(0);
 
@@ -362,6 +364,13 @@ namespace aerial_robot_control
     pid_msg_.yaw.err_p = err_yaw;
     pid_msg_.yaw.target_d = target_omega_.z();
     pid_msg_.yaw.err_d = target_omega_.z() - omega_.z();
+  }
+
+  double PoseLinearController::computeBuoyancyAcc() const
+  {
+    if (robot_model_->getMass() <= 1e-6) return 0.0;
+    double ratio = std::max(0.0, std::min(submerged_ratio_, 1.0));
+    return ratio * rho_water_ * robot_volume_ * robot_model_->getGravity().norm() / robot_model_->getMass();
   }
 
   void PoseLinearController::sendCmd()

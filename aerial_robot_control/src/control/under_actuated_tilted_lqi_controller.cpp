@@ -68,11 +68,7 @@ void UnderActuatedTiltedLQIController::controlCore()
   tf::Vector3 thrust_acc_w = target_acc_w;
   tf::Vector3 attitude_acc_w = target_acc_w;
 
-  double lambda = std::max(0.0, std::min(submerged_ratio_, 1.0));
-  double buoy_acc = 0.0;
-  if(robot_model_->getMass() > 1e-6){
-    buoy_acc = lambda * rho_water_ * robot_volume_ *g_norm / robot_model_->getMass();
-  }
+  double buoy_acc = computeBuoyancyAcc();
 
   double thrust_acc_norm = thrust_acc_w.length();
   double sign = (thrust_acc_w.z() >= 0) ? 1.0 : -1.0;
@@ -140,8 +136,8 @@ void UnderActuatedTiltedLQIController::controlCore()
 
   ROS_INFO_THROTTLE(
       1.0,
-      "lambda: %.2f, mass: %.2f, buoy_acc: %.3f, vertical_ref: %.3f, target_acc_w: [%.3f %.3f %.3f], thrust_acc_w: [%.3f %.3f %.3f], norm: %.3f, b3: [%.3f %.3f %.3f], pitch: %.3f, roll: %.3f",
-      lambda, robot_model_->getMass(), buoy_acc, vertical_ref,
+      "submerged_ratio: %.2f, mass: %.2f, buoy_acc: %.3f, vertical_ref: %.3f, target_acc_w: [%.3f %.3f %.3f], thrust_acc_w: [%.3f %.3f %.3f], norm: %.3f, b3: [%.3f %.3f %.3f], pitch: %.3f, roll: %.3f",
+      submerged_ratio_, robot_model_->getMass(), buoy_acc, vertical_ref,
       target_acc_w.x(), target_acc_w.y(), target_acc_w.z(),
       thrust_acc_dash.x(), thrust_acc_dash.y(), thrust_acc_dash.z(), thrust_acc_norm, b3_des.x(), b3_des.y(), b3_des.z(),
       target_pitch_, target_roll_);
@@ -228,19 +224,12 @@ void UnderActuatedTiltedLQIController::rosParamInit()
 
   ros::NodeHandle control_nh(nh_, "controller");
   ros::NodeHandle lqi_nh(control_nh, "lqi");
-  ros::NodeHandle env_nh(nh_, "environment");
-  ros::NodeHandle buoy_nh(env_nh, "buoyancy");
 
   getParam<double>(lqi_nh, "trans_constraint_weight", trans_constraint_weight_, 1.0);
   getParam<double>(lqi_nh, "att_control_weight", att_control_weight_, 1.0);
   getParam<double>(lqi_nh, "min_acc_for_attitude", min_acc_for_attitude_, 0.3);
   getParam<double>(lqi_nh, "min_vertical_ref", min_vertical_ref_, 1.0);
   getParam<double>(lqi_nh, "min_b3_z", min_b3_z_, 0.1);
-  getParam<double>(nh_, "robot_volume", robot_volume_, 0.001);
-  getParam<double>(buoy_nh, "rho_water", rho_water_, 1000.0);
-  getParam<double>(buoy_nh, "submerged_ratio", submerged_ratio_, 0.0);
-  getParam<bool>(buoy_nh, "enabled", use_gravity_buoyancy_ff_, false);
-  use_gravity_buoyancy_ff_ = use_gravity_buoyancy_ff_ && submerged_ratio_ > 0.0;
   getParam<bool>(nh_, "allow_negative_thrust", allow_negative_thrust_, false);
 }
 
