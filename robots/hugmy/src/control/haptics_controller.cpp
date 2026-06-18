@@ -9,7 +9,7 @@ HapticsController::HapticsController(ros::NodeHandle& nh){
     pnh.param("waypoint_reached_thresh", waypoint_reached_thresh_, 0.3);
     pnh.param("base_thrust", base_thrust_, 4.0);
     pnh.param("use_lidar", lidar_flag_, true);
-    pnh.param("use_yaml", yaml_mode_, false);
+    pnh.param("use_yaml", yaml_mode_, true);
 
     pwm_haptic_pub_ = nh.advertise<spinal::PwmTest>("/pwm_cmd/haptic", 1);
     emotion_pub_ = nh.advertise<std_msgs::Float32MultiArray>("/vad", 1);
@@ -113,8 +113,12 @@ void HapticsController::wptCb(const geometry_msgs::PoseArray::ConstPtr& msg){
 
 //thrust_strength_をわからなさに応じて変更できるようにする
 double HapticsController::calThrustPower(double alpha) {
-    thrust_ = std::min(8.0, base_thrust_ * thrust_strength_ * forward_gain_ * std::abs(alpha));
-    ROS_ERROR("base_thrust: %.2f, thrust_strength: %.2f, forward_gain: %.2f, total_thrust: %.2f", base_thrust_,thrust_strength_, forward_gain_, thrust_);
+    thrust_ = std::min(8.0, base_thrust_ * forward_gain_ * haptics_thrust_gain_ * std::abs(alpha));
+    if (norm_mode_switch_ == 0){
+      thrust_ = std::min(8.0, base_thrust_ * thrust_strength_ * forward_gain_ * std::abs(alpha));
+    }
+    ROS_ERROR("base_thrust: %.2f, thrust_strength: %.2f, forward_gain: %.2f, haptics_gain: %.2f, total_thrust: %.2f",
+              base_thrust_, thrust_strength_, forward_gain_, haptics_thrust_gain_, thrust_);
     double pwm = -0.000679 * thrust_ * thrust_ + 0.044878 * thrust_ + 0.5;
     return std::min(pwm, 0.76);
 }
@@ -266,12 +270,14 @@ void HapticsController::controlAuto() {
         if (nav_state_ == NavState::APPROACHING) {
           ROS_INFO("Approaching target, not outputting haptics.");
           total_thrust_c_ = base_total_thrust_c_;
+          haptics_thrust_gain_ = 1.0;
           was_wrong_dir_ = false;
           brake_phase_ = BrakePhase::IDLE;
           publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
         } else if (nav_state_ == NavState::WRONG_DIR) {
           ROS_WARN("Wrong direction. Warn + show correct direction with long pulse.");
           total_thrust_c_ = base_total_thrust_c_;
+          haptics_thrust_gain_ = 1.0;
           handleWrongDirection(target_vec, target_norm); //make human stop -> STUCK // TODO if human dont stop, what do next?
           // warnWrongDirectionPattern();
           // if (isArmRaised()) {
@@ -289,9 +295,11 @@ void HapticsController::controlAuto() {
           ROS_WARN("Stuck. Increasing pulse length gradually.");
           if (!isArmRaised()) {
             total_thrust_c_ = base_total_thrust_c_;
+            haptics_thrust_gain_ = 1.0;
             vibratePwms();
           }else{
-            total_thrust_c_ = stuckAwareTotalThrust();
+            total_thrust_c_ = base_total_thrust_c_;
+            haptics_thrust_gain_ = stuckAwareThrustGain();
             if (was_wrong_dir_){
               outputCorrectionAfterBrake(target_vec, target_norm);
             }else{
@@ -792,11 +800,10 @@ double HapticsController::stuckAwareOnDuration()
     return min_on_sec + t * (max_on_sec - min_on_sec);
 }
 
-double HapticsController::stuckAwareTotalThrust()
+double HapticsController::stuckAwareThrustGain()
 {
   double t = std::min(1.0, std::max(0.0, stuck_time_sec_ / stuck_time_to_max_));
-  double gain = 1.0 + t * (stuck_total_thrust_gain_max_ - 1.0);
-  return base_total_thrust_c_ * gain;
+  return 1.0 + t * (stuck_thrust_gain_max_ - 1.0);
 }
 
 double HapticsController::dotAwareOnDuration(double dot)
@@ -954,6 +961,7 @@ void HapticsController::resetNavigationState() {
     stuck_time_sec_ = 0.0;
     dot_ = 0.0;
     forward_gain_ = 1.0;
+    haptics_thrust_gain_ = 1.0;
     total_thrust_c_ = base_total_thrust_c_;
     last_motion_vec_.setZero();
 

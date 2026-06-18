@@ -113,10 +113,11 @@ protected:
     ros::Time cooldown_start_;
     double cooldown_duration_sec_ = 1.0; 
     double forward_gain_ = 1.0;
+    double haptics_thrust_gain_ = 1.0;
   
     double base_total_thrust_c_ = 1.0;
     double total_thrust_c_ = 1.0;
-    double stuck_total_thrust_gain_max_ = 1.5;
+    double stuck_thrust_gain_max_ = 1.5;
     bool emotion_switch_ = false;
     double v_ = 0.0;
     double a_ = 0.0;
@@ -144,7 +145,7 @@ protected:
     double dot_ = 0.0;
 
     double stuckAwareOnDuration();
-    double stuckAwareTotalThrust();
+    double stuckAwareThrustGain();
     double dotAwareOnDuration(double dot);
     void warnWrongDirectionPattern();
     int emotion_cnt_ = 0;
