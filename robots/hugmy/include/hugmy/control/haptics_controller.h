@@ -63,7 +63,7 @@ protected:
     double computeDirectionGain(const Eigen::Vector2d& d_body);
 
     void outputStrength(double target_norm);
-    void outputPulse(const std::vector<float>& motor_pwms, int on_interval, int base_interval);
+    void outputPulse(const std::vector<float>& motor_pwms, double on_duration_sec, double off_duration_sec);
     void outputPulseLengthPattern(double target_norm, const std::vector<float>& motor_pwms);
 
     void publishEmotion(const Eigen::Vector2d& target_vec, double target_norm);
@@ -137,8 +137,8 @@ protected:
     double direction_threshold_ = 0.2;      // cos閾値（0.2なら約78度以内）
     double dot_ = 0.0;
 
-    int stuckAwareOnInterval();
-    int dotAwareOnInterval(double dot);
+    double stuckAwareOnDuration();
+    double dotAwareOnDuration(double dot);
     void warnWrongDirectionPattern();
     int emotion_cnt_ = 0;
 
@@ -150,7 +150,8 @@ protected:
   void outputBrakePulse(const Eigen::Vector2d& target_vec);
   void handleWrongDirection(const Eigen::Vector2d& target_vec, double target_norm);
   void outputCorrectionAfterBrake(const Eigen::Vector2d& target_vec, double target_norm);
-  int distanceToPause(double target_norm);
+  double distanceToPauseDuration(double target_norm);
+  void resetPulseTiming(bool start_on = false);
 
   std::vector<float> ramp_from_;
   bool loose_down_ = false;
@@ -158,7 +159,10 @@ protected:
   int all_loose_down_steps_ = 12;
   int brake_ramp_ = 2;
 
-  double cooldown_short_sec_ = 1.0;
+  double pulse_phase_start_sec_ = 0.0;
+  bool pulse_phase_initialized_ = false;
+
+  double cooldown_short_sec_ = 0.1;
   double cooldown_long_sec_ = 2.0;
 
   bool was_wrong_dir_ = false;
