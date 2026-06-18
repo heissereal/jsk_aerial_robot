@@ -114,7 +114,9 @@ protected:
     double cooldown_duration_sec_ = 1.0; 
     double forward_gain_ = 1.0;
   
+    double base_total_thrust_c_ = 1.0;
     double total_thrust_c_ = 1.0;
+    double stuck_total_thrust_gain_max_ = 1.5;
     bool emotion_switch_ = false;
     double v_ = 0.0;
     double a_ = 0.0;
@@ -122,15 +124,19 @@ protected:
 
 
     enum class NavState { APPROACHING, WRONG_DIR, STUCK };
+    enum class BrakePhase { IDLE, VIBRATION, PAUSE, LONG_PULSE, DONE };
 
     NavState nav_state_ = NavState::APPROACHING;
   
     ros::Time last_nav_check_time_;
     geometry_msgs::Point last_nav_pos_;
+    Eigen::Vector2d last_motion_vec_ = Eigen::Vector2d::Zero();
 
-    double check_dt_sec_ = 0.2;          // チェック周期（細かくする）
+    double check_dt_sec_ = 0.5;          // チェック周期（細かくする）
     double stuck_time_sec_ = 0.0;        // 動いてない時間の蓄積
     double stuck_time_to_max_ = 3.0;     // これ以上で最大パルスに到達
+    double wrong_dir_confirm_sec_ = 1.0;
+    ros::Time wrong_dir_start_time_;
 
     // 判定しきい値
     double move_distance_threshold_ = 0.03; // 0.2秒で3cm未満なら「動いてない」等（要調整）
@@ -138,6 +144,7 @@ protected:
     double dot_ = 0.0;
 
     double stuckAwareOnDuration();
+    double stuckAwareTotalThrust();
     double dotAwareOnDuration(double dot);
     void warnWrongDirectionPattern();
     int emotion_cnt_ = 0;
@@ -147,7 +154,7 @@ protected:
   void looseDownStart(const std::vector<float>& from_pwms);
   bool tickLooseDown();
   void outputProximityPattern(double target_norm, const std::vector<float>& motor_pwms);
-  void outputBrakePulse(const Eigen::Vector2d& target_vec);
+  bool outputBrakePulse(const Eigen::Vector2d& target_vec);
   void handleWrongDirection(const Eigen::Vector2d& target_vec, double target_norm);
   void outputCorrectionAfterBrake(const Eigen::Vector2d& target_vec, double target_norm);
   double distanceToPauseDuration(double target_norm);
@@ -166,6 +173,14 @@ protected:
   double cooldown_long_sec_ = 2.0;
 
   bool was_wrong_dir_ = false;
+  BrakePhase brake_phase_ = BrakePhase::IDLE;
+  ros::Time brake_phase_start_time_;
+  int brake_pulse_count_ = 0;
+  double brake_vibration_on_sec_ = 0.08;
+  double brake_vibration_off_sec_ = 0.06;
+  int brake_vibration_pulses_ = 3;
+  double brake_pause_sec_ = 0.35;
+  double brake_long_pulse_sec_ = 3.0;
   
 };
 
