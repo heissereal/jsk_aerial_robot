@@ -279,7 +279,9 @@ void HapticsController::controlAuto() {
         const bool cooldown_enabled = (mode_switch_ != 0);
         const bool full_proposal_enabled = (mode_switch_ == 2);
         isApproachingTarget(target_vec, target_norm);
-        if (wrong_dir_brake_enabled && nav_state_ == NavState::WRONG_DIR) {
+        if (wrong_dir_brake_enabled &&
+            nav_state_ == NavState::WRONG_DIR &&
+            (!was_wrong_dir_ || brake_phase_ != BrakePhase::DONE)) {
           ROS_WARN("Wrong direction. Warn + show correct direction with long pulse.");
           total_thrust_c_ = base_total_thrust_c_;
           haptics_thrust_gain_ = 1.0;
@@ -304,6 +306,12 @@ void HapticsController::controlAuto() {
           total_thrust_c_ = base_total_thrust_c_;
           haptics_thrust_gain_ = 1.0;
           handleWrongDirection(target_vec, target_norm);
+        } else if (wrong_dir_brake_enabled &&
+                   was_wrong_dir_ &&
+                   brake_phase_ == BrakePhase::DONE) {
+          total_thrust_c_ = base_total_thrust_c_;
+          haptics_thrust_gain_ = stuckAwareThrustGain();
+          outputCorrectionAfterBrake(target_vec, target_norm);
         } else if (cooldown_enabled && tickHapticsCooldown()) {
           ROS_INFO("Haptics cooldown: only WRONG_DIR can interrupt.");
         } else if (guidancePatternRunning()) {
@@ -873,6 +881,8 @@ void HapticsController::outputCorrectionAfterBrake(const Eigen::Vector2d& target
     cooldown_start_ = ros::Time::now();
     cooldown_duration_sec_ = stuckAwareCooldownDuration();
     was_wrong_dir_ = false;
+    brake_phase_ = BrakePhase::IDLE;
+    wrong_dir_start_time_ = ros::Time(0);
   }
 }
 
