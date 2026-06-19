@@ -30,6 +30,7 @@ public:
     void stopAllMotors();
     void setJoy(const sensor_msgs::Joy& msg) { joy_ = msg; };
     void setNormModeSwitch(int norm_switch) { norm_mode_switch_ = norm_switch; };
+    void setModeSwitch(int mode_switch) { mode_switch_ = mode_switch; };
     void setBaseThrust(double base_thrust) { base_thrust_ = base_thrust; };
     void setEmotionSwitch(bool emotion_switch) {emotion_switch_ = emotion_switch; };
     spinal::PwmTest getHapticsPwm() const {return last_published_pwm_; }
@@ -92,6 +93,7 @@ protected:
     int pulse_count_ = 0;
     int pulse_target_ = 2;
     int norm_mode_switch_ = 0;
+    int mode_switch_ = 2; // 0: A baseline, 1: B guidance without brake, 2: C full proposal
     std::vector<float> motor_pwms_ = {0.5, 0.5, 0.5, 0.5};
     bool first_haptics_done_ = false;
     bool haptics_finished_flag_ = false;
@@ -117,7 +119,7 @@ protected:
   
     double base_total_thrust_c_ = 1.0;
     double total_thrust_c_ = 1.0;
-    double stuck_thrust_gain_max_ = 1.5;
+    double stuck_thrust_gain_max_ = 1.2;
     bool emotion_switch_ = false;
     double v_ = 0.0;
     double a_ = 0.0;
@@ -126,6 +128,7 @@ protected:
 
     enum class NavState { APPROACHING, WRONG_DIR, STUCK };
     enum class BrakePhase { IDLE, VIBRATION, PAUSE, LONG_PULSE, DONE };
+    enum class GuidancePattern { NONE, APPROACH, STUCK };
 
     NavState nav_state_ = NavState::APPROACHING;
   
@@ -142,9 +145,15 @@ protected:
     // 判定しきい値
     double move_distance_threshold_ = 0.03; // 0.2秒で3cm未満なら「動いてない」等（要調整）
     double direction_threshold_ = 0.2;      // cos閾値（0.2なら約78度以内）
+    double wrong_dir_threshold_ = -0.866;   // cos閾値（150-210度程度のほぼ逆向き）
+    double near_wrong_dir_dot_threshold_ = -0.2; // 近距離で横/逆方向に逃げる判定
+    double wrong_dir_distance_margin_ = 0.05;
+    double near_wrong_dir_distance_threshold_ = 0.15;
     double dot_ = 0.0;
 
     double stuckAwareOnDuration();
+    double stuckAwareOffDuration();
+    double stuckAwareCooldownDuration();
     double stuckAwareThrustGain();
     double dotAwareOnDuration(double dot);
     void warnWrongDirectionPattern();
@@ -155,33 +164,45 @@ protected:
   void looseDownStart(const std::vector<float>& from_pwms);
   bool tickLooseDown();
   void outputProximityPattern(double target_norm, const std::vector<float>& motor_pwms);
+  void outputStuckPattern(const std::vector<float>& motor_pwms);
   bool outputBrakePulse(const Eigen::Vector2d& target_vec);
   void handleWrongDirection(const Eigen::Vector2d& target_vec, double target_norm);
   void outputCorrectionAfterBrake(const Eigen::Vector2d& target_vec, double target_norm);
   double distanceToPauseDuration(double target_norm);
   void resetPulseTiming(bool start_on = false);
+  bool tickHapticsCooldown();
+  bool guidancePatternRunning() const;
+  void resetGuidancePattern();
 
   std::vector<float> ramp_from_;
   bool loose_down_ = false;
   int loose_down_step_ = 0;
-  int all_loose_down_steps_ = 12;
+  int all_loose_down_steps_ = 30;
   int brake_ramp_ = 2;
 
   double pulse_phase_start_sec_ = 0.0;
   bool pulse_phase_initialized_ = false;
 
-  double cooldown_short_sec_ = 0.1;
-  double cooldown_long_sec_ = 2.0;
+  double cooldown_short_sec_ = 0.3;
+  double cooldown_long_sec_ = 1.0;
+  double baseline_pause_sec_ = 0.5;
 
   bool was_wrong_dir_ = false;
+  GuidancePattern guidance_pattern_ = GuidancePattern::NONE;
+  bool guidance_pattern_active_ = false;
+  double guidance_on_duration_sec_ = 0.0;
+  double guidance_off_duration_sec_ = 0.0;
+  std::vector<float> guidance_motor_pwms_ = {0.5, 0.5, 0.5, 0.5};
   BrakePhase brake_phase_ = BrakePhase::IDLE;
   ros::Time brake_phase_start_time_;
+  std::vector<float> brake_motor_pwms_ = {0.5, 0.5, 0.5, 0.5};
+  std::vector<float> brake_long_motor_pwms_ = {0.5, 0.5, 0.5, 0.5};
   int brake_pulse_count_ = 0;
-  double brake_vibration_on_sec_ = 0.08;
+  double brake_vibration_on_sec_ = 0.15;
   double brake_vibration_off_sec_ = 0.06;
   int brake_vibration_pulses_ = 3;
-  double brake_pause_sec_ = 0.35;
-  double brake_long_pulse_sec_ = 3.0;
+  double brake_pause_sec_ = 0.30;
+  double brake_long_pulse_sec_ = 2.0;
   
 };
 

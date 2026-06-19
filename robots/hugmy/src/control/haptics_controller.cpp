@@ -6,10 +6,11 @@
 HapticsController::HapticsController(ros::NodeHandle& nh){
     ros::NodeHandle pnh("~");
     pnh.param("thrust_strength", thrust_strength_, 1.2);
-    pnh.param("waypoint_reached_thresh", waypoint_reached_thresh_, 0.3);
+    pnh.param("waypoint_reached_thresh", waypoint_reached_thresh_, 0.8);
     pnh.param("base_thrust", base_thrust_, 4.0);
     pnh.param("use_lidar", lidar_flag_, true);
     pnh.param("use_yaml", yaml_mode_, true);
+    pnh.param("mode_switch", mode_switch_, 2);
 
     pwm_haptic_pub_ = nh.advertise<spinal::PwmTest>("/pwm_cmd/haptic", 1);
     emotion_pub_ = nh.advertise<std_msgs::Float32MultiArray>("/vad", 1);
@@ -113,10 +114,10 @@ void HapticsController::wptCb(const geometry_msgs::PoseArray::ConstPtr& msg){
 
 //thrust_strength_をわからなさに応じて変更できるようにする
 double HapticsController::calThrustPower(double alpha) {
-    thrust_ = std::min(8.0, base_thrust_ * forward_gain_ * haptics_thrust_gain_ * std::abs(alpha));
-    if (norm_mode_switch_ == 0){
-      thrust_ = std::min(8.0, base_thrust_ * thrust_strength_ * forward_gain_ * std::abs(alpha));
-    }
+    thrust_ = std::min(6.0, base_thrust_ * haptics_thrust_gain_ * forward_gain_ * std::abs(alpha));
+    // if (norm_mode_switch_ == 0){
+    //   thrust_ = std::min(8.0, base_thrust_ * thrust_strength_ * forward_gain_ * std::abs(alpha));
+    // }
     ROS_ERROR("base_thrust: %.2f, thrust_strength: %.2f, forward_gain: %.2f, haptics_gain: %.2f, total_thrust: %.2f",
               base_thrust_, thrust_strength_, forward_gain_, haptics_thrust_gain_, thrust_);
     double pwm = -0.000679 * thrust_ * thrust_ + 0.044878 * thrust_ + 0.5;
@@ -141,20 +142,24 @@ void HapticsController::controlManual() {
     // ROS_ERROR("Target force: (%.2f, %.2f)", target_vec.y(), target_vec.x());
     double target_norm = target_vec.norm();
 
-    if (norm_mode_switch_ == 0){
-      outputStrength(target_norm);
-      motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
-      double on_interval_default = 0.5;
-      double off_interval_default = 0.5;
-      outputPulse(motor_pwms_, on_interval_default, off_interval_default);
-    }else{
-      motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
-      if (norm_mode_switch_ == 1){
-        outputPulseLengthPattern(target_norm, motor_pwms_);
-      }else if(norm_mode_switch_ == 2){
-        outputPulsePattern(target_norm, motor_pwms_);
-      }
-    }
+    motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
+    double on_interval_default = 0.5;
+    double off_interval_default = 0.5;
+    outputPulse(motor_pwms_, on_interval_default, off_interval_default);
+    // if (norm_mode_switch_ == 0){
+    //   outputStrength(target_norm);
+    //   motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
+    //   double on_interval_default = 0.5;
+    //   double off_interval_default = 0.5;
+    //   outputPulse(motor_pwms_, on_interval_default, off_interval_default);
+    // }else{
+    //   motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
+    //   if (norm_mode_switch_ == 1){
+    //     outputPulseLengthPattern(target_norm, motor_pwms_);
+    //   }else if(norm_mode_switch_ == 2){
+    //     outputPulsePattern(target_norm, motor_pwms_);
+    //   }
+    // }
 }
 
 void HapticsController::controlAuto() {
@@ -221,20 +226,24 @@ void HapticsController::controlAuto() {
     }
     
     if (!first_haptics_done_) {
-      if (norm_mode_switch_ == 0){
-	outputStrength(target_norm);
-	motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
-	double on_interval_default = 0.5;
-        double off_interval_default = 0.5;
-	outputPulse(motor_pwms_, on_interval_default, off_interval_default);
-      }else{
-	motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
-	if (norm_mode_switch_ == 1){
-	  outputPulseLengthPattern(target_norm, motor_pwms_);
-	}else if(norm_mode_switch_ == 2){
-	  outputPulsePattern(target_norm, motor_pwms_);
-	}
-      }
+      motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
+      double on_interval_default = 0.8;
+      double off_interval_default = 0.5;
+      outputPulse(motor_pwms_, on_interval_default, off_interval_default);
+      // if (norm_mode_switch_ == 0){
+      //   outputStrength(target_norm);
+      //   motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
+      //   double on_interval_default = 0.5;
+      //   double off_interval_default = 0.5;
+      //   outputPulse(motor_pwms_, on_interval_default, off_interval_default);
+      // }else{
+      //   motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
+      //   if (norm_mode_switch_ == 1){
+      //     outputPulseLengthPattern(target_norm, motor_pwms_);
+      //   }else if(norm_mode_switch_ == 2){
+      //     outputPulsePattern(target_norm, motor_pwms_);
+      //   }
+      // }
       first_haptics_done_ = true;
     }
 
@@ -266,18 +275,15 @@ void HapticsController::controlAuto() {
         }
         return;
     }else{
+        const bool wrong_dir_brake_enabled = (mode_switch_ == 2);
+        const bool cooldown_enabled = (mode_switch_ != 0);
+        const bool full_proposal_enabled = (mode_switch_ == 2);
         isApproachingTarget(target_vec, target_norm);
-        if (nav_state_ == NavState::APPROACHING) {
-          ROS_INFO("Approaching target, not outputting haptics.");
-          total_thrust_c_ = base_total_thrust_c_;
-          haptics_thrust_gain_ = 1.0;
-          was_wrong_dir_ = false;
-          brake_phase_ = BrakePhase::IDLE;
-          publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
-        } else if (nav_state_ == NavState::WRONG_DIR) {
+        if (wrong_dir_brake_enabled && nav_state_ == NavState::WRONG_DIR) {
           ROS_WARN("Wrong direction. Warn + show correct direction with long pulse.");
           total_thrust_c_ = base_total_thrust_c_;
           haptics_thrust_gain_ = 1.0;
+          resetGuidancePattern();
           handleWrongDirection(target_vec, target_norm); //make human stop -> STUCK // TODO if human dont stop, what do next?
           // warnWrongDirectionPattern();
           // if (isArmRaised()) {
@@ -291,17 +297,55 @@ void HapticsController::controlAuto() {
           //   vibratePwms();
           // }
 
+        } else if (wrong_dir_brake_enabled &&
+                   was_wrong_dir_ &&
+                   brake_phase_ != BrakePhase::IDLE &&
+                   brake_phase_ != BrakePhase::DONE) {
+          total_thrust_c_ = base_total_thrust_c_;
+          haptics_thrust_gain_ = 1.0;
+          handleWrongDirection(target_vec, target_norm);
+        } else if (cooldown_enabled && tickHapticsCooldown()) {
+          ROS_INFO("Haptics cooldown: only WRONG_DIR can interrupt.");
+        } else if (guidancePatternRunning()) {
+          total_thrust_c_ = base_total_thrust_c_;
+          haptics_thrust_gain_ = (full_proposal_enabled && nav_state_ == NavState::STUCK) ? stuckAwareThrustGain() : 1.0;
+          if (wrong_dir_brake_enabled && was_wrong_dir_) {
+            outputCorrectionAfterBrake(target_vec, target_norm);
+          } else if (full_proposal_enabled && nav_state_ == NavState::STUCK) {
+            outputStuckPattern(motor_pwms_);
+          } else {
+            outputProximityPattern(target_norm, motor_pwms_);
+          }
+        } else if (!wrong_dir_brake_enabled && nav_state_ == NavState::WRONG_DIR) {
+          ROS_WARN("Wrong direction detected, but brake is disabled in this mode. Continuing normal guidance.");
+          total_thrust_c_ = base_total_thrust_c_;
+          haptics_thrust_gain_ = 1.0;
+          was_wrong_dir_ = false;
+          brake_phase_ = BrakePhase::IDLE;
+          motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
+          outputProximityPattern(target_norm, motor_pwms_);
+        } else if (nav_state_ == NavState::APPROACHING) {
+          ROS_INFO("Approaching target. Outputting guidance.");
+          total_thrust_c_ = base_total_thrust_c_;
+          haptics_thrust_gain_ = 1.0;
+          was_wrong_dir_ = false;
+          brake_phase_ = BrakePhase::IDLE;
+          motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
+          outputProximityPattern(target_norm, motor_pwms_);
         } else { // STUCK
           ROS_WARN("Stuck. Increasing pulse length gradually.");
-          if (!isArmRaised()) {
+          if (full_proposal_enabled && !isArmRaised()) {
             total_thrust_c_ = base_total_thrust_c_;
             haptics_thrust_gain_ = 1.0;
             vibratePwms();
           }else{
             total_thrust_c_ = base_total_thrust_c_;
-            haptics_thrust_gain_ = stuckAwareThrustGain();
-            if (was_wrong_dir_){
+            haptics_thrust_gain_ = full_proposal_enabled ? stuckAwareThrustGain() : 1.0;
+            if (wrong_dir_brake_enabled && was_wrong_dir_){
               outputCorrectionAfterBrake(target_vec, target_norm);
+            }else if (full_proposal_enabled){
+              motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
+              outputStuckPattern(motor_pwms_);
             }else{
               // } else {
 	      //   outputStrength(target_norm);
@@ -626,9 +670,46 @@ void HapticsController::outputPulse(const std::vector<float>& motor_pwms, double
 
 void HapticsController::outputProximityPattern(double target_norm, const std::vector<float>& motor_pwms)
 {
-  // Good/corrective guidance rhythm: three pulses, with distance encoded as the pause length.
-  static const int pulses_per_cycle = 3;
+  static const int pulses_per_cycle = 2;
+  static const double on_duration_sec = 0.30;
   // static const double d_max = 1.2;
+
+  if (mode_switch_ != 0 && in_cooldown_) {
+    double elapsed = (ros::Time::now() - cooldown_start_).toSec();
+    if (elapsed < cooldown_duration_sec_) {
+      publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
+      return;
+    }
+    in_cooldown_ = false;
+    resetGuidancePattern();
+  }
+
+  if (!guidance_pattern_active_) {
+    guidance_pattern_ = GuidancePattern::APPROACH;
+    guidance_pattern_active_ = true;
+    guidance_off_duration_sec_ = mode_switch_ == 0 ? baseline_pause_sec_ : distanceToPauseDuration(target_norm);
+    guidance_on_duration_sec_ = on_duration_sec;
+    guidance_motor_pwms_ = motor_pwms;
+  }
+
+  // // direction -> pause length(continuous)
+  // double x = std::min(1.0, std::max(0.0, target_norm / d_max));
+  // int pause_interval = min_pause + (int)(x *(max_pause - min_pause));
+
+  outputPulse(guidance_motor_pwms_, guidance_on_duration_sec_, guidance_off_duration_sec_);
+  if (pulse_count_ >= pulses_per_cycle && rest_toggle_){
+    resetGuidancePattern();
+    if (mode_switch_ != 0) {
+      in_cooldown_ = true;
+      cooldown_start_ = ros::Time::now();
+      cooldown_duration_sec_ = cooldown_short_sec_;
+    }
+  }
+}
+
+void HapticsController::outputStuckPattern(const std::vector<float>& motor_pwms)
+{
+  static const int pulses_per_cycle = 2;
 
   if (in_cooldown_) {
     double elapsed = (ros::Time::now() - cooldown_start_).toSec();
@@ -637,25 +718,20 @@ void HapticsController::outputProximityPattern(double target_norm, const std::ve
       return;
     }
     in_cooldown_ = false;
-    pulse_count_ = 0;
-    rest_count_ = 0;
-    rest_toggle_ = false;
-    pulse_phase_initialized_ = false;
+    resetGuidancePattern();
   }
 
-  const double off_duration_sec = distanceToPauseDuration(target_norm);
-  const double on_duration_sec = dotAwareOnDuration(dot_);
+  if (!guidance_pattern_active_) {
+    guidance_pattern_ = GuidancePattern::STUCK;
+    guidance_pattern_active_ = true;
+    guidance_on_duration_sec_ = stuckAwareOnDuration();
+    guidance_off_duration_sec_ = stuckAwareOffDuration();
+    guidance_motor_pwms_ = motor_pwms;
+  }
 
-  // // direction -> pause length(continuous)
-  // double x = std::min(1.0, std::max(0.0, target_norm / d_max));
-  // int pause_interval = min_pause + (int)(x *(max_pause - min_pause));
-
-  outputPulse(motor_pwms, on_duration_sec, off_duration_sec);
-  if (pulse_count_ >= pulses_per_cycle && rest_toggle_){
-    pulse_count_ = 0;
-    rest_count_ = 0;
-    rest_toggle_ = false;
-    pulse_phase_initialized_ = false;
+  outputPulse(guidance_motor_pwms_, guidance_on_duration_sec_, guidance_off_duration_sec_);
+  if (pulse_count_ >= pulses_per_cycle && rest_toggle_) {
+    resetGuidancePattern();
     in_cooldown_ = true;
     cooldown_start_ = ros::Time::now();
     cooldown_duration_sec_ = cooldown_short_sec_;
@@ -689,12 +765,13 @@ void HapticsController::warnWrongDirectionPattern()
 // provide brake haptics against the current motion direction
 bool HapticsController::outputBrakePulse(const Eigen::Vector2d& target_vec)
 {
-  const double eps = 1e-9;
-  Eigen::Vector2d brake_dir = last_motion_vec_.norm() > eps ? -last_motion_vec_ : -target_vec;
-  std::vector<float> brake_pwms = computeMotorPwmFixedTotal(brake_dir, total_thrust_c_);
   const ros::Time now = ros::Time::now();
 
   if (brake_phase_ == BrakePhase::IDLE) {
+    const double eps = 1e-9;
+    Eigen::Vector2d brake_dir = last_motion_vec_.norm() > eps ? -last_motion_vec_ : -target_vec;
+    brake_motor_pwms_ = computeMotorPwmFixedTotal(brake_dir, total_thrust_c_);
+    brake_long_motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
     brake_phase_ = BrakePhase::VIBRATION;
     brake_phase_start_time_ = now;
     brake_pulse_count_ = 0;
@@ -715,7 +792,7 @@ bool HapticsController::outputBrakePulse(const Eigen::Vector2d& target_vec)
 
     const double phase_elapsed = elapsed - brake_pulse_count_ * cycle_sec;
     if (phase_elapsed < brake_vibration_on_sec_) {
-      publishHapticsPwm({0,1,2,3}, brake_pwms);
+      publishHapticsPwm({0,1,2,3}, brake_motor_pwms_);
     } else {
       publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
     }
@@ -733,10 +810,14 @@ bool HapticsController::outputBrakePulse(const Eigen::Vector2d& target_vec)
 
   if (brake_phase_ == BrakePhase::LONG_PULSE) {
     if ((now - brake_phase_start_time_).toSec() < brake_long_pulse_sec_) {
-      publishHapticsPwm({0,1,2,3}, brake_pwms);
+      publishHapticsPwm({0,1,2,3}, brake_long_motor_pwms_);
       return false;
     }
     brake_phase_ = BrakePhase::DONE;
+    publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
+  }
+
+  if (brake_phase_ == BrakePhase::DONE) {
     publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
   }
 
@@ -774,19 +855,23 @@ void HapticsController::outputCorrectionAfterBrake(const Eigen::Vector2d& target
       return;
     }
     in_cooldown_ = false;
-    pulse_phase_initialized_ = false;
+    resetGuidancePattern();
   }
 
-  motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
-  double on_duration_sec = dotAwareOnDuration(dot_);
-  double off_duration_sec = distanceToPauseDuration(target_norm);
-  outputPulse(motor_pwms_, on_duration_sec, off_duration_sec);
+  if (!guidance_pattern_active_) {
+    motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
+    guidance_pattern_active_ = true;
+    guidance_on_duration_sec_ = dotAwareOnDuration(dot_);
+    guidance_off_duration_sec_ = distanceToPauseDuration(target_norm);
+    guidance_motor_pwms_ = motor_pwms_;
+  }
+
+  outputPulse(guidance_motor_pwms_, guidance_on_duration_sec_, guidance_off_duration_sec_);
   if (pulse_count_ >= pulses_per_cycle && rest_toggle_) {
-    pulse_count_ = 0;
-    resetPulseTiming(false);
+    resetGuidancePattern();
     in_cooldown_ = true;
     cooldown_start_ = ros::Time::now();
-    cooldown_duration_sec_ = cooldown_short_sec_;
+    cooldown_duration_sec_ = stuckAwareCooldownDuration();
     was_wrong_dir_ = false;
   }
 }
@@ -800,6 +885,24 @@ double HapticsController::stuckAwareOnDuration()
     return min_on_sec + t * (max_on_sec - min_on_sec);
 }
 
+double HapticsController::stuckAwareOffDuration()
+{
+  const double min_off_sec = 0.20;
+  const double max_off_sec = 0.30;
+
+  double t = std::min(1.0, std::max(0.0, stuck_time_sec_ / stuck_time_to_max_));
+  return min_off_sec + t * (max_off_sec - min_off_sec);
+}
+
+double HapticsController::stuckAwareCooldownDuration()
+{
+  const double min_cooldown_sec = 2.00;
+  const double max_cooldown_sec = 3.00;
+
+  double t = std::min(1.0, std::max(0.0, stuck_time_sec_ / stuck_time_to_max_));
+  return min_cooldown_sec + t * (max_cooldown_sec - min_cooldown_sec);
+}
+
 double HapticsController::stuckAwareThrustGain()
 {
   double t = std::min(1.0, std::max(0.0, stuck_time_sec_ / stuck_time_to_max_));
@@ -808,18 +911,18 @@ double HapticsController::stuckAwareThrustGain()
 
 double HapticsController::dotAwareOnDuration(double dot)
 {
-  const double min_on_duration_sec = 0.10;
-  const double max_on_duration_sec = 1.10;
+  const double min_on_duration_sec = 0.40;
+  const double max_on_duration_sec = 1.40;
   double t = 1.0 - ((dot + 1.0) / 2.0);
   t = std::min(1.0, std::max(0.0, t));
   return min_on_duration_sec + t * (max_on_duration_sec - min_on_duration_sec);
 }
 
 double HapticsController::distanceToPauseDuration(double target_norm){
-  if (target_norm < 0.4) return 0.15;
-  else if (target_norm < 0.8) return 0.45;
-  else if (target_norm < 1.2) return 0.80;
-  else return 1.20;
+  if (target_norm < 1.0) return 0.2;
+  else if (target_norm < 2.0) return 0.3;
+  else if (target_norm < 3.0) return 0.5;
+  else return 0.60;
 }
 
 
@@ -855,8 +958,12 @@ void HapticsController::isApproachingTarget(const Eigen::Vector2d& target_vec, d
     Eigen::Vector2d last_cur(last_nav_pos_.x, last_nav_pos_.y);
     Eigen::Vector2d tgt(target_x_, target_y_);
     const double last_dist = (tgt - last_cur).norm();
-    const bool progressed = (target_norm + 1e-6) < last_dist;
+    const double dist_delta = target_norm - last_dist;
+    const bool progressed = dist_delta < -wrong_dir_distance_margin_;
+    const bool moved_away = dist_delta > wrong_dir_distance_margin_;
+    const bool near = target_norm < near_wrong_dir_distance_threshold_;
     NavState observed_state = nav_state_;
+
 
     if (moved < move_distance_threshold_) {
         stuck_time_sec_ += dt; //dont move
@@ -866,11 +973,22 @@ void HapticsController::isApproachingTarget(const Eigen::Vector2d& target_vec, d
         //move
         stuck_time_sec_ = 0.0;
 
-        if (progressed && dot_ > direction_threshold_) {
-            observed_state = NavState::APPROACHING;
-            // approaching_target_flag_ = true;
-        } else {
+        if (progressed || dot_ > direction_threshold_) {
+          if (near && dot_ < near_wrong_dir_dot_threshold_){
             observed_state = NavState::WRONG_DIR;
+            approaching_target_flag_ = false;
+          }else{
+            observed_state = NavState::APPROACHING;
+            approaching_target_flag_ = true;
+          }
+        } else if (moved_away && dot_ < wrong_dir_threshold_) {
+            observed_state = NavState::WRONG_DIR;
+            approaching_target_flag_ = false;
+        } else if (near && dot_ < near_wrong_dir_dot_threshold_) {
+            observed_state = NavState::WRONG_DIR;
+            approaching_target_flag_ = false;
+        } else {
+            observed_state = NavState::STUCK;
             approaching_target_flag_ = false;
         }
     }
@@ -890,8 +1008,8 @@ void HapticsController::isApproachingTarget(const Eigen::Vector2d& target_vec, d
     last_nav_pos_ = pose_.position;
     last_nav_check_time_ = now;
 
-    ROS_INFO("[NavCheck] state=%d observed=%d moved=%.3f dot=%.3f progressed=%d target_norm=%.3f last_dist=%.3f stuck=%.2f wrong_dir=%.2f/%.2f",
-             (int)nav_state_, (int)observed_state, moved, dot_, progressed ? 1 : 0, target_norm, last_dist, stuck_time_sec_,
+    ROS_INFO("[NavCheck] state=%d observed=%d moved=%.3f dot=%.3f progressed=%d away=%d target_norm=%.3f last_dist=%.3f stuck=%.2f wrong_dir=%.2f/%.2f",
+             (int)nav_state_, (int)observed_state, moved, dot_, progressed ? 1 : 0, moved_away ? 1 : 0, target_norm, last_dist, stuck_time_sec_,
              wrong_dir_start_time_.isZero() ? 0.0 : (now - wrong_dir_start_time_).toSec(), wrong_dir_confirm_sec_);
 }
 
@@ -922,9 +1040,42 @@ void HapticsController::resetPulseTiming(bool start_on) {
     pulse_phase_start_sec_ = ros::Time::now().toSec();
 }
 
+bool HapticsController::tickHapticsCooldown() {
+    if (!in_cooldown_) return false;
+
+    const double elapsed = (ros::Time::now() - cooldown_start_).toSec();
+    if (elapsed < cooldown_duration_sec_) {
+        publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
+        ROS_INFO_THROTTLE(1.0, "In haptics cooldown (%.2f / %.2f sec)", elapsed, cooldown_duration_sec_);
+        return true;
+    }
+
+    in_cooldown_ = false;
+    resetGuidancePattern();
+    return false;
+}
+
+bool HapticsController::guidancePatternRunning() const {
+    return guidance_pattern_active_ || loose_down_ || pulse_count_ > 0;
+}
+
+void HapticsController::resetGuidancePattern() {
+    guidance_pattern_active_ = false;
+    guidance_on_duration_sec_ = 0.0;
+    guidance_off_duration_sec_ = 0.0;
+    guidance_motor_pwms_.assign(4, 0.5f);
+    pulse_count_ = 0;
+    rest_count_ = 0;
+    rest_toggle_ = false;
+    pulse_phase_initialized_ = false;
+    pulse_phase_start_sec_ = 0.0;
+    loose_down_ = false;
+}
+
 void HapticsController::stopAllMotors() {
     ROS_INFO("Stopping all motors.");
     resetPulseTiming(false);
+    resetGuidancePattern();
     publishHapticsPwm({0,1,2,3}, {0.5, 0.5, 0.5, 0.5});
 }
 
@@ -949,12 +1100,13 @@ void HapticsController::resetNavigationState() {
     rest_toggle_ = false;
     vibrate_toggle_ = false;
     in_cooldown_ = false;
-    pulse_phase_initialized_ = false;
+    resetGuidancePattern();
     pulse_phase_start_sec_ = 0.0;
-    loose_down_ = false;
     was_wrong_dir_ = false;
     brake_phase_ = BrakePhase::IDLE;
     brake_phase_start_time_ = ros::Time(0);
+    brake_motor_pwms_.assign(4, 0.5f);
+    brake_long_motor_pwms_.assign(4, 0.5f);
     brake_pulse_count_ = 0;
 
     min_target_norm_ = std::numeric_limits<double>::infinity();
