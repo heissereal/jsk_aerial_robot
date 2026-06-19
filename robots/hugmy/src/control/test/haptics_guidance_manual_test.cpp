@@ -29,7 +29,8 @@ public:
   
   ros::NodeHandle pnh("~");
   pnh.param("norm_control_switch", haptics_norm_mode_switch_, 0);
-  pnh.param("waypoint_reached_thresh", waypoint_reached_thresh_, 0.3);
+  pnh.param("mode_switch", mode_switch_, 2);
+  pnh.param("waypoint_reached_thresh", waypoint_reached_thresh_, 0.8);
   pnh.param("base_thrust", base_thrust_, 4.0);
   pnh.param("emotion_on", emotion_switch_, false);
   pnh.param("use_lidar", lidar_flag_, true);
@@ -51,8 +52,9 @@ public:
 void spin(){
   ros::Rate rate(100);
   while (ros::ok()){
-    ROS_INFO_STREAM("control:" << control_mode_);
+    // ROS_INFO_STREAM("control:" << control_mode_);
     hap_.setNormModeSwitch(haptics_norm_mode_switch_);
+    hap_.setModeSwitch(mode_switch_);
     if (control_mode_ == 0 ){// || air_.getAirPressureJoint() >= 60 || air_.getAirPressureBottom() >= 50){
       stop_msg_.data = 1;
       airstop_pub_.publish(stop_msg_);
@@ -72,7 +74,7 @@ void spin(){
       if (vibrate_mode_) {
         ROS_INFO("Vibrate mode: output vibration pattern.");
         hap_.vibratePwms();
-      } else{
+      } else {
         vibrate_mode_ = false;
 	if(control_mode_ == 1){
 	  hap_.controlAuto();
@@ -102,6 +104,7 @@ private:
   bool lidar_flag_ = true;
   int control_mode_ = 2; // 0: STOP, 1: MANUAL, 2: AUTO
   int haptics_norm_mode_switch_ = 0;
+  int mode_switch_ = 2;
   ros::Publisher pressure_cmd_bottom_pub_;
   ros::Publisher pressure_cmd_joint_pub_;
   ros::Publisher reset_done_pub_;
