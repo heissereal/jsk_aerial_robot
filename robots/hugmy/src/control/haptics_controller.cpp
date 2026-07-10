@@ -114,7 +114,7 @@ void HapticsController::wptCb(const geometry_msgs::PoseArray::ConstPtr& msg){
 
 //thrust_strength_をわからなさに応じて変更できるようにする
 double HapticsController::calThrustPower(double alpha) {
-    thrust_ = std::min(6.0, base_thrust_ * haptics_thrust_gain_ * forward_gain_ * std::abs(alpha));
+    thrust_ = std::min(8.0, base_thrust_ * haptics_thrust_gain_ * forward_gain_ * std::abs(alpha));
     // if (norm_mode_switch_ == 0){
     //   thrust_ = std::min(8.0, base_thrust_ * thrust_strength_ * forward_gain_ * std::abs(alpha));
     // }

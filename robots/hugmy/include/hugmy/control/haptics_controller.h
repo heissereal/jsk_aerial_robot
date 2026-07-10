@@ -136,10 +136,10 @@ protected:
     geometry_msgs::Point last_nav_pos_;
     Eigen::Vector2d last_motion_vec_ = Eigen::Vector2d::Zero();
 
-    double check_dt_sec_ = 0.5;          // チェック周期（細かくする）
+    double check_dt_sec_ = 0.2;          // チェック周期（細かくする）
     double stuck_time_sec_ = 0.0;        // 動いてない時間の蓄積
     double stuck_time_to_max_ = 3.0;     // これ以上で最大パルスに到達
-    double wrong_dir_confirm_sec_ = 1.0;
+    double wrong_dir_confirm_sec_ = 0.5;
     ros::Time wrong_dir_start_time_;
 
     // 判定しきい値
@@ -200,9 +200,9 @@ protected:
   int brake_pulse_count_ = 0;
   double brake_vibration_on_sec_ = 0.15;
   double brake_vibration_off_sec_ = 0.06;
-  int brake_vibration_pulses_ = 3;
+  int brake_vibration_pulses_ = 4;
   double brake_pause_sec_ = 0.30;
-  double brake_long_pulse_sec_ = 2.0;
+  double brake_long_pulse_sec_ = 1.5;
   
 };
 

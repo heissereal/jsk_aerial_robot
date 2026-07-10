@@ -67,7 +67,7 @@ void spin(){
       stop_msg_.data = 0;
       airstop_pub_.publish(stop_msg_);
       msg_bottom_P_.data = 20;
-      msg_joint_P_.data = 20; //for test
+      msg_joint_P_.data = 30; //for test
       pressure_cmd_bottom_pub_.publish(msg_bottom_P_);
       pressure_cmd_joint_pub_.publish(msg_joint_P_);
 
