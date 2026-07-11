@@ -1,6 +1,10 @@
 <?xml version="1.0"?>
 <launch>
   <arg name="norm_control_switch" default="0" />
+  <arg name="mode_switch" default="0" />
+  <arg name="perceptual_compensation" default="true" />
+  <arg name="perceptual_rho" default="1.5" />
+  <arg name="perceptual_gain_max" default="1.5" />
   <arg name="waypoint_reached_thresh" default="0.3" /> <!-- 1.0 -->
   <arg name="base_thrust" default="3.0" />
     <arg name="emotion_on" default="false" />
@@ -13,6 +17,10 @@
     <!-- # <remap from="/odom" to="/Odometry"/> -->
     <!-- # <remap from="/odom" to="/quadrotor/uav/cog/odom"/> -->
     <param name="norm_control_switch" value="$(arg norm_control_switch)" />
+    <param name="mode_switch" value="$(arg mode_switch)" />
+    <param name="perceptual_compensation" value="$(arg perceptual_compensation)" />
+    <param name="perceptual_rho" value="$(arg perceptual_rho)" />
+    <param name="perceptual_gain_max" value="$(arg perceptual_gain_max)" />
     <param name="waypoint_reached_thresh" value="$(arg waypoint_reached_thresh)" />
     <param name="base_thrust" value="$(arg base_thrust)" />
     <param name="emotion_on" value="$(arg emotion_on)" />

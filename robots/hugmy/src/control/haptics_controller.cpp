@@ -7,10 +7,22 @@ HapticsController::HapticsController(ros::NodeHandle& nh){
     ros::NodeHandle pnh("~");
     pnh.param("thrust_strength", thrust_strength_, 1.2);
     pnh.param("waypoint_reached_thresh", waypoint_reached_thresh_, 0.8);
-    pnh.param("base_thrust", base_thrust_, 4.0);
+    pnh.param("base_thrust", base_thrust_, 3.0);
     pnh.param("use_lidar", lidar_flag_, true);
     pnh.param("use_yaml", yaml_mode_, true);
-    pnh.param("mode_switch", mode_switch_, 2);
+    pnh.param("mode_switch", mode_switch_, 0);
+    pnh.param("perceptual_compensation", perceptual_compensation_, true);
+    pnh.param("perceptual_rho", perceptual_rho_, 1.5);
+    pnh.param("perceptual_gain_max", perceptual_gain_max_, 1.5);
+
+    if (perceptual_rho_ < 1.0) {
+      ROS_WARN("~perceptual_rho must be >= 1.0; using 1.0 instead.");
+      perceptual_rho_ = 1.0;
+    }
+    perceptual_gain_max_ = std::max(1.0, perceptual_gain_max_);
+    ROS_INFO("Perceptual compensation: %s (rho=%.2f, gain_max=%.2f), behavior mode=%d",
+             perceptual_compensation_ ? "ON" : "OFF",
+             perceptual_rho_, perceptual_gain_max_, mode_switch_);
 
     pwm_haptic_pub_ = nh.advertise<spinal::PwmTest>("/pwm_cmd/haptic", 1);
     emotion_pub_ = nh.advertise<std_msgs::Float32MultiArray>("/vad", 1);
@@ -374,23 +386,13 @@ void HapticsController::controlAuto() {
 
 double HapticsController::computeDirectionGain(const Eigen::Vector2d& d_body)
 {
-    // 前後方向にどれだけ近いか
-    double forwardness = std::abs(d_body.x());
-    const double gain_min = 1.0;
-    const double gain_max = 1.2;
+    if (!perceptual_compensation_ || d_body.squaredNorm() < 1e-12) return 1.0;
 
-    const double a = 3.85;
-    double denom = std::exp(a) - 1.0;
-    double t = 0.0;
-    if (denom > 1e-9) {
-      t = (std::exp(a * forwardness) - 1.0) / denom;
-    }
-
-    if (t < 0.0) t = 0.0;
-    if (t > 1.0) t = 1.0;
-
-    double g = gain_min + (gain_max - gain_min) * t;
-    ROS_ERROR("gain: %.2f", g);
+    // Paper Eq. (11)-(12): d_body.x() is the forearm-longitudinal component.
+    const Eigen::Vector2d d = d_body.normalized();
+    const double g_dir = std::hypot(perceptual_rho_ * d.x(), d.y());
+    const double g = std::min(g_dir, perceptual_gain_max_);
+    ROS_INFO_THROTTLE(1.0, "Perceptual intensity gain: %.2f", g);
     return g;
 }
 
@@ -464,9 +466,16 @@ Eigen::Vector4d HapticsController::computeAlphaFixedTotal(const Eigen::Vector2d&
     Eigen::Matrix<double, 2, 4> M = R * motor_base;
     Eigen::Vector2d d_body = R.transpose() * d_world;
 
+    // Paper Eq. (8): bias the physical direction toward the forearm axis.
+    // The robot body x-axis is aligned with the forearm longitudinal axis.
+    if (perceptual_compensation_) {
+      Eigen::Vector2d compensated_body(perceptual_rho_ * d_body.x(), d_body.y());
+      d_world = R * compensated_body.normalized();
+    }
+
     int best_idx = -1;
     double best_cos = -1.0;
-    forward_gain_ = 1.0;
+    forward_gain_ = computeDirectionGain(d_body);
     for (int i = 0; i < 4; ++i) {
         Eigen::Vector2d ui = M.col(i).normalized();
         double c = ui.dot(d_world);
@@ -498,7 +507,6 @@ Eigen::Vector4d HapticsController::computeAlphaFixedTotal(const Eigen::Vector2d&
     }
 
     if (found_pair) {
-        forward_gain_ = computeDirectionGain(d_body);
         double norm_b = std::sqrt(std::max(0.0, bsol.squaredNorm()));
         if (norm_b < eps) return alpha;
         alpha[bi] = (bsol[0] / norm_b) * E;

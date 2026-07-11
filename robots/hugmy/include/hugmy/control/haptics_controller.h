@@ -93,7 +93,10 @@ protected:
     int pulse_count_ = 0;
     int pulse_target_ = 2;
     int norm_mode_switch_ = 0;
-    int mode_switch_ = 2; // 0: A baseline, 1: B guidance without brake, 2: C full proposal
+    int mode_switch_ = 0; // 0: simple baseline, 1: guidance without brake, 2: full proposal
+    bool perceptual_compensation_ = true;
+    double perceptual_rho_ = 1.5;
+    double perceptual_gain_max_ = 1.5;
     std::vector<float> motor_pwms_ = {0.5, 0.5, 0.5, 0.5};
     bool first_haptics_done_ = false;
     bool haptics_finished_flag_ = false;
