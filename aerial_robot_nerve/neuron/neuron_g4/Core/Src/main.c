@@ -24,7 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include "CAN/can_device_manager.h"
 #include "Flashmemory/flashmemory.h"
-#include "IMU/imu_mpu9250.h"
+#include "IMU/drivers/mpu9250/mpu9250.h"
 #include "Initializer/initializer.h"
 #include "Motor/motor.h"
 #include "Servo/servo.h"
