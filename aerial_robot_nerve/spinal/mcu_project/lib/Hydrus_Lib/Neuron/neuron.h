@@ -9,6 +9,7 @@
 #define APPLICATION_HYDRUS_LIB_NEURON_NEURON_H_
 
 #include <CANDevice/imu/can_imu_mpu9250.h>
+#include <CANDevice/adc/can_adc.h>
 #include <CANDevice/motor/can_motor.h>
 #include <CANDevice/servo/can_servo.h>
 
@@ -17,11 +18,12 @@ private:
 	uint8_t slave_id_;
 	bool initialized_;
 public:
-	Neuron(uint8_t slave_id):slave_id_(slave_id), initialized_(false){}
+	Neuron(uint8_t slave_id):slave_id_(slave_id), initialized_(false), can_adc_(slave_id){}
 
 	CANMotor can_motor_;
 	CANIMU can_imu_;
 	CANServo can_servo_;
+	CANADC can_adc_;
 
 	bool operator<(const Neuron& right) const
 	{

@@ -23,10 +23,12 @@ namespace CAN {
 	constexpr uint8_t DEVICEID_MOTOR = 0;
 	constexpr uint8_t DEVICEID_IMU = 1;
 	constexpr uint8_t DEVICEID_SERVO = 2;
+	constexpr uint8_t DEVICEID_ADC = 3;
 	constexpr uint8_t DEVICEID_INITIALIZER = 7;
 	constexpr uint8_t MESSAGEID_SEND_GYRO = 0;
 	constexpr uint8_t MESSAGEID_SEND_ACC = 1;
 	constexpr uint8_t MESSAGEID_SEND_MAG = 2;
+	constexpr uint8_t MESSAGEID_SEND_ADC = 0;
 	constexpr uint8_t MESSAGEID_RECEIVE_PWM_0_5 = 0;
 	constexpr uint8_t MESSAGEID_RECEIVE_PWM_6_11 = 1;
 	constexpr uint8_t MESSAGEID_RECEIVE_SERVO_ANGLE = 0;

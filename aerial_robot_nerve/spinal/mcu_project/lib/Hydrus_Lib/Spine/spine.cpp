@@ -34,13 +34,16 @@ namespace Spine
     constexpr uint8_t SERVO_PUB_INTERVAL = 20; //[ms]
     constexpr uint32_t SERVO_TORQUE_PUB_INTERVAL = 1000; //[ms]
     constexpr uint32_t NEURON_IMU_PUB_INTERVAL = 20; //[ms]
+    spinal::NeuronImuStates neuron_imu_state_msg_;
+    ros::Publisher neuron_imu_state_pub_("neuron/imu_states", &neuron_imu_state_msg_);
+    constexpr uint32_t NEURON_ADC_PUB_INTERVAL = 20; //[ms]
     spinal::ServoStates servo_state_msg_;
     spinal::ServoTorqueStates servo_torque_state_msg_;
-    spinal::NeuronImuStates neuron_imu_state_msg_;
+    spinal::NeuronAdcStates neuron_adc_state_msg_;
     ros::Publisher servo_state_pub_("servo/states", &servo_state_msg_);
     // merge torque_states to states
     ros::Publisher servo_torque_state_pub_("servo/torque_states", &servo_torque_state_msg_);
-    ros::Publisher neuron_imu_state_pub_("neuron/imu_states", &neuron_imu_state_msg_);
+    ros::Publisher neuron_adc_state_pub_("neuron/adc_states", &neuron_adc_state_msg_);
 
     // rename following subscriber.
     // taget_states -> target_position
@@ -58,6 +61,7 @@ namespace Spine
     uint32_t servo_last_pub_time_ = 0;
     uint32_t servo_torque_last_pub_time_ = 0;
     uint32_t neuron_imu_last_pub_time_ = 0;
+    uint32_t neuron_adc_last_pub_time_ = 0;
     unsigned int can_idle_count_ = 0;
     bool servo_control_flag_ = true;
 
@@ -163,6 +167,7 @@ namespace Spine
       can_motor_send_device_.addMotor(neuron_.at(i).can_motor_);
       CANDeviceManager::addDevice(neuron_.at(i).can_imu_);
       CANDeviceManager::addDevice(neuron_.at(i).can_servo_);
+      CANDeviceManager::addDevice(neuron_.at(i).can_adc_);
       for (unsigned int j = 0; j < neuron_.at(i).can_servo_.servo_.size(); j++) {
         neuron_.at(i).can_servo_.servo_.at(j).setIndex(servo_.size());
         servo_.push_back(neuron_.at(i).can_servo_.servo_.at(j));
@@ -189,6 +194,7 @@ namespace Spine
 
     nh_->advertiseService(board_info_srv_);
     nh_->advertiseService(board_config_srv_);
+    nh_->advertise(neuron_adc_state_pub_);
 
     /* uav model: special rule based on the number of gimbals (no send data flag servos) */
     uint8_t gimbal_servo_num = servo_num_ - servo_with_send_flag_.size();
@@ -217,7 +223,8 @@ namespace Spine
     servo_torque_state_msg_.torque_enable = new uint8_t[servo_num_];
     neuron_imu_state_msg_.imus_length = slave_num_;
     neuron_imu_state_msg_.imus = new spinal::NeuronImu[slave_num_];
-
+    neuron_adc_state_msg_.adcs_length = slave_num_;
+    neuron_adc_state_msg_.adcs = new spinal::NeuronAdc[slave_num_];
 
     /* other component */
     imu_weight_.resize(slave_num_ + 1);
@@ -287,6 +294,7 @@ namespace Spine
     /* ros publish */
     servoPublish();
     neuronImuPublish();
+    neuronAdcPublish();
 
     CANDeviceManager::tick(1);
 
@@ -396,5 +404,32 @@ namespace Spine
       }
     }
     neuron_imu_state_pub_.publish(&neuron_imu_state_msg_);
+  }
+  void neuronAdcPublish()
+  {
+    const uint32_t now_time = HAL_GetTick();
+    if (now_time - neuron_adc_last_pub_time_ < NEURON_ADC_PUB_INTERVAL) return;
+
+    neuron_adc_last_pub_time_ = now_time;
+    neuron_adc_state_msg_.stamp = nh_->now();
+
+    constexpr float ADC_DIVIDER_INPUT_RESISTANCE = 10.0f;  
+    constexpr float ADC_DIVIDER_GROUND_RESISTANCE = 15.0f;
+    constexpr float SENSOR_OFFSET_VOLTAGE = 0.2243f;
+    constexpr float SENSOR_FULL_SCALE_SPAN = 3.75f;
+    constexpr float SENSOR_FULL_SCALE_PRESSURE = 103.421f;
+
+    for (unsigned int i = 0; i < slave_num_; i++)
+      {
+        neuron_adc_state_msg_.adcs[i].slave_id = neuron_.at(i).getSlaveId();
+        // neuron_adc_state_msg_.adcs[i].raw = neuron_.at(i).can_adc_.getRaw();
+
+        const float adc_voltage = neuron_.at(i).can_adc_.getVoltage();
+        const float sensor_voltage = adc_voltage* (ADC_DIVIDER_INPUT_RESISTANCE + ADC_DIVIDER_GROUND_RESISTANCE) / ADC_DIVIDER_GROUND_RESISTANCE;
+        neuron_adc_state_msg_.adcs[i].voltage = sensor_voltage;
+        const float pressure = (sensor_voltage - SENSOR_OFFSET_VOLTAGE) / SENSOR_FULL_SCALE_SPAN * SENSOR_FULL_SCALE_PRESSURE;
+        neuron_adc_state_msg_.adcs[i].pressure = pressure;
+      }
+    neuron_adc_state_pub_.publish(&neuron_adc_state_msg_);
   }
 };

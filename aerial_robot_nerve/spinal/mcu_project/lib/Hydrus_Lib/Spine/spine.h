@@ -29,6 +29,8 @@
 #include <spinal/NeuronImuStates.h>
 #include <spinal/NeuronImu.h>
 #include <spinal/Gyro.h>
+#include <spinal/NeuronAdc.h>
+#include <spinal/NeuronAdcStates.h>
 #include <spinal/GetBoardInfo.h>
 #include <spinal/SetBoardConfig.h>
 
@@ -62,6 +64,7 @@ namespace Spine
   void setServoControlFlag(bool flag);
   void servoPublish();
   void neuronImuPublish();
+  void neuronAdcPublish();
   void servoPositionCallback(const spinal::ServoControlCmd& control_msg);
   void servoCurrentCallback(const spinal::ServoControlCmd& control_msg);
   void servoTorqueControlCallback(const spinal::ServoTorqueCmd& control_msg);

@@ -30,6 +30,8 @@ add_message_files(
   SimpleImu.msg
   FourAxisCommand.msg
   Imu.msg
+  NeuronAdc.msg
+  NeuronAdcStates.msg
   Barometer.msg
   Gps.msg
   GpsFull.msg
