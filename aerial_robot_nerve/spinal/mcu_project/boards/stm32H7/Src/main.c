@@ -44,6 +44,8 @@
 
 #include "battery_status/battery_status.h"
 
+#include "servo/servo.h"
+
 #include "state_estimate/state_estimate.h"
 #include "flight_control/flight_control.h"
 
@@ -90,6 +92,7 @@ osThreadId idleTaskHandle;
 osThreadId rosPublishHandle;
 osThreadId voltageHandle;
 osThreadId canRxHandle;
+osThreadId servoTaskHandle;
 osTimerId coreTaskTimerHandle;
 osMutexId rosPubMutexHandle;
 osMutexId flightControlMutexHandle;
@@ -106,10 +109,13 @@ IMUOnboard imu_;
 #elif IMU_ICM
 ICM20948 imu_;
 #endif
+
 Baro baro_;
 GPS gps_;
 BatteryStatus battery_status_;
 
+/* servo instance */
+DirectServo servo_;
 
 StateEstimate estimator_;
 FlightControl controller_;
@@ -136,6 +142,7 @@ void idleTaskFunc(void const * argument);
 void rosPublishTask(void const * argument);
 void voltageTask(void const * argument);
 void canRxTask(void const * argument);
+void servoTaskCallback(void const * argument);
 void coreTaskEvokeCb(void const * argument);
 
 /* USER CODE BEGIN PFP */
@@ -237,18 +244,30 @@ int main(void)
   IMU_ROS_CMD::init(&nh_);
   IMU_ROS_CMD::addImu(&imu_);
   baro_.init(&hi2c1, &nh_, BAROCS_GPIO_Port, BAROCS_Pin);
-  gps_.init(&huart3, &nh_, LED2_GPIO_Port, LED2_Pin);
   battery_status_.init(&hadc1, &nh_);
-  estimator_.init(&imu_, &baro_, &gps_, &nh_);  // imu + baro + gps => att + alt + pos(xy)
-  controller_.init(&htim1, &htim4, &estimator_, &battery_status_, &nh_, &flightControlMutexHandle);
+
+  /* direct servo initialization */
+  bool servo_connect = servo_.init(&huart3, &nh_, NULL);
+
+  // GPS and DirectServo share the same UART3.
+  if (servo_connect) { // no gps initialization
+    estimator_.init(&imu_, &baro_, NULL, &nh_);
+  } else { // try to connect gps if direct servo is valid
+    gps_.init(&huart3, &nh_, LED2_GPIO_Port, LED2_Pin);
+    estimator_.init(&imu_, &baro_, &gps_, &nh_);
+  }
 
   FlashMemory::read(); //IMU calib data (including IMU in neurons)
 
-#if NERVE_COMM        
-  Spine::init(&hfdcan1, &nh_, &estimator_, LED1_GPIO_Port, LED1_Pin);
-  Spine::useRTOS(&canMsgMailHandle); // use RTOS for CAN in spianl
-#endif
-  
+  DirectServo* servoptr = nullptr;
+
+  if(servo_connect) servoptr = &servo_;
+
+  controller_.init(&htim1, &htim4, &estimator_, NULL, servoptr, &battery_status_, &nh_, &flightControlMutexHandle);
+
+  bool nerve_connect = Spine::init(&hfdcan1, &nh_, &estimator_, &controller_, LED1_GPIO_Port, LED1_Pin);
+  if(nerve_connect) Spine::useRTOS(&canMsgMailHandle); // use RTOS for CAN in spianl
+
   /* USER CODE END 2 */
 
   /* Create the mutex(es) */
@@ -298,7 +317,7 @@ int main(void)
 
   /* Create the thread(s) */
   /* definition and creation of coreTask */
-  osThreadDef(coreTask, coreTaskFunc, osPriorityRealtime, 0, 1024);
+  osThreadDef(coreTask, coreTaskFunc, osPriorityRealtime, 0, 512);
   coreTaskHandle = osThreadCreate(osThread(coreTask), NULL);
 
   /* definition and creation of rosSpinTask */
@@ -320,6 +339,10 @@ int main(void)
   /* definition and creation of canRx */
   osThreadDef(canRx, canRxTask, osPriorityRealtime, 0, 256);
   canRxHandle = osThreadCreate(osThread(canRx), NULL);
+
+  /* definition and creation of servoTask */
+  osThreadDef(servoTask, servoTaskCallback, osPriorityRealtime, 0, 256);
+  servoTaskHandle = osThreadCreate(osThread(servoTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -731,7 +754,7 @@ static void MX_TIM1_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 10000;
+  sConfigOC.Pulse = 1000;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
@@ -1064,18 +1087,15 @@ void coreTaskFunc(void const * argument)
     {
       osSemaphoreWait(coreTaskSemHandle, osWaitForever);
 
-#if NERVE_COMM
       Spine::send();
-#endif
+
       imu_.update();
       baro_.update();
-      gps_.update();
+      if (!servo_.connected()) gps_.update();
       estimator_.update();
       controller_.update();
 
-#if NERVE_COMM      
       Spine::update();
-#endif
 
       // Workaround to handle the BUSY->TIMEOUT Error problem of ETH handler in STM32H7
       // We observe this is occasionally occur, but the ETH DMA is valid.
@@ -1194,6 +1214,29 @@ __weak void canRxTask(void const * argument)
     osDelay(1000);
   }
   /* USER CODE END canRxTask */
+}
+
+/* USER CODE BEGIN Header_servoTaskCallback */
+/**
+* @brief Function implementing the servoTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_servoTaskCallback */
+__weak void servoTaskCallback(void const * argument)
+{
+  /* USER CODE BEGIN servoTaskCallback */
+  if (!servo_.connected()) {
+    osThreadTerminate(NULL);  // remove
+    return;
+  }
+  /* Infinite loop */
+  for(;;)
+  {
+    servo_.update();
+    osDelay(1);
+  }
+  /* USER CODE END servoTaskCallback */
 }
 
 /* coreTaskEvokeCb function */

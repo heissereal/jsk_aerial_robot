@@ -23,13 +23,16 @@ namespace CAN {
 	constexpr uint8_t DEVICEID_MOTOR = 0;
 	constexpr uint8_t DEVICEID_IMU = 1;
 	constexpr uint8_t DEVICEID_SERVO = 2;
+	constexpr uint8_t DEVICEID_ADC = 3;
 	constexpr uint8_t DEVICEID_INITIALIZER = 7;
 	constexpr uint8_t MESSAGEID_SEND_GYRO = 0;
 	constexpr uint8_t MESSAGEID_SEND_ACC = 1;
 	constexpr uint8_t MESSAGEID_SEND_MAG = 2;
+	constexpr uint8_t MESSAGEID_SEND_ADC = 0;
 	constexpr uint8_t MESSAGEID_RECEIVE_PWM_0_5 = 0;
 	constexpr uint8_t MESSAGEID_RECEIVE_PWM_6_11 = 1;
 	constexpr uint8_t MESSAGEID_RECEIVE_SERVO_ANGLE = 0;
+  	constexpr uint8_t MESSAGEID_RECEIVE_SERVO_CURRENT = 1;
 	constexpr uint8_t MESSAGEID_RECEIVE_SERVO_CONFIG = 15;
 	constexpr uint8_t MESSAGEID_SEND_SERVO_LIST[4] = {0, 1, 2, 3};
 	constexpr uint8_t MESSAGEID_RECEIVE_ENUM_REQUEST = 0;
@@ -52,6 +55,7 @@ namespace CAN {
         constexpr uint8_t BOARD_CONFIG_SET_EXTERNAL_ENCODER_FLAG = 9;
         constexpr uint8_t BOARD_CONFIG_SET_RESOLUTION_RATIO = 10;
 	constexpr uint8_t BOARD_CONFIG_SET_SERVO_ROUND_OFFSET = 11;
+	constexpr uint8_t BOARD_CONFIG_SET_SERVO_PULLEY_SKIP_THRESH = 12;
 }
 
 
