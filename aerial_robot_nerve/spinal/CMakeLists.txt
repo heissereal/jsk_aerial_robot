@@ -43,6 +43,7 @@ add_message_files(
   PwmInfo.msg
   Pwms.msg
   PwmTest.msg
+  PneumaticCommand.msg
   Thrust.msg
   UavInfo.msg
   DesireCoord.msg
