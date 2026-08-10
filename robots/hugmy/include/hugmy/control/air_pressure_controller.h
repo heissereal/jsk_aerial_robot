@@ -66,7 +66,7 @@ private:
     void setAirPwm(const std::vector<uint8_t>& indices, const std::vector<float>& pwm_values);
     void publishAirPwmMerged();
     void publishAirPwm(const std::vector<uint8_t>& indices, const std::vector<float>& pwms, bool to_air_bus);
-    void failsafe();
+    bool failsafe();
 
     void startLeakCalibration(int sensor_index);
     double estimateLeak(const std::vector<double>& t, const std::vector<double>& pg);
@@ -112,6 +112,12 @@ private:
 
     int air_pressure_joint_ = 0;
     int air_pressure_bottom_ = 0;
+    bool joint_pressure_received_ = false;
+    bool bottom_pressure_received_ = false;
+    ros::Time joint_pressure_stamp_;
+    ros::Time bottom_pressure_stamp_;
+    double sensor_timeout_sec_ = 0.25;
+    int sensor_min_pressure_ = -5;
     float output_ = 0.0;
     int bottom_approaching_pressure_ = 10; // 20
     int bottom_ready_pressure_ = 20; // 40

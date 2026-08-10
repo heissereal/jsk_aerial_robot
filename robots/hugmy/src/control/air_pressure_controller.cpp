@@ -23,6 +23,8 @@ AirPressureController::AirPressureController(ros::NodeHandle& nh) {
     pnh.param("ki_bottom", ki_bottom_, 0.005);
     pnh.param("kd_bottom", kd_bottom_, 0.001);
     pnh.param("u_limit",   u_limit_,   0.8);
+    pnh.param("sensor_timeout_sec", sensor_timeout_sec_, 0.25);
+    pnh.param("sensor_min_pressure", sensor_min_pressure_, -5);
 
 
     pnh.param("leak_calib_enable",   leak_calib_enable_,   false);
@@ -64,6 +66,8 @@ AirPressureController::AirPressureController(ros::NodeHandle& nh) {
 
 void AirPressureController::sensorCb(const std_msgs::Int8::ConstPtr& msg) {
     air_pressure_joint_ = msg->data;
+    joint_pressure_stamp_ = ros::Time::now();
+    joint_pressure_received_ = true;
     std_msgs::Float32 x;
     x.data = static_cast<float> (air_pressure_joint_);
     //  if(!joint_filt_inited_){
@@ -84,6 +88,8 @@ void AirPressureController::sensorCb(const std_msgs::Int8::ConstPtr& msg) {
 
 void AirPressureController::sensor1Cb(const std_msgs::Int8::ConstPtr& msg) {
     air_pressure_bottom_ = msg->data;
+    bottom_pressure_stamp_ = ros::Time::now();
+    bottom_pressure_received_ = true;
 }
 
 void AirPressureController::stopCb(const std_msgs::Bool::ConstPtr& msg)
@@ -275,16 +281,19 @@ void AirPressureController::switchSingleMode(uint8_t induce, float pwm_value){
 }
 
 void AirPressureController::inicialPump(){
+  if (!failsafe()) return;
   ROS_INFO("inicial pump");
   switchSingleMode({4,6},{0.3, 0.3});
 }
 
 void AirPressureController::adjustPump(){
+  if (!failsafe()) return;
   switchSingleMode({4,6},{output_, output_});
   std::cout<<"pwm_value:"<<output_ <<"\n";
 }
 
 void AirPressureController::maxWorkPumptoJoint(){
+  if (!failsafe()) return;
   publishAirPwm({4,6,5,7},{0.9f,0.9f,0.0f,0.0f}, false);
 }
 
@@ -467,7 +476,7 @@ void AirPressureController::controlLoopCb(const ros::TimerEvent& e)
 {
   if(!external_mode_) return;
 
-  failsafe();
+  if (!failsafe()) return;
   ROS_INFO("emergency %d", static_cast<int>(emergency_stop_));
   if (emergency_stop_) {
     initializePneumatics();
@@ -506,7 +515,7 @@ void AirPressureController::bottomPressurePrepare()
 {
     startAllSV();
     ROS_INFO("bottom prepare");
-    failsafe();
+    if (!failsafe()) return;
     if (air_pressure_bottom_ < bottom_approaching_pressure_) {
         calPressure(bottom_approaching_pressure_, 1);
         adjustPump();
@@ -517,7 +526,7 @@ void AirPressureController::bottomPressurePrepare()
 }
 void AirPressureController::readyPerching()
 {   
-    failsafe();
+    if (!failsafe()) return;
     if (air_pressure_bottom_ < bottom_ready_pressure_) {
         calPressure(bottom_ready_pressure_, 1);
         adjustPump();
@@ -533,6 +542,7 @@ void AirPressureController::readyPerching()
 
 void AirPressureController::startPerching()
 {
+    if (!failsafe()) return;
     ROS_WARN("==============perching==================");
     if (air_pressure_joint_ <= joint_max_pressure_) {
         if (air_pressure_joint_ >= joint_flex_pressure_) {
@@ -593,7 +603,7 @@ void AirPressureController::startPerching()
 void AirPressureController::keepPerching()
 {
   if(!external_mode_) return;
-  failsafe();
+  if (!failsafe()) return;
   ROS_INFO("emergency %d", static_cast<int>(emergency_stop_));
   if (emergency_stop_) {
     initializePneumatics();
@@ -618,9 +628,30 @@ void AirPressureController::keepPerching()
   }
 }
 
-void AirPressureController::failsafe(){
-    if (air_pressure_joint_ >= joint_limit_pressure_ || air_pressure_bottom_ >= bottom_limit_pressure_) {
-        ROS_WARN("Air pressure exceeded maximum limits! Stopping pump.");
-        stopAllPneumatics();
+bool AirPressureController::failsafe(){
+    const ros::Time now = ros::Time::now();
+    const bool missing = !joint_pressure_received_ || !bottom_pressure_received_;
+    const bool stale = !missing &&
+      ((now - joint_pressure_stamp_).toSec() > sensor_timeout_sec_ ||
+       (now - bottom_pressure_stamp_).toSec() > sensor_timeout_sec_);
+    const bool invalid = joint_pressure_received_ && bottom_pressure_received_ &&
+      (air_pressure_joint_ < sensor_min_pressure_ || air_pressure_bottom_ < sensor_min_pressure_);
+    const bool overpressure = joint_pressure_received_ && bottom_pressure_received_ &&
+      (air_pressure_joint_ >= joint_limit_pressure_ || air_pressure_bottom_ >= bottom_limit_pressure_);
+
+    if (missing || stale || invalid || overpressure) {
+        stopPump();
+        publishAirPwmMerged();
+        if (missing)
+          ROS_ERROR_THROTTLE(1.0, "[Air] pressure sensor data not received; pump stopped");
+        else if (stale)
+          ROS_ERROR_THROTTLE(1.0, "[Air] pressure sensor timeout (limit %.3f s); pump stopped", sensor_timeout_sec_);
+        else if (invalid)
+          ROS_ERROR_THROTTLE(1.0, "[Air] invalid pressure (joint=%d, bottom=%d kPa); pump stopped", air_pressure_joint_, air_pressure_bottom_);
+        else
+          ROS_ERROR_THROTTLE(1.0, "[Air] pressure limit exceeded (joint=%d/%d, bottom=%d/%d kPa); pump stopped",
+                             air_pressure_joint_, joint_limit_pressure_, air_pressure_bottom_, bottom_limit_pressure_);
+        return false;
     }
+    return true;
 }
