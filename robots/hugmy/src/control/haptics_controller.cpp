@@ -77,6 +77,7 @@ void HapticsController::publishHapticsPwm(const std::vector<uint8_t>& indices, c
 
 void HapticsController::imuCb(const spinal::Imu::ConstPtr& msg){
     imu_ = *msg;
+    imu_received_ = true;
 }
 
 void HapticsController::odomCb(const nav_msgs::Odometry::ConstPtr& msg){
@@ -1033,11 +1034,27 @@ void HapticsController::isApproachingTarget(const Eigen::Vector2d& target_vec, d
 
 
 bool HapticsController::isArmRaised() {
-    // angle thresh
-    double roll  = imu_.angles[0];
-    double pitch = imu_.angles[1];
-    ROS_INFO("Checking if arm is raised with roll: %.2f, pitch: %.2f", roll,pitch);
-    return (std::abs(roll) < roll_threshold_) && (std::abs(pitch) < pitch_threshold_);
+    if (!imu_received_) {
+      ROS_WARN_THROTTLE(1.0, "Cannot determine arm pose: no IMU message received");
+      return false;
+    }
+
+    const double qx = imu_.quaternion[0];
+    const double qy = imu_.quaternion[1];
+    const double qz = imu_.quaternion[2];
+    const double qw = imu_.quaternion[3];
+    const double norm_sq = qx * qx + qy * qy + qz * qz + qw * qw;
+    if (!std::isfinite(norm_sq) || norm_sq < 1.0e-12) {
+      ROS_WARN_THROTTLE(1.0, "Cannot determine arm pose: invalid IMU quaternion");
+      return false;
+    }
+
+    const double inv_norm = 1.0 / std::sqrt(norm_sq);
+    tf::Quaternion q(qx * inv_norm, qy * inv_norm, qz * inv_norm, qw * inv_norm);
+    double roll, pitch, yaw;
+    tf::Matrix3x3(q).getRPY(roll, pitch, yaw);
+    ROS_INFO_THROTTLE(1.0, "Checking if arm is raised with roll: %.2f, pitch: %.2f", roll, pitch);
+    return std::abs(roll) < roll_threshold_ && std::abs(pitch) < pitch_threshold_;
 }
 
 

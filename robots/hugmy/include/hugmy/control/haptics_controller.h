@@ -86,6 +86,7 @@ protected:
     geometry_msgs::Point last_pos_;
     std_msgs::Float32MultiArray emotion_msg_;
     spinal::Imu imu_;
+    bool imu_received_ = false;
     double target_x_, target_y_;
     double output_;
     bool rest_toggle_ = false;
