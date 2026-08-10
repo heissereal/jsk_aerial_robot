@@ -43,6 +43,16 @@ void CANMotorSendDevice::sendData()
 	parse();
 	sendMessage(CAN::MESSAGEID_RECEIVE_PWM_0_5, CAN::BROADCAST_ID, 8, pwm_data, 0);
 
+	for (uint8_t channel = 0; channel < 2; ++channel) {
+		std::fill(std::begin(motor_pwms), std::end(motor_pwms), 0);
+		for (unsigned int i = 0; i < send_motor_num; ++i)
+			motor_pwms[i] = can_motor_.at(i).get().getValvePwm(channel);
+		parse();
+		sendMessage(channel == 0 ? CAN::MESSAGEID_RECEIVE_VALVE_PWM_CH1
+		                         : CAN::MESSAGEID_RECEIVE_VALVE_PWM_CH2,
+		            CAN::BROADCAST_ID, 8, pwm_data, 0);
+	}
+
 
 	if (can_motor_.size() <= 6) return;
 

@@ -32,6 +32,8 @@ namespace CAN {
 	constexpr uint8_t MESSAGEID_SEND_ADC = 0;
 	constexpr uint8_t MESSAGEID_RECEIVE_PWM_0_5 = 0;
 	constexpr uint8_t MESSAGEID_RECEIVE_PWM_6_11 = 1;
+	constexpr uint8_t MESSAGEID_RECEIVE_VALVE_PWM_CH1 = 2;
+	constexpr uint8_t MESSAGEID_RECEIVE_VALVE_PWM_CH2 = 3;
 	constexpr uint8_t MESSAGEID_RECEIVE_SERVO_ANGLE = 0;
 	constexpr uint8_t MESSAGEID_RECEIVE_SERVO_CURRENT = 1;
 	constexpr uint8_t MESSAGEID_RECEIVE_SERVO_CONFIG = 15;
