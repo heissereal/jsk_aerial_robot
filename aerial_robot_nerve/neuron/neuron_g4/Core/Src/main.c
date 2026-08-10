@@ -39,6 +39,7 @@ using NeuronIMU = ICM42686;
 #include "IMU/drivers/mpu9250/mpu9250.h"
 using NeuronIMU = MPU9250;
 #endif
+#include "ADC/adc.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -83,6 +84,7 @@ osSemaphoreId canTxSemHandle;
 osMailQId canMsgMailHandle;
 
 NeuronIMU imu_;
+NeuronADC adc_;
 Motor motor_;
 Servo servo_;
 /* USER CODE END PV */
@@ -213,11 +215,13 @@ int main(void)
 
   motor_ = Motor(slave_id);
   imu_ = NeuronIMU(slave_id);
+  adc_ = NeuronADC(slave_id);
   servo_ = Servo(slave_id);
 
   Initializer initializer(slave_id, servo_, imu_);
 
   imu_.init(&hspi1);
+  adc_.init(&hadc1);
   motor_.init(&htim1);
   HAL_Delay(300); //wait servo init
   servo_.init(&huart2, &hi2c1, &servoMutexHandle);
@@ -225,6 +229,7 @@ int main(void)
   CANDeviceManager::init(&hfdcan1, slave_id, GPIOC, GPIO_PIN_13);
   CANDeviceManager::addDevice(&motor_);
   CANDeviceManager::addDevice(&imu_);
+  CANDeviceManager::addDevice(&adc_);
   CANDeviceManager::addDevice(&servo_);
   CANDeviceManager::addDevice(&initializer);
   CANDeviceManager::useRTOS(&canMsgMailHandle);
@@ -894,6 +899,7 @@ void canTxCallback(void const * argument)
 
     servo_.sendData();
     imu_.sendData();
+    adc_.sendData();
   }
   /* USER CODE END canTxCallback */
 }
