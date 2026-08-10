@@ -127,6 +127,11 @@ public:
     return att_controller_.getTargetPwm(index);
   }
 
+  void setAuxiliaryPwm(uint8_t index, float pwm)
+  {
+    att_controller_.setAuxiliaryPwm(index, pwm);
+  }
+
   void setMotorNumber(uint8_t motor_number)
   {
     att_controller_.setMotorNumber(motor_number);

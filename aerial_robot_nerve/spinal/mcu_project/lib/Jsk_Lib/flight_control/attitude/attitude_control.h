@@ -21,6 +21,7 @@
 #endif
 
 #include <math/AP_Math.h>
+#include <algorithm>
 #include <vector>
 
 #ifndef SIMULATION
@@ -105,6 +106,10 @@ public:
 
   void setForceLandingFlag(bool force_landing_flag) { force_landing_flag_ = force_landing_flag; }
   float getTargetPwm(uint8_t index) {return target_pwm_[index];}
+  void setAuxiliaryPwm(uint8_t index, float pwm)
+  {
+    if (index < MAX_MOTOR_NUMBER) target_pwm_[index] = std::max(0.0f, std::min(MAX_PWM, pwm));
+  }
   float getForce(uint8_t index) {return target_thrust_[index];}
 
   bool activated();
