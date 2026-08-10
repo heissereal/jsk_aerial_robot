@@ -18,17 +18,98 @@ namespace Spine
     std::vector<std::reference_wrapper<Servo>> servo_with_send_flag_;
     CANInitializer can_initializer_(neuron_);
     std::vector<float> imu_weight_;
+    FlightControl* controller_;
 
     uint8_t slave_num_ = 0;
     uint8_t servo_num_ = 0;
     int8_t uav_model_ = -1;
     uint8_t baselink_ = 2;
 
+    constexpr uint8_t ARM_PRESSURE_COUNT = 4;
+    constexpr uint32_t ARM_PRESSURE_CONTROL_INTERVAL_MS = 10;
+    constexpr uint32_t ARM_PRESSURE_ADC_TIMEOUT_MS = 100;
+    constexpr float ARM_PRESSURE_LIMIT_KPA = 60.0f;
+    constexpr uint32_t ARM_PRESSURE_COMMAND_TIMEOUT_MS = 200;
+    constexpr uint8_t ARM_PRESSURE_PUMP_PWM_PORT_1 = 4;
+    constexpr uint8_t ARM_PRESSURE_PUMP_PWM_PORT_2 = 6;
+    uint8_t arm_pressure_slave_ids_[ARM_PRESSURE_COUNT] = {1, 2, 3, 4};
+    float arm_pressures_[ARM_PRESSURE_COUNT] = {NAN, NAN, NAN, NAN};
+    float arm_pressure_supply_duties_[ARM_PRESSURE_COUNT] = {};
+    float arm_pressure_exhaust_duties_[ARM_PRESSURE_COUNT] = {};
+    float arm_pressure_pump_duty_ = 0.0f;
+    bool arm_pressure_command_enabled_ = false;
+    bool arm_pressure_command_received_ = false;
+    uint32_t arm_pressure_last_command_ms_ = 0;
+    uint32_t arm_pressure_last_update_ms_ = 0;
+
+    Neuron* findNeuron(uint8_t slave_id)
+    {
+      for (auto& neuron : neuron_)
+        if (neuron.getSlaveId() == slave_id) return &neuron;
+      return nullptr;
+    }
+
+    void setArmPressurePumpDuty(float duty)
+    {
+      arm_pressure_pump_duty_ = std::max(0.0f, std::min(0.9f, duty));
+      controller_->setAuxiliaryPwm(ARM_PRESSURE_PUMP_PWM_PORT_1, arm_pressure_pump_duty_);
+      controller_->setAuxiliaryPwm(ARM_PRESSURE_PUMP_PWM_PORT_2, arm_pressure_pump_duty_);
+    }
+
+    void updateArmPressureControl(uint32_t now)
+    {
+      if (now - arm_pressure_last_update_ms_ < ARM_PRESSURE_CONTROL_INTERVAL_MS) return;
+      arm_pressure_last_update_ms_ = now;
+      if (!arm_pressure_command_enabled_ || !arm_pressure_command_received_ ||
+          now - arm_pressure_last_command_ms_ > ARM_PRESSURE_COMMAND_TIMEOUT_MS)
+        {
+          setArmPressurePumpDuty(0.0f);
+          return;
+        }
+
+      bool all_sensors_fresh = true;
+      bool pressure_fault = false;
+      for (uint8_t arm = 0; arm < ARM_PRESSURE_COUNT; ++arm)
+        {
+          Neuron* neuron = findNeuron(arm_pressure_slave_ids_[arm]);
+          if (neuron == nullptr || !neuron->can_adc_.isFresh(now, ARM_PRESSURE_ADC_TIMEOUT_MS))
+            {
+              arm_pressures_[arm] = NAN;
+              all_sensors_fresh = false;
+              continue;
+            }
+          arm_pressures_[arm] = neuron->can_adc_.getPressure();
+          if (!std::isfinite(arm_pressures_[arm]) || arm_pressures_[arm] < -5.0f)
+            {
+              all_sensors_fresh = false;
+              continue;
+            }
+          if (arm_pressures_[arm] >= ARM_PRESSURE_LIMIT_KPA)
+            {
+              neuron->can_motor_.setValvePwm(0, 0);
+              pressure_fault = true;
+            }
+        }
+
+      // On ADC/CAN failure only the shared pump is stopped; valve states are retained.
+      if (!all_sensors_fresh || pressure_fault)
+        {
+          setArmPressurePumpDuty(0.0f);
+          return;
+        }
+
+      for (uint8_t arm = 0; arm < ARM_PRESSURE_COUNT; ++arm)
+        {
+          Neuron* neuron = findNeuron(arm_pressure_slave_ids_[arm]);
+          if (neuron == nullptr) continue;
+          neuron->can_motor_.setValvePwm(0, static_cast<uint16_t>(arm_pressure_supply_duties_[arm] * 1000.0f));
+          neuron->can_motor_.setValvePwm(1, static_cast<uint16_t>(arm_pressure_exhaust_duties_[arm] * 1000.0f));
+        }
+      setArmPressurePumpDuty(arm_pressure_pump_duty_);
+    }
+
     /* sensor fusion */
     StateEstimate* estimator_;
-
-    /* flight controller */
-    FlightControl* controller_;
 
     /* ros */
     constexpr uint8_t SERVO_PUB_INTERVAL = 20; //[ms]
@@ -51,6 +132,7 @@ namespace Spine
     ros::Subscriber<spinal::ServoControlCmd> servo_position_sub_("servo/target_states", servoPositionCallback);
     ros::Subscriber<spinal::ServoControlCmd> servo_current_sub_("servo/target_current", servoCurrentCallback);
     ros::Subscriber<spinal::ServoTorqueCmd> servo_torque_ctrl_sub_("servo/torque_enable", servoTorqueControlCallback);
+    ros::Subscriber<spinal::PneumaticCommand> pneumatic_command_sub_("pneumatic/command", pneumaticCommandCallback);
 
     ros::ServiceServer<spinal::GetBoardInfo::Request, spinal::GetBoardInfo::Response> board_info_srv_("get_board_info", boardInfoCallback);
     ros::ServiceServer<spinal::SetBoardConfig::Request, spinal::SetBoardConfig::Response> board_config_srv_("set_board_config", boardConfigCallback);
@@ -195,6 +277,7 @@ namespace Spine
     nh_->advertiseService(board_info_srv_);
     nh_->advertiseService(board_config_srv_);
     nh_->advertise(neuron_adc_state_pub_);
+    nh_->subscribe(pneumatic_command_sub_);
 
     /* uav model: special rule based on the number of gimbals (no send data flag servos) */
     uint8_t gimbal_servo_num = servo_num_ - servo_with_send_flag_.size();
@@ -290,6 +373,8 @@ namespace Spine
     /* uodate IMU */
     for (int i = 0; i < slave_num_; i++)
       neuron_.at(i).can_imu_.update();
+
+    updateArmPressureControl(HAL_GetTick());
 
     /* ros publish */
     servoPublish();
@@ -413,23 +498,75 @@ namespace Spine
     neuron_adc_last_pub_time_ = now_time;
     neuron_adc_state_msg_.stamp = nh_->now();
 
-    constexpr float ADC_DIVIDER_INPUT_RESISTANCE = 10.0f;  
-    constexpr float ADC_DIVIDER_GROUND_RESISTANCE = 15.0f;
-    constexpr float SENSOR_OFFSET_VOLTAGE = 0.2243f;
-    constexpr float SENSOR_FULL_SCALE_SPAN = 3.75f;
-    constexpr float SENSOR_FULL_SCALE_PRESSURE = 103.421f;
+    constexpr uint32_t NEURON_ADC_TIMEOUT_MS = 100;
 
     for (unsigned int i = 0; i < slave_num_; i++)
       {
         neuron_adc_state_msg_.adcs[i].slave_id = neuron_.at(i).getSlaveId();
+        if (!neuron_.at(i).can_adc_.isFresh(now_time, NEURON_ADC_TIMEOUT_MS))
+          {
+            neuron_adc_state_msg_.adcs[i].voltage = NAN;
+            neuron_adc_state_msg_.adcs[i].pressure = NAN;
+            continue;
+          }
         // neuron_adc_state_msg_.adcs[i].raw = neuron_.at(i).can_adc_.getRaw();
 
-        const float adc_voltage = neuron_.at(i).can_adc_.getVoltage();
-        const float sensor_voltage = adc_voltage* (ADC_DIVIDER_INPUT_RESISTANCE + ADC_DIVIDER_GROUND_RESISTANCE) / ADC_DIVIDER_GROUND_RESISTANCE;
-        neuron_adc_state_msg_.adcs[i].voltage = sensor_voltage;
-        const float pressure = (sensor_voltage - SENSOR_OFFSET_VOLTAGE) / SENSOR_FULL_SCALE_SPAN * SENSOR_FULL_SCALE_PRESSURE;
-        neuron_adc_state_msg_.adcs[i].pressure = pressure;
+        neuron_adc_state_msg_.adcs[i].voltage = neuron_.at(i).can_adc_.getSensorVoltage();
+        neuron_adc_state_msg_.adcs[i].pressure = neuron_.at(i).can_adc_.getPressure();
       }
     neuron_adc_state_pub_.publish(&neuron_adc_state_msg_);
+  }
+
+  bool setNeuronValvePwm(uint8_t slave_id, uint8_t channel, float duty)
+  {
+    if (channel >= 2 || !std::isfinite(duty)) return false;
+    const uint16_t pwm = static_cast<uint16_t>(std::max(0.0f, std::min(1.0f, duty)) * 1000.0f + 0.5f);
+    for (auto& neuron : neuron_)
+      if (neuron.getSlaveId() == slave_id)
+        {
+          neuron.can_motor_.setValvePwm(channel, pwm);
+          return true;
+        }
+    return false;
+  }
+
+  void pneumaticCommandCallback(const spinal::PneumaticCommand& command)
+  {
+    bool valid = std::isfinite(command.pump_pwm) && command.pump_pwm >= 0.0f && command.pump_pwm <= 0.9f;
+    for (uint8_t arm = 0; arm < ARM_PRESSURE_COUNT; ++arm)
+      valid = valid && std::isfinite(command.supply_pwm[arm]) && command.supply_pwm[arm] >= 0.0f && command.supply_pwm[arm] <= 1.0f &&
+              std::isfinite(command.exhaust_pwm[arm]) && command.exhaust_pwm[arm] >= 0.0f && command.exhaust_pwm[arm] <= 1.0f &&
+              !(command.supply_pwm[arm] > 0.0f && command.exhaust_pwm[arm] > 0.0f);
+    if (!valid)
+      {
+        arm_pressure_command_enabled_ = false;
+        setArmPressurePumpDuty(0.0f);
+        return;
+      }
+    arm_pressure_command_enabled_ = command.enable;
+    arm_pressure_command_received_ = true;
+    arm_pressure_last_command_ms_ = HAL_GetTick();
+    arm_pressure_pump_duty_ = command.enable ? command.pump_pwm : 0.0f;
+    for (uint8_t arm = 0; arm < ARM_PRESSURE_COUNT; ++arm)
+      {
+        arm_pressure_supply_duties_[arm] = command.enable ? command.supply_pwm[arm] : 0.0f;
+        arm_pressure_exhaust_duties_[arm] = command.enable ? command.exhaust_pwm[arm] : 0.0f;
+      }
+    if (!command.enable)
+      for (auto& neuron : neuron_)
+        {
+          neuron.can_motor_.setValvePwm(0, 0);
+          neuron.can_motor_.setValvePwm(1, 0);
+        }
+  }
+
+  float getArmPressure(uint8_t arm)
+  {
+    return arm < ARM_PRESSURE_COUNT ? arm_pressures_[arm] : NAN;
+  }
+
+  float getArmPressurePumpDuty()
+  {
+    return arm_pressure_pump_duty_;
   }
 };

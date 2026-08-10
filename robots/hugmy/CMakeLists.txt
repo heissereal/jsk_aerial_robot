@@ -106,3 +106,6 @@ install(DIRECTORY config launch plugins
   USE_SOURCE_PERMISSIONS
   )
 
+add_executable(independent_arm_pressure_controller src/control/independent_arm_pressure_controller.cpp)
+add_dependencies(independent_arm_pressure_controller ${catkin_EXPORTED_TARGETS})
+target_link_libraries(independent_arm_pressure_controller ${catkin_LIBRARIES})

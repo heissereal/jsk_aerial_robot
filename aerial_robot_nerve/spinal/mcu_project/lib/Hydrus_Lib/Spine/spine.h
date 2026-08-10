@@ -31,11 +31,13 @@
 #include <spinal/Gyro.h>
 #include <spinal/NeuronAdc.h>
 #include <spinal/NeuronAdcStates.h>
+#include <spinal/PneumaticCommand.h>
 #include <spinal/GetBoardInfo.h>
 #include <spinal/SetBoardConfig.h>
 
 /* STL */
 #include <algorithm>
+#include <cmath>
 #include <functional>
 
 /* RTOS */
@@ -65,6 +67,10 @@ namespace Spine
   void servoPublish();
   void neuronImuPublish();
   void neuronAdcPublish();
+  bool setNeuronValvePwm(uint8_t slave_id, uint8_t channel, float duty);
+  void pneumaticCommandCallback(const spinal::PneumaticCommand& command);
+  float getArmPressure(uint8_t arm);
+  float getArmPressurePumpDuty();
   void servoPositionCallback(const spinal::ServoControlCmd& control_msg);
   void servoCurrentCallback(const spinal::ServoControlCmd& control_msg);
   void servoTorqueControlCallback(const spinal::ServoTorqueCmd& control_msg);
