@@ -5,8 +5,8 @@ AirPressureController::AirPressureController(ros::NodeHandle& nh) {
     sensor_bottom_sub_ = nh.subscribe("/sensor_1", 1, &AirPressureController::sensor1Cb, this);
     stop_sub_ = nh.subscribe("/air/stop", 1, &AirPressureController::stopCb, this);
     pwm_air_pub_ = nh.advertise<spinal::PwmTest>("/pwm_cmd/air", 1);
-    pwm_pub_ = nh.advertise<spinal::PwmTest>("/quadrotor/pwm_test", 1);
-    // pwm_pub_ = nh.advertise<spinal::PwmTest>("/pwm_test", 1);
+    // pwm_pub_ = nh.advertise<spinal::PwmTest>("/quadrotor/pwm_test", 1);
+    pwm_pub_ = nh.advertise<spinal::PwmTest>("/pwm_test", 1);
     joint_filtered_pub_  = nh.advertise<std_msgs::Float32>("/quadrotor/arm/filterd_joint_cur_pressure", 1);
 
     pwm_air_cmd_.motor_index.clear();
