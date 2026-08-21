@@ -29,6 +29,8 @@ namespace Spine
     constexpr uint32_t ARM_PRESSURE_CONTROL_INTERVAL_MS = 10;
     constexpr uint32_t ARM_PRESSURE_ADC_TIMEOUT_MS = 100;
     constexpr float ARM_PRESSURE_LIMIT_KPA = 60.0f;
+    constexpr float ARM_PRESSURE_SUPPLY_SENSOR_MIN_KPA = 1.0f;
+    constexpr uint32_t ARM_PRESSURE_SUPPLY_SENSOR_TIMEOUT_MS = 2000;
     constexpr uint32_t ARM_PRESSURE_COMMAND_TIMEOUT_MS = 200;
     constexpr uint8_t ARM_PRESSURE_PUMP_PWM_PORT_1 = 4;
     constexpr uint8_t ARM_PRESSURE_PUMP_PWM_PORT_2 = 6;
@@ -36,6 +38,8 @@ namespace Spine
     float arm_pressures_[ARM_PRESSURE_COUNT] = {NAN, NAN, NAN, NAN};
     float arm_pressure_supply_duties_[ARM_PRESSURE_COUNT] = {};
     float arm_pressure_exhaust_duties_[ARM_PRESSURE_COUNT] = {};
+    uint32_t arm_pressure_low_supply_start_ms_[ARM_PRESSURE_COUNT] = {};
+    bool arm_pressure_supply_sensor_fault_[ARM_PRESSURE_COUNT] = {};
     float arm_pressure_pump_duty_ = 0.0f;
     bool arm_pressure_command_enabled_ = false;
     bool arm_pressure_command_received_ = false;
@@ -60,10 +64,16 @@ namespace Spine
     {
       if (now - arm_pressure_last_update_ms_ < ARM_PRESSURE_CONTROL_INTERVAL_MS) return;
       arm_pressure_last_update_ms_ = now;
-      if (!arm_pressure_command_enabled_ || !arm_pressure_command_received_ ||
-          now - arm_pressure_last_command_ms_ > ARM_PRESSURE_COMMAND_TIMEOUT_MS)
+      // Do not continuously overwrite auxiliary PWM ports 4 and 6 while the
+      // pneumatic controller does not own them.  This keeps the legacy
+      // pwm_test interface usable for checking each pump output.
+      if (!arm_pressure_command_received_ || !arm_pressure_command_enabled_)
+        return;
+      if (now - arm_pressure_last_command_ms_ > ARM_PRESSURE_COMMAND_TIMEOUT_MS)
         {
           setArmPressurePumpDuty(0.0f);
+          arm_pressure_command_enabled_ = false;
+          arm_pressure_command_received_ = false;
           return;
         }
 
@@ -89,6 +99,24 @@ namespace Spine
               neuron->can_motor_.setValvePwm(0, 0);
               pressure_fault = true;
             }
+
+          const bool supplying = arm_pressure_supply_duties_[arm] > 0.0f &&
+                                 arm_pressure_pump_duty_ > 0.0f;
+          if (!arm_pressure_supply_sensor_fault_[arm] && supplying &&
+              arm_pressures_[arm] >= 0.0f &&
+              arm_pressures_[arm] <= ARM_PRESSURE_SUPPLY_SENSOR_MIN_KPA)
+            {
+              if (arm_pressure_low_supply_start_ms_[arm] == 0)
+                arm_pressure_low_supply_start_ms_[arm] = now;
+              else if (now - arm_pressure_low_supply_start_ms_[arm] >=
+                       ARM_PRESSURE_SUPPLY_SENSOR_TIMEOUT_MS)
+                {
+                  arm_pressure_supply_sensor_fault_[arm] = true;
+                  neuron->can_motor_.setValvePwm(0, 0);
+                }
+            }
+          else if (!arm_pressure_supply_sensor_fault_[arm])
+            arm_pressure_low_supply_start_ms_[arm] = 0;
         }
 
       // On ADC/CAN failure only the shared pump is stopped; valve states are retained.
@@ -98,14 +126,18 @@ namespace Spine
           return;
         }
 
+      bool any_healthy_supply = false;
       for (uint8_t arm = 0; arm < ARM_PRESSURE_COUNT; ++arm)
         {
           Neuron* neuron = findNeuron(arm_pressure_slave_ids_[arm]);
           if (neuron == nullptr) continue;
-          neuron->can_motor_.setValvePwm(0, static_cast<uint16_t>(arm_pressure_supply_duties_[arm] * 1000.0f));
+          const float supply_duty = arm_pressure_supply_sensor_fault_[arm]
+                                      ? 0.0f : arm_pressure_supply_duties_[arm];
+          neuron->can_motor_.setValvePwm(0, static_cast<uint16_t>(supply_duty * 1000.0f));
           neuron->can_motor_.setValvePwm(1, static_cast<uint16_t>(arm_pressure_exhaust_duties_[arm] * 1000.0f));
+          any_healthy_supply = any_healthy_supply || supply_duty > 0.0f;
         }
-      setArmPressurePumpDuty(arm_pressure_pump_duty_);
+      setArmPressurePumpDuty(any_healthy_supply ? arm_pressure_pump_duty_ : 0.0f);
     }
 
     /* sensor fusion */
@@ -532,6 +564,7 @@ namespace Spine
 
   void pneumaticCommandCallback(const spinal::PneumaticCommand& command)
   {
+    const bool pneumatic_was_enabled = arm_pressure_command_enabled_;
     bool valid = std::isfinite(command.pump_pwm) && command.pump_pwm >= 0.0f && command.pump_pwm <= 0.9f;
     for (uint8_t arm = 0; arm < ARM_PRESSURE_COUNT; ++arm)
       valid = valid && std::isfinite(command.supply_pwm[arm]) && command.supply_pwm[arm] >= 0.0f && command.supply_pwm[arm] <= 1.0f &&
@@ -552,12 +585,22 @@ namespace Spine
         arm_pressure_supply_duties_[arm] = command.enable ? command.supply_pwm[arm] : 0.0f;
         arm_pressure_exhaust_duties_[arm] = command.enable ? command.exhaust_pwm[arm] : 0.0f;
       }
-    if (!command.enable)
-      for (auto& neuron : neuron_)
+    if (!command.enable && pneumatic_was_enabled)
+      {
+        // Release the shared pump outputs safely before returning ownership to
+        // pwm_test or another auxiliary-PWM user.
+        setArmPressurePumpDuty(0.0f);
+        for (auto& neuron : neuron_)
         {
           neuron.can_motor_.setValvePwm(0, 0);
           neuron.can_motor_.setValvePwm(1, 0);
         }
+        for (uint8_t arm = 0; arm < ARM_PRESSURE_COUNT; ++arm)
+        {
+          arm_pressure_low_supply_start_ms_[arm] = 0;
+          arm_pressure_supply_sensor_fault_[arm] = false;
+        }
+      }
   }
 
   float getArmPressure(uint8_t arm)
