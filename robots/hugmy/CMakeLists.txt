@@ -8,6 +8,8 @@ find_package(catkin REQUIRED COMPONENTS
   aerial_robot_model
   pluginlib
   std_msgs
+  std_srvs
+  spinal
   geometry_msgs
   nav_msgs
   sensor_msgs
@@ -16,6 +18,7 @@ find_package(catkin REQUIRED COMPONENTS
   cv_bridge
   tf
   image_transport
+  visualization_msgs
   )
 
 # find_package(gazebo REQUIRED)
@@ -106,6 +109,13 @@ install(DIRECTORY config launch plugins
   USE_SOURCE_PERMISSIONS
   )
 
-add_executable(independent_arm_pressure_controller src/control/independent_arm_pressure_controller.cpp)
-add_dependencies(independent_arm_pressure_controller ${catkin_EXPORTED_TARGETS})
-target_link_libraries(independent_arm_pressure_controller ${catkin_LIBRARIES})
+
+add_library(hugmy_independent_arm_pressure_controller src/control/independent_arm_pressure_controller.cpp)
+add_dependencies(hugmy_independent_arm_pressure_controller ${catkin_EXPORTED_TARGETS})
+target_link_libraries(hugmy_independent_arm_pressure_controller ${catkin_LIBRARIES})
+
+add_executable(independent_arm_pressure_controller_node src/nodes/independent_arm_pressure_controller_node.cpp)
+add_dependencies(independent_arm_pressure_controller_node ${catkin_EXPORTED_TARGETS})
+target_link_libraries(independent_arm_pressure_controller_node
+  hugmy_independent_arm_pressure_controller ${catkin_LIBRARIES})
+

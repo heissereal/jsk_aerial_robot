@@ -1,0 +1,16 @@
+arm_slave_ids: [1, 2, 3, 4]
+control_rate_hz: 50.0
+
+# Start with P control. Increase ki only after checking the measured response.
+kp: 0.08
+ki: 0.0
+integral_limit: 20.0
+deadband_kpa: 0.7
+
+minimum_duty: 0.20
+maximum_duty: 0.80
+exhaust_maximum_duty: 1.0
+
+# target_pressure is retained until a new valid four-arm target is received.
+maximum_target_kpa: 55.0
+pressure_limit_kpa: 60.0
