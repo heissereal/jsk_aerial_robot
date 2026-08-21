@@ -19,7 +19,8 @@ public:
   hap_(nh_)
   
 {
-  pwm_pub_ = nh_.advertise<spinal::PwmTest>("/quadrotor/pwm_test", 1);
+  // pwm_pub_ = nh_.advertise<spinal::PwmTest>("/quadrotor/pwm_test", 1);
+  pwm_pub_ = nh_.advertise<spinal::PwmTest>("/pwm_test", 1);
   joy_sub_ = nh_.subscribe("/quadrotor/joy", 1, &GuidanceManualController::joyCb, this);
   airstop_pub_ = nh_.advertise<std_msgs::Bool>("/air/stop", 1);
   reset_done_pub_ = nh_.advertise<std_msgs::Empty>("/guidance/reset_done", 1);
@@ -110,7 +111,7 @@ private:
   ros::Publisher reset_done_pub_;
   std_msgs::Bool stop_msg_;
   double waypoint_reached_thresh_ = 0.3;
-  double base_thrust_ = 3.5;
+  double base_thrust_ = 3.0;
   std_msgs::Empty init_msg_;
   std_msgs::Int8 msg_joint_P_, msg_bottom_P_;
   void joyCb(const sensor_msgs::Joy::ConstPtr& msg){
