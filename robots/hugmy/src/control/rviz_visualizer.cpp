@@ -92,8 +92,8 @@ void HapticsVisualizer::updateRviz() {
       wp_marker.pose.position.z = 0.1;
       wp_marker.pose.orientation.w = 1.0;
 
-      wp_marker.scale.x = 0.8;
-      wp_marker.scale.y = 0.8;
+      wp_marker.scale.x = 2.0 * waypoint_reached_thresh_;
+      wp_marker.scale.y = 2.0 * waypoint_reached_thresh_;
       wp_marker.scale.z = 0.5;
       
       if (static_cast<int>(i) == current_wp_idx_) {
