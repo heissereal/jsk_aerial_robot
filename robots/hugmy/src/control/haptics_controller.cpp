@@ -155,8 +155,8 @@ void HapticsController::controlManual() {
     double target_norm = target_vec.norm();
 
     motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
-    double on_interval_default = 0.5;
-    double off_interval_default = 0.5;
+    double on_interval_default = 1.0; //0.5
+    double off_interval_default = 0.8;
     outputPulse(motor_pwms_, on_interval_default, off_interval_default);
     // if (norm_mode_switch_ == 0){
     //   outputStrength(target_norm);
@@ -240,7 +240,7 @@ void HapticsController::controlAuto() {
     if (!first_haptics_done_) {
       motor_pwms_ = computeMotorPwmFixedTotal(target_vec, total_thrust_c_);
       double on_interval_default = 0.8;
-      double off_interval_default = 0.5;
+      double off_interval_default = 1.0;
       outputPulse(motor_pwms_, on_interval_default, off_interval_default);
       // if (norm_mode_switch_ == 0){
       //   outputStrength(target_norm);
@@ -687,7 +687,7 @@ void HapticsController::outputPulse(const std::vector<float>& motor_pwms, double
 void HapticsController::outputProximityPattern(double target_norm, const std::vector<float>& motor_pwms)
 {
   static const int pulses_per_cycle = 2;
-  static const double on_duration_sec = 0.30;
+  static const double on_duration_sec = 0.8; //mode_0 on duration
   // static const double d_max = 1.2;
 
   if (mode_switch_ != 0 && in_cooldown_) {

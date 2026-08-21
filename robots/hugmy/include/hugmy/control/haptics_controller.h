@@ -188,7 +188,7 @@ protected:
 
   double cooldown_short_sec_ = 0.3;
   double cooldown_long_sec_ = 1.0;
-  double baseline_pause_sec_ = 0.5;
+  double baseline_pause_sec_ = 0.8; // 0.5
 
   bool was_wrong_dir_ = false;
   GuidancePattern guidance_pattern_ = GuidancePattern::NONE;
