@@ -29,8 +29,13 @@ namespace Spine
     constexpr uint32_t ARM_PRESSURE_CONTROL_INTERVAL_MS = 10;
     constexpr uint32_t ARM_PRESSURE_ADC_TIMEOUT_MS = 100;
     constexpr float ARM_PRESSURE_LIMIT_KPA = 60.0f;
+    constexpr float ARM_PRESSURE_MIN_VALID_KPA = -5.0f;
+    constexpr uint32_t ARM_PRESSURE_VALUE_FAULT_DELAY_MS = 100;
     constexpr float ARM_PRESSURE_SUPPLY_SENSOR_MIN_KPA = 1.0f;
-    constexpr uint32_t ARM_PRESSURE_SUPPLY_SENSOR_TIMEOUT_MS = 2000;
+    // Pneumatic pressure can take several seconds to start rising from an
+    // exhausted bag.  Two seconds falsely latched the disconnected-sensor
+    // protection during normal 0 -> 10 kPa identification steps.
+    constexpr uint32_t ARM_PRESSURE_SUPPLY_SENSOR_TIMEOUT_MS = 10000;
     constexpr uint32_t ARM_PRESSURE_COMMAND_TIMEOUT_MS = 200;
     constexpr uint8_t ARM_PRESSURE_PUMP_PWM_PORT_1 = 4;
     constexpr uint8_t ARM_PRESSURE_PUMP_PWM_PORT_2 = 6;
@@ -40,6 +45,7 @@ namespace Spine
     float arm_pressure_exhaust_duties_[ARM_PRESSURE_COUNT] = {};
     uint32_t arm_pressure_low_supply_start_ms_[ARM_PRESSURE_COUNT] = {};
     bool arm_pressure_supply_sensor_fault_[ARM_PRESSURE_COUNT] = {};
+    uint32_t arm_pressure_value_fault_start_ms_[ARM_PRESSURE_COUNT] = {};
     float arm_pressure_pump_duty_ = 0.0f;
     bool arm_pressure_command_enabled_ = false;
     bool arm_pressure_command_received_ = false;
@@ -64,9 +70,6 @@ namespace Spine
     {
       if (now - arm_pressure_last_update_ms_ < ARM_PRESSURE_CONTROL_INTERVAL_MS) return;
       arm_pressure_last_update_ms_ = now;
-      // Do not continuously overwrite auxiliary PWM ports 4 and 6 while the
-      // pneumatic controller does not own them.  This keeps the legacy
-      // pwm_test interface usable for checking each pump output.
       if (!arm_pressure_command_received_ || !arm_pressure_command_enabled_)
         return;
       if (now - arm_pressure_last_command_ms_ > ARM_PRESSURE_COMMAND_TIMEOUT_MS)
@@ -89,19 +92,28 @@ namespace Spine
               continue;
             }
           arm_pressures_[arm] = neuron->can_adc_.getPressure();
-          if (!std::isfinite(arm_pressures_[arm]) || arm_pressures_[arm] < -5.0f)
+          const bool pressure_value_invalid =
+              !std::isfinite(arm_pressures_[arm]) ||
+              arm_pressures_[arm] < ARM_PRESSURE_MIN_VALID_KPA ||
+              arm_pressures_[arm] >= ARM_PRESSURE_LIMIT_KPA;
+          if (pressure_value_invalid)
             {
-              all_sensors_fresh = false;
-              continue;
+              if (arm_pressure_value_fault_start_ms_[arm] == 0)
+                arm_pressure_value_fault_start_ms_[arm] = now;
+              else if (now - arm_pressure_value_fault_start_ms_[arm] >=
+                       ARM_PRESSURE_VALUE_FAULT_DELAY_MS)
+                pressure_fault = true;
             }
-          if (arm_pressures_[arm] >= ARM_PRESSURE_LIMIT_KPA)
-            {
-              neuron->can_motor_.setValvePwm(0, 0);
-              pressure_fault = true;
-            }
+          else
+            arm_pressure_value_fault_start_ms_[arm] = 0;
 
           const bool supplying = arm_pressure_supply_duties_[arm] > 0.0f &&
                                  arm_pressure_pump_duty_ > 0.0f;
+          if (arm_pressure_supply_sensor_fault_[arm] && !supplying)
+            {
+              arm_pressure_supply_sensor_fault_[arm] = false;
+              arm_pressure_low_supply_start_ms_[arm] = 0;
+            }
           if (!arm_pressure_supply_sensor_fault_[arm] && supplying &&
               arm_pressures_[arm] >= 0.0f &&
               arm_pressures_[arm] <= ARM_PRESSURE_SUPPLY_SENSOR_MIN_KPA)
@@ -587,8 +599,6 @@ namespace Spine
       }
     if (!command.enable && pneumatic_was_enabled)
       {
-        // Release the shared pump outputs safely before returning ownership to
-        // pwm_test or another auxiliary-PWM user.
         setArmPressurePumpDuty(0.0f);
         for (auto& neuron : neuron_)
         {
@@ -599,6 +609,7 @@ namespace Spine
         {
           arm_pressure_low_supply_start_ms_[arm] = 0;
           arm_pressure_supply_sensor_fault_[arm] = false;
+          arm_pressure_value_fault_start_ms_[arm] = 0;
         }
       }
   }
