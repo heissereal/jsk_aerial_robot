@@ -1,0 +1,37 @@
+<launch>
+  <arg name="robot_ns" default="quadrotor" />
+  <arg name="start_joy" default="true" />
+  <arg name="joy_dev" default="/dev/input/js0" />
+  <arg name="hold_pressure_kpa" default="30.0" />
+  <!-- Existing Hugmy mapping: button 4 = left upper, button 5 = right upper. -->
+  <arg name="hold_button" default="4" />
+  <arg name="exhaust_button" default="5" />
+
+  <group ns="$(arg robot_ns)">
+    <node if="$(arg start_joy)"
+          pkg="joy"
+          type="joy_node"
+          name="joy_node"
+          output="screen">
+      <param name="dev" value="$(arg joy_dev)" />
+      <param name="coalesce_interval" value="0.025" />
+    </node>
+
+    <node pkg="hugmy"
+          type="independent_arm_pressure_controller_node"
+          name="independent_arm_pressure_controller"
+          output="screen">
+      <rosparam command="load"
+                file="$(find hugmy)/config/independent_arm_pressure_controller.yaml" />
+    </node>
+
+    <node pkg="hugmy"
+          type="joy_arm_pressure_command_node"
+          name="joy_arm_pressure_command"
+          output="screen">
+      <param name="hold_pressure_kpa" value="$(arg hold_pressure_kpa)" />
+      <param name="hold_button" value="$(arg hold_button)" />
+      <param name="exhaust_button" value="$(arg exhaust_button)" />
+    </node>
+  </group>
+</launch>
