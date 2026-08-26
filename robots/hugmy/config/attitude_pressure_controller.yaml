@@ -1,0 +1,117 @@
+control_rate_hz: 50.0
+imu_timeout_sec: 0.10
+thrust_timeout_sec: 0.20
+
+# GRASP -> PREPARE -> THRUST_CORRECTION -> RECOVER
+state_machine_enabled: true
+# Initial real-machine motion test: pressurize arm 1 only, then drive motor 0
+# through pwm_test. Disable this after confirming the state sequence.
+fixed_arm_test_enabled: false
+fixed_test_arm_index: 0
+fixed_test_pressure_kpa: 40.0
+fixed_test_thrust_n: 2.0
+use_pwm_test_for_correction: true
+# The current real-arm IMU/model comparison has an approximately 1.8 rad
+# mounting-frame offset. Keep IMU freshness monitoring, but use pressure
+# arrival for PREPARE until that transform is calibrated.
+require_arm_geometry_for_prepare: false
+neuron_slave_ids: [1, 2, 3, 4]
+neuron_timeout_sec: 0.10
+pressure_safety_limit_kpa: 60.0
+correction_trigger_angle_rad: 0.12
+correction_stop_angle_rad: 0.04
+correction_max_angular_rate_rad_s: 0.8
+correction_thrust_duration_sec: 0.20
+correction_planning_thrust_n: 2.0
+# A lower command is too close to ESC idle to start the real rotor reliably.
+correction_min_thrust_n: 2.0
+# Spinal independently enforces the same 3 N ceiling and a 300 ms pulse limit.
+correction_max_thrust_n: 3.0
+# 2 N is used to start a stationary rotor. Once Spinal detects correction-
+# direction body rotation, thrust may be reduced to this running value.
+correction_hold_min_thrust_n: 0.8
+correction_motion_start_rate_rad_s: 0.05
+correction_motion_stop_rate_rad_s: 0.02
+correction_motion_stop_timeout_sec: 0.30
+# Begin reducing thrust before entering the final 0.04 rad stop band.
+correction_slowdown_angle_rad: 0.10
+correction_thrust_down_rate_n_s: 1.5
+# With a 5 kPa/s target slew, traversing the full measured range from the
+# 10 kPa grasp pressure takes up to 8 s, before the stability dwell begins.
+# 30 -> 0 kPa at 10 kPa/s requires about 3 s before pressure settling.
+prepare_timeout_sec: 30.0
+prepare_stable_duration_sec: 0.30
+# The straightening target grows with required moment. It is also increased as
+# needed to bring a rotor below the 80 deg tilt boundary. Maximum change is the
+# grasp-model bend itself (a straight arm), not a fixed angle.
+prepare_angle_per_moment_rad_per_nm: 1.0
+prepare_min_straighten_angle_rad: 0.0174533  # 1 deg
+prepare_max_rotor_tilt_rad: 1.3962634        # 80 deg
+prepare_angle_tolerance_rad: 0.00872665  # 0.5 deg
+# Reduce pressure gradually first. Thrust remains zero until both the target
+# pressure and measured pressure reach the floor. Only the remaining angle
+# error is produced by increasing rotor thrust from zero.
+prepare_pressure_ramp_rate_kpa_s: 10.0
+# No fixed positive lower bound: PREPARE may exhaust to atmospheric pressure
+# when that is required by the moment-dependent straight-arm target.
+minimum_prepare_pressure_kpa: 0.0
+prepare_initial_thrust_n: 0.0
+prepare_thrust_ramp_rate_n_s: 1.5
+prepare_max_thrust_n: 9.0
+pwm_test_max_thrust_n: 9.0
+# If the pair straightens by less than 1 deg for 0.5 s, accept that shape as
+# the object-dependent limit and reallocate the correction impulse from it.
+prepare_progress_epsilon_rad: 0.0174533
+prepare_progress_timeout_sec: 0.5
+recover_timeout_sec: 5.0
+cooldown_duration_sec: 1.0
+pressure_tolerance_kpa: 2.0
+# Initial tolerance for the pressure/thrust lookup model versus Neuron IMU.
+# Tighten this after measuring the real arm's repeatability.
+arm_angle_tolerance_rad: 0.30
+arm_gyro_tolerance_rad_s: 0.20
+
+# Attitude PD output is a required moment about the human-arm contact point.
+# These are deliberately small initial gains for low-thrust experiments.
+roll_moment_kp_nm_per_rad: 0.10
+pitch_moment_kp_nm_per_rad: 0.10
+roll_moment_kd_nm_per_rad_s: 0.015
+pitch_moment_kd_nm_per_rad_s: 0.015
+
+# Gravity moment about the contact point: (CoM - contact) x m*g.
+gravity_compensation: true
+mass_kg: 1.244
+center_of_mass_main_body_m: [-0.00348932, 0.00065510, 0.01200916]
+# Must be measured for the actual perching/contact condition.
+contact_position_main_body_m: [0.0, 0.0, -0.070]
+
+base_pressure_kpa: 30.0
+# Keep correction pressure within the 40 kPa range used for the first
+# real-machine attitude-correction tests.
+maximum_pressure_kpa: 40.0
+pressure_rate_limit_kpa_s: 10.0
+
+# joint_model.cpp uses max(0, base_thrust) + 1.8 N as the thrust coordinate of the
+# measured P/T table. Keep that convention until the table is recalibrated.
+bend_model_thrust_offset_n: 1.8
+
+# hugmy2.urdf.xacro rotor declaration order, mapped to zero-based motor index:
+# motor0/rotor1=(+x,+y), motor1/rotor2=(-x,+y),
+# motor2/rotor3=(-x,-y), motor3/rotor4=(+x,-y).
+arm_base_positions_main_body_m: [ 0.03812,  0.03812, -0.039,
+                                 -0.03812,  0.03812, -0.039,
+                                 -0.03812, -0.03812, -0.039,
+                                  0.03812, -0.03812, -0.039]
+arm_yaw_rad: [-2.3561944902, -0.7853981634, 0.7853981634, 2.3561944902]
+
+# Damped least-squares pressure allocation. It minimizes the roll/pitch moment
+# error using r_i(P_i) x (T_i*d_i(P_i)), with one-direction pressure bounds.
+allocation_iterations: 6
+allocation_damping: 1.0e-5
+allocation_step_limit_kpa: 5.0
+allocation_pressure_epsilon_kpa: 0.25
+allocation_bias_weight: 0.01
+
+# The Neuron IMU is approximately 0.05 m below its rotor. Reserved for the
+# future per-arm quaternion-based rotor pose estimator.
+neuron_z_offset_from_rotor_m: -0.05

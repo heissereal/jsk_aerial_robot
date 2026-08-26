@@ -119,3 +119,19 @@ add_dependencies(independent_arm_pressure_controller_node ${catkin_EXPORTED_TARG
 target_link_libraries(independent_arm_pressure_controller_node
   hugmy_independent_arm_pressure_controller ${catkin_LIBRARIES})
 
+add_executable(joy_arm_pressure_command_node src/nodes/joy_arm_pressure_command_node.cpp)
+add_dependencies(joy_arm_pressure_command_node ${catkin_EXPORTED_TARGETS})
+target_link_libraries(joy_arm_pressure_command_node ${catkin_LIBRARIES})
+
+catkin_install_python(PROGRAMS
+  script/arm_bend_identification.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+
+add_library(hugmy_attitude_pressure_controller src/control/attitude_pressure_controller.cpp)
+add_dependencies(hugmy_attitude_pressure_controller ${catkin_EXPORTED_TARGETS})
+target_link_libraries(hugmy_attitude_pressure_controller ${catkin_LIBRARIES})
+
+add_executable(attitude_pressure_controller_node src/nodes/attitude_pressure_controller_node.cpp)
+add_dependencies(attitude_pressure_controller_node ${catkin_EXPORTED_TARGETS})
+target_link_libraries(attitude_pressure_controller_node
+  hugmy_attitude_pressure_controller ${catkin_LIBRARIES})
