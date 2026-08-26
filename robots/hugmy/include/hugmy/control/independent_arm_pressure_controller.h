@@ -33,11 +33,19 @@ private:
 
   std::array<int, ARM_COUNT> slave_ids_{{1, 2, 3, 4}};
   std::array<double, ARM_COUNT> pressure_;
+  std::array<double, ARM_COUNT> last_valid_pressure_;
   std::array<double, ARM_COUNT> target_;
   std::array<double, ARM_COUNT> integral_;
+  std::array<bool, ARM_COUNT> pressurizing_{};
+  std::array<ros::WallTime, ARM_COUNT> invalid_since_;
+  std::array<bool, ARM_COUNT> sensor_fault_active_{};
   double kp_, ki_, deadband_kpa_, minimum_duty_, maximum_duty_;
-  double exhaust_maximum_duty_, integral_limit_;
+  double exhaust_kp_, exhaust_maximum_duty_, integral_limit_;
+  double gain_schedule_min_scale_, gain_schedule_reference_kpa_;
+  double pump_on_duty_, pressurize_start_error_kpa_, pressurize_stop_error_kpa_;
   double control_rate_hz_, maximum_target_kpa_, pressure_limit_kpa_;
+  double sensor_fault_delay_s_;
+  bool enable_gain_scheduling_;
   bool enabled_ = false;
   bool target_received_ = false;
   bool use_root_spinal_topics_ = false;

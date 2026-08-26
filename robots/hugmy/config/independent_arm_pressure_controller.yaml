@@ -1,16 +1,26 @@
 arm_slave_ids: [1, 2, 3, 4]
 control_rate_hz: 50.0
 
-# Start with P control. Increase ki only after checking the measured response.
-kp: 0.08
-ki: 0.0
+kp: 0.38
+ki: 0.03
 integral_limit: 20.0
-deadband_kpa: 0.7
+deadband_kpa: 1.0
 
-minimum_duty: 0.20
+enable_gain_scheduling: true
+gain_schedule_min_scale: 0.10
+gain_schedule_reference_kpa: 60.0
+
+minimum_duty: 0.15
 maximum_duty: 0.80
+exhaust_kp: 0.05
 exhaust_maximum_duty: 1.0
 
-# target_pressure is retained until a new valid four-arm target is received.
+pump_on_duty: 0.80
+
+pressurize_start_error_kpa: 1.0
+pressurize_stop_error_kpa: 0.0
+
 maximum_target_kpa: 55.0
 pressure_limit_kpa: 60.0
+
+sensor_fault_delay_s: 0.5

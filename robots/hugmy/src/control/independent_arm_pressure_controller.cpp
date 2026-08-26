@@ -8,27 +8,34 @@ IndependentArmPressureController::IndependentArmPressureController(ros::NodeHand
                                                                    ros::NodeHandle& pnh)
   : nh_(nh), pnh_(pnh)
 {
-  pnh_.param("kp", kp_, 0.08);
-  pnh_.param("ki", ki_, 0.0);
-  pnh_.param("deadband_kpa", deadband_kpa_, 0.7);
-  pnh_.param("minimum_duty", minimum_duty_, 0.20); //pump duty below this value is not effective
+  pnh_.param("kp", kp_, 0.38);
+  pnh_.param("ki", ki_, 0.03);
+  pnh_.param("deadband_kpa", deadband_kpa_, 2.0);
+  pnh_.param("minimum_duty", minimum_duty_, 0.20);
   pnh_.param("maximum_duty", maximum_duty_, 0.80);
+  pnh_.param("exhaust_kp", exhaust_kp_, 0.05);
   pnh_.param("exhaust_maximum_duty", exhaust_maximum_duty_, 1.0);
+  pnh_.param("enable_gain_scheduling", enable_gain_scheduling_, true);
+  pnh_.param("gain_schedule_min_scale", gain_schedule_min_scale_, 0.10);
+  pnh_.param("gain_schedule_reference_kpa", gain_schedule_reference_kpa_, 60.0);
+  pnh_.param("pump_on_duty", pump_on_duty_, 0.80);
+  pnh_.param("pressurize_start_error_kpa", pressurize_start_error_kpa_, 1.0);
+  pnh_.param("pressurize_stop_error_kpa", pressurize_stop_error_kpa_, 0.0);
   pnh_.param("integral_limit", integral_limit_, 20.0);
   pnh_.param("control_rate_hz", control_rate_hz_, 50.0);
   pnh_.param("maximum_target_kpa", maximum_target_kpa_, 55.0);
   pnh_.param("pressure_limit_kpa", pressure_limit_kpa_, 60.0);
+  pnh_.param("sensor_fault_delay_s", sensor_fault_delay_s_, 0.5);
 
   std::vector<int> slave_ids;
   if (pnh_.getParam("arm_slave_ids", slave_ids) && slave_ids.size() == ARM_COUNT)
     std::copy(slave_ids.begin(), slave_ids.end(), slave_ids_.begin());
 
-  pressure_.fill(NAN); //not 0 for initialization
+  pressure_.fill(NAN);
+  last_valid_pressure_.fill(NAN);
   target_.fill(0.0);
   integral_.fill(0.0);
   adc_sub_ = nh_.subscribe("neuron/adc_states", 1, &IndependentArmPressureController::adcCallback, this);
-  // bridge.launch started outside a robot namespace publishes this root topic.
-  // The callback selects the matching command route automatically.
   if (nh_.resolveName("neuron/adc_states") != "/neuron/adc_states")
     root_adc_sub_ = nh_.subscribe("/neuron/adc_states", 1,
                                   &IndependentArmPressureController::rootAdcCallback, this);
@@ -64,7 +71,7 @@ void IndependentArmPressureController::updatePressure(
           pressure_[arm] = adc.pressure;
           break;
         }
-} //adcここでも切るか見る必要があるのか？
+}
 
 void IndependentArmPressureController::targetCallback(const std_msgs::Float32MultiArray::ConstPtr& msg)
 {
@@ -84,14 +91,10 @@ void IndependentArmPressureController::targetCallback(const std_msgs::Float32Mul
   std::copy(msg->data.begin(), msg->data.end(), target_.begin());
   target_received_ = true;
 }
-//警告だけならいらなくないか？
-
 bool IndependentArmPressureController::enableCallback(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res)
 {
   if (req.data && !target_received_)
     {
-      // Enabling before the first target message must not start inflation.
-      // Hold the currently measured pressures until the owner's target arrives.
       for (size_t arm = 0; arm < ARM_COUNT; ++arm)
         target_[arm] = std::isfinite(pressure_[arm]) ? pressure_[arm] : 0.0;
       target_received_ = true;
@@ -106,11 +109,13 @@ bool IndependentArmPressureController::enableCallback(std_srvs::SetBool::Request
 
 void IndependentArmPressureController::update(const ros::TimerEvent& event)
 {
-  spinal::PneumaticCommand command; //これできるのかな？
+  spinal::PneumaticCommand command;
   command.enable = enabled_;
   command.pump_pwm = 0.0f;
   const double dt = std::max(0.0, std::min(0.1, (event.current_real - event.last_real).toSec()));
   bool sensors_healthy = true;
+  bool any_arm_pressurizing = false;
+  const ros::WallTime wall_now = ros::WallTime::now();
 
   std_msgs::Float32MultiArray pressure_msg, error_msg;
   pressure_msg.data.resize(ARM_COUNT);
@@ -120,44 +125,101 @@ void IndependentArmPressureController::update(const ros::TimerEvent& event)
     {
       command.supply_pwm[arm] = 0.0f;
       command.exhaust_pwm[arm] = 0.0f;
-      pressure_msg.data[arm] = pressure_[arm];
-      error_msg.data[arm] = target_[arm] - pressure_[arm];
+      const double raw_pressure = pressure_[arm];
+      const bool sample_valid = std::isfinite(raw_pressure) &&
+                                raw_pressure >= -5.0 &&
+                                raw_pressure < pressure_limit_kpa_;
+      if (sample_valid)
+        {
+          last_valid_pressure_[arm] = raw_pressure;
+          invalid_since_[arm] = ros::WallTime();
+          if (sensor_fault_active_[arm])
+            ROS_WARN("Arm %zu pressure sensor recovered; pressure control resumes automatically", arm + 1);
+          sensor_fault_active_[arm] = false;
+        }
+      else if (invalid_since_[arm].isZero())
+        invalid_since_[arm] = wall_now;
 
-      if (!std::isfinite(pressure_[arm]) || pressure_[arm] < -5.0 ||
-          pressure_[arm] >= pressure_limit_kpa_)
+      const bool invalid_too_long = !sample_valid &&
+          (wall_now - invalid_since_[arm]).toSec() >= sensor_fault_delay_s_;
+      if (invalid_too_long)
+        {
+          sensors_healthy = false;
+          if (!sensor_fault_active_[arm])
+            ROS_ERROR("Arm %zu pressure sensor invalid for %.3f s (raw: %.3f kPa); control pauses until recovery",
+                      arm + 1, sensor_fault_delay_s_, raw_pressure);
+          sensor_fault_active_[arm] = true;
+        }
+
+      const double control_pressure = sample_valid ? raw_pressure : last_valid_pressure_[arm];
+      pressure_msg.data[arm] = raw_pressure;
+      error_msg.data[arm] = target_[arm] - control_pressure;
+      if (!std::isfinite(control_pressure))
         {
           sensors_healthy = false;
           continue;
         }
 
-      const double error = target_[arm] - pressure_[arm];
-      if (!enabled_ || std::abs(error) <= deadband_kpa_)
+      const double error = target_[arm] - control_pressure;
+      if (!enabled_)
         {
           integral_[arm] = 0.0;
+          pressurizing_[arm] = false;
           continue;
         }
 
-      integral_[arm] = std::max(-integral_limit_, std::min(integral_limit_, integral_[arm] + error * dt));
-      const double effort = kp_ * std::abs(error) + ki_ * std::abs(integral_[arm]);
-      if (error > 0.0)
+      if (pressurizing_[arm])
         {
-          command.supply_pwm[arm] = std::max(minimum_duty_, std::min(maximum_duty_, effort));
-          command.pump_pwm = std::max(command.pump_pwm, command.supply_pwm[arm]);
+          if (error <= pressurize_stop_error_kpa_)
+            {
+              pressurizing_[arm] = false;
+              integral_[arm] = 0.0;
+            }
         }
-      else
-        command.exhaust_pwm[arm] = std::min(exhaust_maximum_duty_, effort);
+      else if (error >= pressurize_start_error_kpa_)
+        pressurizing_[arm] = true;
+
+      if (pressurizing_[arm])
+        {
+          const double pressure_ratio = std::max(
+              0.0, std::min(1.0, control_pressure /
+                                      std::max(1.0, gain_schedule_reference_kpa_)));
+          const double gain_scale = enable_gain_scheduling_
+              ? gain_schedule_min_scale_ +
+                    (1.0 - gain_schedule_min_scale_) * pressure_ratio
+              : 1.0;
+          const double scheduled_kp = kp_ * gain_scale;
+          const double scheduled_ki = ki_ * gain_scale;
+
+          // anti-windup
+          const double candidate_integral = std::max(
+              0.0, std::min(integral_limit_, integral_[arm] + error * dt));
+          const double candidate_effort =
+              scheduled_kp * error + scheduled_ki * candidate_integral;
+          if (candidate_effort < maximum_duty_)
+            integral_[arm] = candidate_integral;
+
+          const double effort = scheduled_kp * error + scheduled_ki * integral_[arm];
+          command.supply_pwm[arm] = std::max(minimum_duty_, std::min(maximum_duty_, effort));
+          any_arm_pressurizing = true;
+        }
+      else if (error < -deadband_kpa_)
+        {
+          integral_[arm] = 0.0;
+          command.exhaust_pwm[arm] =
+              std::min(exhaust_maximum_duty_, exhaust_kp_ * std::abs(error));
+        }
     }
+
+  if (any_arm_pressurizing)
+    command.pump_pwm = pump_on_duty_;
 
   if (!enabled_ || !sensors_healthy)
     {
       command.enable = false;
       command.pump_pwm = 0.0f;
       resetIntegrators();
-      if (enabled_ && !sensors_healthy)
-        {
-          enabled_ = false;
-          ROS_ERROR("Pressure control latched off by missing, invalid, or over-limit sensor data");
-        }
+      pressurizing_.fill(false);
     }
 
   publishCommand(command);
