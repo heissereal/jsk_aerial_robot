@@ -200,6 +200,14 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12 | GPIO_PIN_14, GPIO_PIN_RESET);
+  GPIO_InitTypeDef pumpGateInit = {0};
+  pumpGateInit.Pin = GPIO_PIN_12 | GPIO_PIN_14;
+  pumpGateInit.Mode = GPIO_MODE_OUTPUT_PP;
+  pumpGateInit.Pull = GPIO_PULLDOWN;
+  pumpGateInit.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOD, &pumpGateInit);
 
   /* USER CODE END SysInit */
 
