@@ -94,6 +94,12 @@ class GPSNode:
                 self.baudrate,
                 timeout=1
             )
+            # Enable NMEA messages including GGA
+            command = "$PCAS03,1,1,1,1,1,1,1,1,0,0,,,0,0*02\r\n"
+            self.ser.write(command.encode("ascii"))
+            self.ser.flush()
+
+            rospy.loginfo("Sent NMEA output configuration")
 
         except serial.SerialException as e:
             rospy.logfatal(
