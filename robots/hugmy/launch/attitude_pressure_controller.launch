@@ -1,0 +1,21 @@
+<launch>
+  <arg name="robot_ns" default="quadrotor" />
+
+  <group ns="$(arg robot_ns)">
+    <node pkg="hugmy"
+          type="independent_arm_pressure_controller_node"
+          name="independent_arm_pressure_controller"
+          output="screen">
+      <rosparam command="load"
+                file="$(find hugmy)/config/independent_arm_pressure_controller.yaml" />
+    </node>
+
+    <node pkg="hugmy"
+          type="attitude_pressure_controller_node"
+          name="attitude_pressure_controller"
+          output="screen">
+      <rosparam command="load"
+                file="$(find hugmy)/config/attitude_pressure_controller.yaml" />
+    </node>
+  </group>
+</launch>
