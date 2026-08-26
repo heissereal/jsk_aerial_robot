@@ -1,0 +1,57 @@
+neuron_id: 4
+motor_index: 3
+# Zero-based index in the four-element target_pressure array.
+pressure_arm_index: 3
+
+# Targeted fine grid for the high-sensitivity region found in the first sweep.
+# PWM is recorded as PWM, not assumed to be thrust in newtons.
+pressure_values_kpa: [0, 10, 20, 30]
+motor_pwm_values: [0.600, 0.625, 0.650, 0.675, 0.700, 0.725, 0.750, 0.775, 0.800]
+repeats: 2
+bidirectional_pressure_sweep: true
+bidirectional_pwm_sweep: true
+
+minimum_settle_s: 0.5
+stability_window_s: 0.5
+record_duration_s: 1.0
+imu_recovery_timeout_s: 10.0
+condition_timeout_s: 1.0
+pressure_reach_timeout_s: 20.0
+pressure_tolerance_kpa: 1.0
+# For identification, record a fixed window after reaching the target pressure
+# and retain its mean/std even when the arm keeps vibrating.
+require_stability: false
+pressure_std_limit_kpa: 1.0
+gyro_rms_limit_rad_s: 0.50
+# During rotor operation, stability is judged from LPF bend-angle variation,
+# because propeller vibration makes raw gyro RMS unsuitable.
+bend_std_limit_deg: 3.0
+acc_lpf_tau_s: 0.15
+# Keep the sweep running when one condition does not satisfy the stability
+# thresholds. That condition is saved with stable=0 instead of stopping the
+# motor and aborting the complete experiment.
+abort_on_timeout: false
+
+idle_pwm: 0.50
+max_motor_pwm: 0.85
+max_pressure_kpa: 55.0
+command_rate_hz: 20.0
+output_directory: ~/.ros/hugmy_arm_identification
+
+# Arm 4 geometry used only by this identification model. The URDF will be
+# updated separately. Total bending is divided equally among joints 1, 2 and 3.
+arm_link_length_m: 0.023
+rotor_offset_radial_m: 0.020
+rotor_offset_z_m: 0.0369
+# Position of arm 4 joint 1 in the main_body frame.
+arm_base_xyz_m: [0.04198, 0.04198, -0.0385]
+# Arm 4 extends clockwise 45 degrees from the body +x axis.
+arm_outward_yaw_rad: -0.7853981633974483
+
+# spinal/bridge.launch publishes these topics at the root namespace.
+neuron_imu_topic: /neuron/imu_states
+neuron_adc_topic: /neuron/adc_states
+root_imu_topic: /imu
+pwm_topic: /pwm_test
+pressure_target_topic: /quadrotor/independent_arm_pressure_controller/target_pressure
+pressure_enable_service: /quadrotor/independent_arm_pressure_controller/enable

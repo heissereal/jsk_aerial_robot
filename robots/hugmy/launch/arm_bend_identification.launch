@@ -1,0 +1,28 @@
+<launch>
+  <arg name="robot_ns" default="quadrotor" />
+  <arg name="start_pressure_controller" default="true" />
+  <arg name="config_file" default="$(find hugmy)/config/arm_bend_identification.yaml" />
+  <arg name="neuron_imu_topic" default="/neuron/imu_states" />
+  <arg name="neuron_adc_topic" default="/neuron/adc_states" />
+  <arg name="root_imu_topic" default="/imu" />
+  <arg name="pwm_topic" default="/pwm_test" />
+
+  <!-- spinal/bridge.launch is intentionally started separately. -->
+  <include if="$(arg start_pressure_controller)"
+           file="$(find hugmy)/launch/independent_arm_pressure_controller.launch">
+    <arg name="robot_ns" value="$(arg robot_ns)" />
+  </include>
+
+  <group ns="$(arg robot_ns)">
+    <node pkg="hugmy"
+          type="arm_bend_identification.py"
+          name="arm_bend_identification"
+          output="screen">
+      <rosparam command="load" file="$(arg config_file)" />
+      <param name="neuron_imu_topic" value="$(arg neuron_imu_topic)" />
+      <param name="neuron_adc_topic" value="$(arg neuron_adc_topic)" />
+      <param name="root_imu_topic" value="$(arg root_imu_topic)" />
+      <param name="pwm_topic" value="$(arg pwm_topic)" />
+    </node>
+  </group>
+</launch>
