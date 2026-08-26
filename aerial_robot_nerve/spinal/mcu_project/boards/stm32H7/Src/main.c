@@ -187,6 +187,18 @@ int main(void)
 
   /* USER CODE BEGIN SysInit */
 
+  // Keep Hugmy pump gates off before TIM4 takes ownership of these pins.
+  // A zero TIM4 compare value alone is too late: PD12/PD14 otherwise float
+  // during early boot and can momentarily enable the external MOSFET relays.
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_12 | GPIO_PIN_14, GPIO_PIN_RESET);
+  GPIO_InitTypeDef pumpGateInit = {0};
+  pumpGateInit.Pin = GPIO_PIN_12 | GPIO_PIN_14;
+  pumpGateInit.Mode = GPIO_MODE_OUTPUT_PP;
+  pumpGateInit.Pull = GPIO_PULLDOWN;
+  pumpGateInit.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOD, &pumpGateInit);
+
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -844,7 +856,7 @@ static void MX_TIM4_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 10000;
+  sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
