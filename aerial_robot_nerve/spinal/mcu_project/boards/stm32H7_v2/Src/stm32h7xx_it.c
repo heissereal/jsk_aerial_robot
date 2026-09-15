@@ -71,6 +71,7 @@ extern UART_HandleTypeDef huart1;
 extern TIM_HandleTypeDef htim12;
 
 /* USER CODE BEGIN EV */
+extern DMA_HandleTypeDef hdma_tim4_up;
 
 /* USER CODE END EV */
 
@@ -369,6 +370,10 @@ void ETH_WKUP_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+void DMA2_Stream4_IRQHandler(void)
+{
+  HAL_DMA_IRQHandler(&hdma_tim4_up);
+}
 
 /* USER CODE END 1 */
 /************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/

@@ -5,6 +5,23 @@
 
 #include "dshot.h"
 
+namespace
+{
+#ifdef STM32H7
+uint32_t motor1_dmabuffer_[DSHOT_DMA_BUFFER_SIZE] __attribute__((section(".DShotBufferSection1")));
+uint32_t motor2_dmabuffer_[DSHOT_DMA_BUFFER_SIZE] __attribute__((section(".DShotBufferSection2")));
+uint32_t motor3_dmabuffer_[DSHOT_DMA_BUFFER_SIZE] __attribute__((section(".DShotBufferSection3")));
+uint32_t motor4_dmabuffer_[DSHOT_DMA_BUFFER_SIZE] __attribute__((section(".DShotBufferSection4")));
+uint32_t tim4_dmabuffer_[4 * DSHOT_DMA_BUFFER_SIZE] __attribute__((section(".DShotBufferSection5")));
+#else
+uint32_t motor1_dmabuffer_[DSHOT_DMA_BUFFER_SIZE];
+uint32_t motor2_dmabuffer_[DSHOT_DMA_BUFFER_SIZE];
+uint32_t motor3_dmabuffer_[DSHOT_DMA_BUFFER_SIZE];
+uint32_t motor4_dmabuffer_[DSHOT_DMA_BUFFER_SIZE];
+uint32_t tim4_dmabuffer_[4 * DSHOT_DMA_BUFFER_SIZE];
+#endif
+}
+
 void DShot::init(dshot_type_e dshot_type, TIM_HandleTypeDef* htim_motor_1, uint32_t channel_motor_1,
                  TIM_HandleTypeDef* htim_motor_2, uint32_t channel_motor_2, TIM_HandleTypeDef* htim_motor_3,
                  uint32_t channel_motor_3, TIM_HandleTypeDef* htim_motor_4, uint32_t channel_motor_4)
@@ -18,7 +35,19 @@ void DShot::init(dshot_type_e dshot_type, TIM_HandleTypeDef* htim_motor_1, uint3
   htim_motor_4_ = htim_motor_4;
   channel_motor_4_ = channel_motor_4;
 
+  use_dma_burst_ = htim_motor_1_->Instance == TIM4;
   dshot_set_timer(dshot_type);
+  if (use_dma_burst_)
+  {
+    // PWM preload applies all four compare values together at the next update event.
+    htim_motor_1_->Instance->CCR1 = 0;
+    htim_motor_1_->Instance->CCR2 = 0;
+    htim_motor_1_->Instance->CCR3 = 0;
+    htim_motor_1_->Instance->CCR4 = 0;
+    htim_motor_1_->Instance->DCR = TIM_DMABASE_CCR1 | TIM_DMABURSTLENGTH_4TRANSFERS;
+    htim_motor_1_->Instance->EGR = TIM_EGR_UG;
+    __HAL_TIM_CLEAR_FLAG(htim_motor_1_, TIM_FLAG_UPDATE);
+  }
   dshot_put_tc_callback_function();
   dshot_start_pwm();
 }
@@ -32,6 +61,8 @@ void DShot::initTelemetry(UART_HandleTypeDef* huart)
 
 void DShot::write(uint16_t* motor_value_array, bool is_telemetry)
 {
+  // Do not overwrite the interleaved TIM4 buffer while DMA is reading it.
+  if (use_dma_burst_ && (htim_motor_1_->Instance->DIER & TIM_DIER_UDE)) return;
   bool is_telemetry_array[4] = {false, false, false, false};
 
   if (is_telemetry)
@@ -134,16 +165,21 @@ void DShot::dshot_set_timer(dshot_type_e dshot_type)
   // motor4
   __HAL_TIM_SET_PRESCALER(htim_motor_4_, dshot_prescaler);
   __HAL_TIM_SET_AUTORELOAD(htim_motor_4_, MOTOR_BITLENGTH);
+
 }
 
 // __HAL_TIM_DISABLE_DMA is needed to eliminate the delay between different dshot signals
 // I don't know why :(
-// After adding this function, there are no delay among dshot 1,2,3,4.
+// After adding this function, there are no delay among DShot outputs.
 void DShot::dshot_dma_tc_callback(DMA_HandleTypeDef* hdma)
 {
   TIM_HandleTypeDef* htim = (TIM_HandleTypeDef*)((DMA_HandleTypeDef*)hdma)->Parent;
 
-  if (hdma == htim->hdma[TIM_DMA_ID_CC1])
+  if (hdma == htim->hdma[TIM_DMA_ID_UPDATE])
+  {
+    __HAL_TIM_DISABLE_DMA(htim, TIM_DMA_UPDATE);
+  }
+  else if (hdma == htim->hdma[TIM_DMA_ID_CC1])
   {
     __HAL_TIM_DISABLE_DMA(htim, TIM_DMA_CC1);
   }
@@ -163,6 +199,12 @@ void DShot::dshot_dma_tc_callback(DMA_HandleTypeDef* hdma)
 
 void DShot::dshot_put_tc_callback_function()
 {
+  if (use_dma_burst_)
+  {
+    htim_motor_1_->hdma[TIM_DMA_ID_UPDATE]->XferCpltCallback = dshot_dma_tc_callback;
+    return;
+  }
+
   // TIM_DMA_ID_CCx depends on timer channel
   htim_motor_1_->hdma[TIM_DMA_ID_CC1]->XferCpltCallback = dshot_dma_tc_callback;
   htim_motor_2_->hdma[TIM_DMA_ID_CC2]->XferCpltCallback = dshot_dma_tc_callback;
@@ -220,6 +262,18 @@ void DShot::dshot_prepare_dmabuffer(uint32_t* motor_dmabuffer, uint16_t value, b
 
 void DShot::dshot_prepare_dmabuffer_all(uint16_t* motor_value, bool* is_telemetry)
 {
+  if (use_dma_burst_)
+    {
+      uint32_t buffer[DSHOT_DMA_BUFFER_SIZE];
+      for (int motor = 0; motor < 4; motor++)
+        {
+          dshot_prepare_dmabuffer(buffer, motor_value[motor], is_telemetry[motor]);
+          for (int bit = 0; bit < DSHOT_DMA_BUFFER_SIZE; bit++)
+            tim4_dmabuffer_[4 * bit + motor] = buffer[bit];
+        }
+      return;
+    }
+
   dshot_prepare_dmabuffer(motor1_dmabuffer_, motor_value[0], is_telemetry[0]);
   dshot_prepare_dmabuffer(motor2_dmabuffer_, motor_value[1], is_telemetry[1]);
   dshot_prepare_dmabuffer(motor3_dmabuffer_, motor_value[2], is_telemetry[2]);
@@ -228,6 +282,16 @@ void DShot::dshot_prepare_dmabuffer_all(uint16_t* motor_value, bool* is_telemetr
 
 void DShot::dshot_dma_start()
 {
+  if (use_dma_burst_)
+  {
+    __DMB();
+    if (HAL_DMA_Start_IT(htim_motor_1_->hdma[TIM_DMA_ID_UPDATE], (uint32_t)tim4_dmabuffer_,
+                         (uint32_t)&htim_motor_1_->Instance->DMAR,
+                         DSHOT_MOTOR_COUNT * DSHOT_DMA_BUFFER_SIZE) == HAL_OK)
+      __HAL_TIM_ENABLE_DMA(htim_motor_1_, TIM_DMA_UPDATE);
+    return;
+  }
+
   HAL_DMA_Start_IT(htim_motor_1_->hdma[TIM_DMA_ID_CC1], (uint32_t)motor1_dmabuffer_,
                    (uint32_t)&htim_motor_1_->Instance->CCR1, DSHOT_DMA_BUFFER_SIZE);
   HAL_DMA_Start_IT(htim_motor_2_->hdma[TIM_DMA_ID_CC2], (uint32_t)motor2_dmabuffer_,
@@ -240,6 +304,8 @@ void DShot::dshot_dma_start()
 
 void DShot::dshot_enable_dma_request()
 {
+  if (use_dma_burst_) return;
+
   __HAL_TIM_ENABLE_DMA(htim_motor_1_, TIM_DMA_CC1);
   __HAL_TIM_ENABLE_DMA(htim_motor_2_, TIM_DMA_CC2);
   __HAL_TIM_ENABLE_DMA(htim_motor_3_, TIM_DMA_CC3);

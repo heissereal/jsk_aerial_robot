@@ -22,6 +22,7 @@
 /* Definition */
 #define MHZ_TO_HZ(x) ((x) * 1000000)
 
+
 #define DSHOT600_HZ MHZ_TO_HZ(12)
 #define DSHOT300_HZ MHZ_TO_HZ(6)
 #define DSHOT150_HZ MHZ_TO_HZ(3)
@@ -32,28 +33,15 @@
 
 #define DSHOT_FRAME_SIZE 16
 #define DSHOT_DMA_BUFFER_SIZE 18 /* resolution + frame reset (2us) */
+#define DSHOT_MOTOR_COUNT 4
 
+#define DSHOT_DISARM_THROTTLE 0
 #define DSHOT_MIN_THROTTLE 48
 #define DSHOT_MAX_THROTTLE 2047
 #define DSHOT_RANGE (DSHOT_MAX_THROTTLE - DSHOT_MIN_THROTTLE)
 
 #define DSHOT_CMD_SPIN_DIRECTION_1 7
 #define DSHOT_CMD_SPIN_DIRECTION_2 8
-
-namespace
-{
-#ifdef STM32H7
-  uint32_t motor1_dmabuffer_[DSHOT_DMA_BUFFER_SIZE] __attribute__((section(".DShotBufferSection1")));
-  uint32_t motor2_dmabuffer_[DSHOT_DMA_BUFFER_SIZE] __attribute__((section(".DShotBufferSection2")));
-  uint32_t motor3_dmabuffer_[DSHOT_DMA_BUFFER_SIZE] __attribute__((section(".DShotBufferSection3")));
-  uint32_t motor4_dmabuffer_[DSHOT_DMA_BUFFER_SIZE] __attribute__((section(".DShotBufferSection4")));
-#else
-  uint32_t motor1_dmabuffer_[DSHOT_DMA_BUFFER_SIZE];
-  uint32_t motor2_dmabuffer_[DSHOT_DMA_BUFFER_SIZE];
-  uint32_t motor3_dmabuffer_[DSHOT_DMA_BUFFER_SIZE];
-  uint32_t motor4_dmabuffer_[DSHOT_DMA_BUFFER_SIZE];
-#endif
-}
 
 /* Enumeration */
 typedef enum
@@ -84,6 +72,7 @@ public:
   ESCReader esc_reader_;
 
 private:
+  bool use_dma_burst_ = false; // TIM4 has no CH4 DMA request.
   TIM_HandleTypeDef* htim_motor_1_;
   uint32_t channel_motor_1_;
   TIM_HandleTypeDef* htim_motor_2_;

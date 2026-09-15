@@ -70,7 +70,9 @@ public:
   {
   }
 
-  void init(TIM_HandleTypeDef* htim1, TIM_HandleTypeDef* htim2, StateEstimate* estimator, DShot* dshot, DirectServo* servo, BatteryStatus* bat, ros::NodeHandle* nh, osMutexId* mutex = NULL)
+  void init(TIM_HandleTypeDef* htim1, TIM_HandleTypeDef* htim2, StateEstimate* estimator, DShot* dshot,
+            DirectServo* servo, BatteryStatus* bat, ros::NodeHandle* nh, osMutexId* mutex = NULL,
+            DShot* dshot2 = NULL)
   {
     nh_ = nh;
 
@@ -92,7 +94,7 @@ public:
 
     mutex_ = mutex;
 
-    att_controller_.init(htim1, htim2, estimator, dshot, servo, bat, nh, mutex);
+    att_controller_.init(htim1, htim2, estimator, dshot, servo, bat, nh, mutex, dshot2);
     //pos_controller_.init(estimator_, &att_controller_, nh_);
 
     start_control_flag_ = false;

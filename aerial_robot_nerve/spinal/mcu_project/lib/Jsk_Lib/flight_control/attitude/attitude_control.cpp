@@ -11,6 +11,43 @@
 
 #include "flight_control/attitude/attitude_control.h"
 
+#ifndef SIMULATION
+namespace
+{
+uint16_t pwmToDshot(float pwm)
+{
+  if(pwm <= 0.0f || fabs(pwm - IDLE_DUTY) < 1e-4f)
+    return DSHOT_DISARM_THROTTLE;
+
+#if BIDIRECTIONAL
+  // AM32 bidirectional DShot:
+  // 48..1047 = reverse, 0 = neutral, 1048..2047 = forward.
+  const uint16_t reverse_max = DSHOT_MIN_THROTTLE + DSHOT_RANGE / 2;
+  const uint16_t forward_min = reverse_max + 1;
+
+  if(pwm <= 0.5f)
+    return reverse_max;
+  if(pwm < IDLE_DUTY)
+    {
+      const float throttle = (IDLE_DUTY - pwm) / (IDLE_DUTY - 0.5f);
+      return (uint16_t)(DSHOT_MIN_THROTTLE + throttle * (reverse_max - DSHOT_MIN_THROTTLE));
+    }
+  if(pwm >= MAX_PWM)
+    return DSHOT_MAX_THROTTLE;
+
+  const float throttle = (pwm - IDLE_DUTY) / (MAX_PWM - IDLE_DUTY);
+  return (uint16_t)(forward_min + throttle * (DSHOT_MAX_THROTTLE - forward_min));
+#else
+  if(pwm <= IDLE_DUTY)
+    return DSHOT_DISARM_THROTTLE;
+  if(pwm >= MAX_PWM)
+    return DSHOT_MAX_THROTTLE;
+  return (uint16_t)((pwm - 0.5f) / 0.5f * DSHOT_RANGE + DSHOT_MIN_THROTTLE);
+#endif
+}
+}
+#endif
+
 #ifdef SIMULATION
 #include <sensor_msgs/JointState.h>
 AttitudeController::AttitudeController(): DELTA_T(0), prev_time_(-1), sim_voltage_(0)
@@ -58,7 +95,8 @@ AttitudeController::AttitudeController():
 }
 
 void AttitudeController::init(TIM_HandleTypeDef* htim1, TIM_HandleTypeDef* htim2, StateEstimate* estimator,
-                              DShot* dshot, DirectServo* servo, BatteryStatus* bat, ros::NodeHandle* nh, osMutexId* mutex)
+                              DShot* dshot, DirectServo* servo, BatteryStatus* bat, ros::NodeHandle* nh,
+                              osMutexId* mutex, DShot* dshot2)
 {
 
   pwm_htim1_ = htim1;
@@ -66,6 +104,7 @@ void AttitudeController::init(TIM_HandleTypeDef* htim1, TIM_HandleTypeDef* htim2
   nh_ = nh;
   estimator_ = estimator;
   dshot_ = dshot;
+  dshot2_ = dshot2;
   servo_ = servo;
   bat_ = bat;
   mutex_ = mutex;
@@ -103,10 +142,13 @@ void AttitudeController::init(TIM_HandleTypeDef* htim1, TIM_HandleTypeDef* htim2
       HAL_TIM_PWM_Start(pwm_htim1_, TIM_CHANNEL_4);
     }
 
-  HAL_TIM_PWM_Start(pwm_htim2_,TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(pwm_htim2_,TIM_CHANNEL_2);
-  HAL_TIM_PWM_Start(pwm_htim2_,TIM_CHANNEL_3);
-  HAL_TIM_PWM_Start(pwm_htim2_,TIM_CHANNEL_4);
+  if(!dshot2_)
+    {
+      HAL_TIM_PWM_Start(pwm_htim2_, TIM_CHANNEL_1);
+      HAL_TIM_PWM_Start(pwm_htim2_, TIM_CHANNEL_2);
+      HAL_TIM_PWM_Start(pwm_htim2_, TIM_CHANNEL_3);
+      HAL_TIM_PWM_Start(pwm_htim2_, TIM_CHANNEL_4);
+    }
 
   nh_->advertise(pwms_pub_);
   nh_->advertise(control_term_pub_);
@@ -218,44 +260,7 @@ void AttitudeController::pwmsControl(void)
       uint16_t motor_value[4] = { 0, 0, 0, 0 };
       for (int i = 0; i < 4; i++)
         {
-          uint16_t motor_v = 0;
-
-          if(start_control_flag_ || pwm_test_flag_)
-            {
-              if(target_pwm_[i] > 0)
-                {
-#if BIDIRECTIONAL
-                  // target_pwm_: 0.5 ~ 1.0, neutral:0.75
-                  if(fabs(target_pwm_[i] - IDLE_DUTY) < 1e-4f)
-                    {
-                      motor_v = IDLE_DUTY;
-                    }
-                  else if(target_pwm_[i] < IDLE_DUTY)
-                    {
-                      float throttle = (IDLE_DUTY - target_pwm_[i]) / (IDLE_DUTY - 0.5); //if IDLE DUTY is wrong, protect to rotate propeller
-                      motor_v = (uint16_t)(throttle * DSHOT_RANGE * 0.5 + DSHOT_MIN_THROTTLE);
-                    }
-                  else
-                    {
-                      float throttle = (target_pwm_[i] - IDLE_DUTY) / (MAX_PWM - IDLE_DUTY);
-                      motor_v = (uint16_t)(DSHOT_RANGE * 0.5 + throttle * DSHOT_RANGE * 0.5 + DSHOT_MIN_THROTTLE);
-                    }
-#else
-                  // target_pwm_: 0.5 ~ 1.0
-                  motor_v = (uint16_t)((target_pwm_[i] - 0.5) / 0.5 * DSHOT_RANGE + DSHOT_MIN_THROTTLE);
-#endif
-                }
-            }
-
-          if (motor_v > 0)
-            {
-              if (motor_v > DSHOT_MAX_THROTTLE)
-                motor_v = DSHOT_MAX_THROTTLE;
-              else if (motor_v < DSHOT_MIN_THROTTLE)
-                motor_v = DSHOT_MIN_THROTTLE;
-            }
-
-          motor_value[i] = motor_v;
+          motor_value[i] = pwmToDshot(target_pwm_[i]);
         }
 
       dshot_->write(motor_value, dshot_->is_telemetry_);
@@ -287,10 +292,24 @@ void AttitudeController::pwmsControl(void)
       pwm_htim1_->Instance->CCR4 = (uint32_t)(target_pwm_[3] * pwm_htim1_->Init.Period);
     }
 
-  pwm_htim2_->Instance->CCR1 = (uint32_t)(target_pwm_[4] * pwm_htim2_->Init.Period);
-  pwm_htim2_->Instance->CCR2 = (uint32_t)(target_pwm_[5] * pwm_htim2_->Init.Period);
-  pwm_htim2_->Instance->CCR3 = (uint32_t)(target_pwm_[6] * pwm_htim2_->Init.Period);
-  pwm_htim2_->Instance->CCR4 = (uint32_t)(target_pwm_[7] * pwm_htim2_->Init.Period);
+  if(dshot2_)
+    {
+      uint16_t motor_value[DSHOT_MOTOR_COUNT] = {};
+      for (int i = 0; i < DSHOT_MOTOR_COUNT; i++)
+        {
+          const int motor_index = i + DSHOT_MOTOR_COUNT;
+          motor_value[i] = pwmToDshot(target_pwm_[motor_index]);
+        }
+
+      dshot2_->write(motor_value, false);
+    }
+  else
+    {
+      pwm_htim2_->Instance->CCR1 = (uint32_t)(target_pwm_[4] * pwm_htim2_->Init.Period);
+      pwm_htim2_->Instance->CCR2 = (uint32_t)(target_pwm_[5] * pwm_htim2_->Init.Period);
+      pwm_htim2_->Instance->CCR3 = (uint32_t)(target_pwm_[6] * pwm_htim2_->Init.Period);
+      pwm_htim2_->Instance->CCR4 = (uint32_t)(target_pwm_[7] * pwm_htim2_->Init.Period);
+    }
 
 #endif
 }

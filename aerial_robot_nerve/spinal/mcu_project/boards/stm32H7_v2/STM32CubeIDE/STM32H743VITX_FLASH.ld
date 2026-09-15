@@ -200,6 +200,8 @@ PROVIDE ( _end = . );
 *(.DShotBufferSection3)
 . = ABSOLUTE(0x24045180);
 *(.DShotBufferSection4)
+. = ABSOLUTE(0x24045200);
+*(.DShotBufferSection5)
 } >RAM_D1 AT> FLASH
 
 

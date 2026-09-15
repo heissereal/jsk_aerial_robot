@@ -127,6 +127,8 @@ BatteryStatus battery_status_;
 /* servo instance */
 DirectServo servo_;
 DShot dshot_;
+DShot dshot2_;
+DMA_HandleTypeDef hdma_tim4_up;
 
 
 StateEstimate estimator_;
@@ -263,12 +265,26 @@ int main(void)
   gps_.init(&huart3, &nh_, LED2_GPIO_Port, LED2_Pin);
 
   DShot* dshotptr = nullptr;
+  DShot* dshotptr2 = nullptr;
 #if DSHOT
   battery_status_.init(&hadc1, &nh_, false);
   estimator_.init(&imu_, &baro_, &gps_, &nh_);  // imu + baro + gps => att + alt + pos(xy)
-  dshot_.init(DSHOT600, &htim1,TIM_CHANNEL_1, &htim1,TIM_CHANNEL_2, &htim1,TIM_CHANNEL_3, &htim1, TIM_CHANNEL_4);
+  dshot_.init(DSHOT600, &htim1, TIM_CHANNEL_1, &htim1, TIM_CHANNEL_2,
+              &htim1, TIM_CHANNEL_3, &htim1, TIM_CHANNEL_4);
   dshot_.initTelemetry(&huart6);
   dshotptr = &dshot_;
+
+  // TIM4 sends PWM5-8 with one update-triggered DMA burst. TIM4_CH4 has no DMA request.
+  hdma_tim4_up.Instance = DMA2_Stream4;
+  hdma_tim4_up.Init = hdma_tim1_ch1.Init;
+  hdma_tim4_up.Init.Request = DMA_REQUEST_TIM4_UP;
+  if (HAL_DMA_Init(&hdma_tim4_up) != HAL_OK) Error_Handler();
+  __HAL_LINKDMA(&htim4, hdma[TIM_DMA_ID_UPDATE], hdma_tim4_up);
+  HAL_NVIC_SetPriority(DMA2_Stream4_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream4_IRQn);
+  dshot2_.init(DSHOT600, &htim4, TIM_CHANNEL_1, &htim4, TIM_CHANNEL_2,
+               &htim4, TIM_CHANNEL_3, &htim4, TIM_CHANNEL_4);
+  dshotptr2 = &dshot2_;
 #else
   battery_status_.init(&hadc1, &nh_);
   estimator_.init(&imu_, &baro_, &gps_, &nh_);  // imu + baro + gps => att + alt + pos(xy)
@@ -280,7 +296,8 @@ int main(void)
   bool servo_connect = servo_.init(&huart2, &nh_, NULL);
   if(servo_connect) servoptr = &servo_;
 
-  controller_.init(&htim1, &htim4, &estimator_, dshotptr, servoptr, &battery_status_, &nh_, &flightControlMutexHandle);
+  controller_.init(&htim1, &htim4, &estimator_, dshotptr, servoptr, &battery_status_, &nh_,
+                   &flightControlMutexHandle, dshotptr2);
 
   bool nerve_connect = Spine::init(&hfdcan1, &nh_, &estimator_, &controller_, LED1_GPIO_Port, LED1_Pin);
   if(nerve_connect) Spine::useRTOS(&canMsgMailHandle); // use RTOS for CAN in spianl
@@ -1117,7 +1134,6 @@ static void MX_DMA_Init(void)
   /* DMA2_Stream3_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream3_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream3_IRQn);
-
 }
 
 /**
