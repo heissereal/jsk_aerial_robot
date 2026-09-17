@@ -9,10 +9,21 @@
   <arg name="sim_estimate_mode"  default= "2" />
   <arg name="headless" default="True" />
   <arg name="spawn_human" default="False"/>
-  <arg name="worldtype" default="$(find aerial_robot_simulation)/gazebo_model/world/empty.world" unless="$(arg spawn_human)"/>
+  <arg name="human_arm_center_z" default="0.05"/>
+  <arg name="start_pressure_controller" default="False"/>
+  <arg name="start_attitude_allocator" default="False"/>
+  <arg name="inchworm_action_c" default="False"/>
+  <arg name="enable_pneumatic_plugin" default="True"/>
+  <arg name="worldtype" default="$(find aerial_robot_simulation)/gazebo_model/world/empty.world"/>
   <arg name="launch_gazebo" default="True" />
   <arg name="direct_model" default="False" />
   <arg name="direct_model_name" />
+  <arg name="robot_model_name" default="hugmy2" />
+  <!-- Keep the arm joints in the kinematic model so model_update.launch can switch /joint_states from the straight pose to the estimated bent pose. Fixed-arm-only simulations override this explicitly. -->
+  <arg name="fixed_arms" default="false" />
+  <!-- The normal Hugmy workflow drives the kinematic model from joint_model. Relaying Gazebo's physical joints to the same topic would create two competing /joint_states publishers and overwrite that commanded pose. -->
+  <arg name="use_gazebo_joint_states" default="false" />
+  <arg name="model_options" default="" />
   <arg name="spawn_x" default="0.0"/>
   <arg name="spawn_y" default="0.0"/>
   <arg name="spawn_z" default="1.0"/>
@@ -21,6 +32,10 @@
   <arg name="robot_ns" value="quadrotor$(arg robot_id)" />
   <arg name="config_dir" default="$(find hugmy)/config" />
   <arg name="mujoco" default="False" />
+  <arg name="mujoco_model" default="$(find hugmy)/mujoco/hugmy2/robot.xml" />
+  <arg name="gym_step_mode" default="false" />
+  <arg name="gym_step_duration" default="0.1" />
+  <arg name="gym_physics_timestep" default="0.0" />
 
   ###########  Parameters  ###########
   <group ns="$(arg robot_ns)">
@@ -36,7 +51,7 @@
     <rosparam file="$(arg config_dir)/RobotModel.yaml" command="load" />
 
     ###########  Motor Config  ###########
-    <rosparam file="$(arg config_dir)/MotorInfo.yaml" command="load" />
+    <rosparam file="$(arg config_dir)/MotorInfo_3D_V.yaml" command="load" />
 
     ###########  Battery Config  ###########
     <rosparam file="$(arg config_dir)/Battery.yaml" command="load" />
@@ -50,6 +65,19 @@
     ###########  Sensor Fusion  ###########
     <rosparam file="$(arg config_dir)/StateEstimation.yaml" command="load" />
     <rosparam file="$(arg config_dir)/Simulation.yaml" command="load" if="$(eval arg('simulation') and not arg('real_machine'))"/>
+    <rosparam file="$(arg config_dir)/MujocoPneumatic.yaml" command="load"
+              if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco') and arg('enable_pneumatic_plugin') and not arg('fixed_arms'))"/>
+    <param name="simulation/pneumatic/spawn_human" value="$(arg spawn_human)"
+           if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco'))"/>
+    <param name="simulation/pneumatic/human_arm_center_z" value="$(arg human_arm_center_z)"
+           if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco'))"/>
+    <param name="simulation/pneumatic/gym_step_mode" value="$(arg gym_step_mode)"
+           if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco'))"/>
+    <param name="simulation/pneumatic/gym_step_duration" value="$(arg gym_step_duration)"
+           if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco'))"/>
+    <param name="simulation/pneumatic/gym_physics_timestep"
+           value="$(arg gym_physics_timestep)"
+           if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco'))"/>
 
     ###########  Navigation  ###########
     <param name="flight_navigation_plugin_name" value="aerial_robot_navigation/hugmy_navigation" />
@@ -68,10 +96,10 @@
   <arg name="description_mode" value="gazebo" if="$(arg simulation)" />
   <include file="$(find aerial_robot_model)/launch/aerial_robot_model.launch" >
     <arg name="headless" value="$(arg headless)" />
-    <!-- <arg name="robot_model" value="$(find hugmy)/urdf/robot.$(arg description_mode).xacro" unless="$(arg direct_model)"/> -->
-    <arg name="robot_model" value="$(find hugmy)/urdf/robot_ver2.$(arg description_mode).xacro" unless="$(arg direct_model)"/>
+    <arg name="robot_model" value="$(find hugmy)/urdf/$(arg robot_model_name).$(arg description_mode).xacro" unless="$(arg direct_model)"/>
     <arg name="robot_model" value="$(arg direct_model_name)" if="$(arg direct_model)"/>
     <arg name="robot_ns" value="$(arg robot_ns)" />
+    <arg name="model_options" value="fixed_arms:=$(arg fixed_arms) enable_pneumatic_plugin:=$(arg enable_pneumatic_plugin) $(arg model_options)" />
     <arg name="rviz_config" value="$(arg config_dir)/rviz_config.rviz" />
     <arg name="rviz_init_pose" value="$(arg config_dir)/RvizInit.yaml" />
     <arg name="need_joint_state" value="false" if ="$(eval arg('simulation') or arg('real_machine'))"/>
@@ -100,6 +128,32 @@
     <arg name="spawn_y" value="$(arg spawn_y)" />
     <arg name="spawn_z" value="$(arg spawn_z)" />
     <arg name="spawn_yaw" value="$(arg spawn_yaw)" />
+  </include>
+
+  ########## Simulation in MuJoCo #########
+  <include file="$(find aerial_robot_simulation)/launch/mujoco.launch"
+           if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco'))">
+    <arg name="robot_ns" value="$(arg robot_ns)" />
+    <arg name="headless" value="$(arg headless)" />
+    <arg name="mujoco_model" value="$(arg mujoco_model)" />
+    <arg name="robot_hw_sim_plugin_name"
+         value="$(eval 'hugmy/HugmyPneumaticHWSim' if arg('enable_pneumatic_plugin') and not arg('fixed_arms') else 'mujoco_ros_control/AerialRobotHWSim')" />
+  </include>
+
+  <!-- Optional physical-joint mode.  Leave this disabled when joint_model is publishing the commanded/estimated kinematic pose on joint_states. -->
+  <node name="gazebo_joint_state_relay" pkg="topic_tools" type="relay" ns="$(arg robot_ns)" output="screen" args="joint_states_gazebo joint_states" if="$(eval arg('simulation') and not arg('real_machine') and not arg('mujoco') and arg('use_gazebo_joint_states'))"/>
+
+  ########## Hugmy pneumatic controllers #########
+  <include file="$(find hugmy)/launch/independent_arm_pressure_controller.launch"
+           if="$(eval arg('simulation') and arg('start_pressure_controller') and not arg('start_attitude_allocator'))">
+    <arg name="robot_ns" value="$(arg robot_ns)"/>
+  </include>
+
+  <!-- attitude_pressure_controller.launch also starts the pressure controller. -->
+  <include file="$(find hugmy)/launch/attitude_pressure_controller.launch"
+           if="$(eval arg('simulation') and arg('start_attitude_allocator'))">
+    <arg name="robot_ns" value="$(arg robot_ns)"/>
+    <arg name="inchworm_action_c" value="$(arg inchworm_action_c)"/>
   </include>
 
 </launch>

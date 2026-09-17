@@ -6,6 +6,7 @@ add_compile_options(-std=c++17)
 find_package(catkin REQUIRED COMPONENTS
   aerial_robot_control
   aerial_robot_model
+  aerial_robot_simulation
   pluginlib
   std_msgs
   std_srvs
@@ -18,23 +19,26 @@ find_package(catkin REQUIRED COMPONENTS
   cv_bridge
   tf
   image_transport
+  mujoco_ros_control
   visualization_msgs
   )
 
-# find_package(gazebo REQUIRED)
+find_package(PythonInterp REQUIRED)
 
 catkin_package(
-  CATKIN_DEPENDS aerial_robot_control pluginlib aerial_robot_model
+  LIBRARIES hugmy_pneumatic_mujoco_hw_sim
+  CATKIN_DEPENDS aerial_robot_control pluginlib aerial_robot_model aerial_robot_simulation mujoco_ros_control spinal std_msgs std_srvs geometry_msgs tf visualization_msgs
   )
 
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
-  # ${GAZEBO_INCLUDE_DIRS}
   )
 
-# add_definitions(${GAZEBO_CXX_FLAGS})
-# link_directories(${GAZEBO_LIBRARY_DIRS})
+add_library(hugmy_pneumatic_mujoco_hw_sim src/mujoco/hugmy_pneumatic_hw_sim.cpp)
+add_dependencies(hugmy_pneumatic_mujoco_hw_sim ${catkin_EXPORTED_TARGETS})
+target_compile_definitions(hugmy_pneumatic_mujoco_hw_sim PRIVATE SIMULATION)
+target_link_libraries(hugmy_pneumatic_mujoco_hw_sim ${catkin_LIBRARIES})
 
 add_library(hugmy_navigation src/navigation/hugmy_navigation.cpp)
 target_link_libraries(hugmy_navigation ${catkin_LIBRARIES})
@@ -104,11 +108,36 @@ add_executable(perching_node src/control/perching.cpp)
 target_link_libraries(perching_node ${catkin_LIBRARIES})
 add_dependencies(perching_node ${catkin_EXPORTED_TARGETS})
 
-install(DIRECTORY config launch plugins
+# Generate the articulated MuJoCo model used by the pneumatic hardware plugin.
+set(HUGMY_MUJOCO_MODEL ${PROJECT_SOURCE_DIR}/mujoco/hugmy2/robot.xml)
+add_custom_command(
+  OUTPUT ${HUGMY_MUJOCO_MODEL}
+  COMMAND rosrun mujoco_ros_control mujoco_model_generator.py
+          ${PROJECT_SOURCE_DIR}/config/mujoco_model.yaml
+  COMMAND ${PYTHON_EXECUTABLE}
+          ${PROJECT_SOURCE_DIR}/script/finalize_mujoco_model.py
+          ${HUGMY_MUJOCO_MODEL}
+  DEPENDS
+    ${PROJECT_SOURCE_DIR}/config/mujoco_model.yaml
+    ${PROJECT_SOURCE_DIR}/script/finalize_mujoco_model.py
+    ${PROJECT_SOURCE_DIR}/urdf/hugmy2.mujoco.xacro
+    ${PROJECT_SOURCE_DIR}/urdf/hugmy2.urdf.xacro
+    ${PROJECT_SOURCE_DIR}/urdf/mesh/4S_1000mAh_battery.stl
+    ${PROJECT_SOURCE_DIR}/urdf/mesh/body_with_face_mujoco.stl
+    ${PROJECT_SOURCE_DIR}/urdf/mesh/cable_carrier_2.stl
+    ${PROJECT_SOURCE_DIR}/urdf/mesh/cable_carrier_arm_end.stl
+    ${PROJECT_SOURCE_DIR}/urdf/mesh/long_cabble_carrier_and_moter_mount.stl
+    ${PROJECT_SOURCE_DIR}/urdf/mesh/prop_5inch.dae
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+add_custom_target(generate_hugmy_mujoco_model ALL DEPENDS ${HUGMY_MUJOCO_MODEL})
+
+install(DIRECTORY config launch plugins mujoco
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
   USE_SOURCE_PERMISSIONS
   )
 
+install(TARGETS hugmy_pneumatic_mujoco_hw_sim
+  DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
 
 add_library(hugmy_independent_arm_pressure_controller src/control/independent_arm_pressure_controller.cpp)
 add_dependencies(hugmy_independent_arm_pressure_controller ${catkin_EXPORTED_TARGETS})
@@ -124,7 +153,14 @@ add_dependencies(joy_arm_pressure_command_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(joy_arm_pressure_command_node ${catkin_LIBRARIES})
 
 catkin_install_python(PROGRAMS
+  script/analyze_hugmy_sac.py
   script/arm_bend_identification.py
+  script/finalize_mujoco_model.py
+  script/hugmy_gym_env.py
+  script/train_hugmy_sac.py
+  script/evaluate_hugmy_sac.py
+  script/optimize_inchworm_gait.py
+  script/optimize_rocking_gait.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
 add_library(hugmy_attitude_pressure_controller src/control/attitude_pressure_controller.cpp)

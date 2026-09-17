@@ -11,7 +11,15 @@
 
   <build_depend>aerial_robot_control</build_depend>
   <build_depend>aerial_robot_model</build_depend>
+  <build_depend>aerial_robot_simulation</build_depend>
   <build_depend>pluginlib</build_depend>
+  <build_depend>spinal</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>std_srvs</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>mujoco_ros_control</build_depend>
+  <build_depend>tf</build_depend>
+  <build_depend>visualization_msgs</build_depend>
 
   <run_depend>aerial_robot_base</run_depend>
   <run_depend>aerial_robot_control</run_depend>
@@ -21,12 +29,25 @@
   <run_depend>aerial_robot_simulation</run_depend>
   <run_depend>hydrus</run_depend>
   <run_depend>pluginlib</run_depend>
+  <run_depend>spinal</run_depend>
+  <run_depend>std_msgs</run_depend>
+  <run_depend>std_srvs</run_depend>
+  <run_depend>geometry_msgs</run_depend>
+  <run_depend>mujoco_ros_control</run_depend>
+  <run_depend>nav_msgs</run_depend>
+  <run_depend>python3-rospkg</run_depend>
+  <run_depend>python3-yaml</run_depend>
+  <run_depend>tf</run_depend>
+  <run_depend>gazebo_ros</run_depend>
+  <run_depend>topic_tools</run_depend>
+  <run_depend>visualization_msgs</run_depend>
 
   <export>
     <aerial_robot_control plugin="${prefix}/plugins/navigation_plugin.xml" />
     <aerial_robot_control plugin="${prefix}/plugins/hugmy_control_plugin.xml" />
     <aerial_robot_control plugin="${prefix}/plugins/lpv_lqi_qp_plugin.xml" />
     <aerial_robot_control plugin="${prefix}/plugins/lqi_null_plugin.xml" />
+    <mujoco_ros_control plugin="${prefix}/plugins/mujoco_robot_hw_sim_plugin.xml" />
   </export>
 
 </package>
