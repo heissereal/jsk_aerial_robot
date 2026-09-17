@@ -37,7 +37,7 @@ __usage__ = """
 make_libraries.py generates the STM32 rosserial library files.  It
 requires the location of your STM32 project folder.
 
-rosrun spinal make_libraries.py  --output_path <output_path> --support_rtos --support_lwip
+rosrun spinal make_libraries.py --save_path <save_path> --support_rtos --support_ethernet
 """
 
 import os
@@ -73,6 +73,21 @@ ROS_TO_EMBEDDED_TYPES = {
 rospack = rospkg.RosPack()
 spinal_dir = rospack.get_path("spinal")
 
+
+class FilteredRosPack(object):
+    """RosPack view which omits packages unrelated to the MCU ros_lib."""
+
+    def __init__(self, base, excluded_packages):
+        self._base = base
+        self._excluded_packages = set(excluded_packages)
+
+    def list(self):
+        return [package for package in self._base.list()
+                if package not in self._excluded_packages]
+
+    def get_path(self, package):
+        return self._base.get_path(package)
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--save_path', default=os.path.join(spinal_dir, 'mcu_project/lib'),
                     help='path to save ros_lib')
@@ -81,6 +96,8 @@ parser.add_argument('--support_rtos', action='store_true',
                     help='whether support FreeRTOS')
 parser.add_argument('--support_ethernet', action='store_true',
                     help='whether support ethernet (LWIP)')
+parser.add_argument('--exclude-package', action='append', default=[],
+                    help='ROS package to omit while generating ros_lib (repeatable)')
 
 args = parser.parse_args()
 args.save_path = os.path.join(args.save_path, 'ros_lib')
@@ -95,7 +112,8 @@ rosserial_client_copy_files(rospack, args.save_path + '/')
 copy_tree(os.path.join(spinal_dir, "src/ros_lib"), args.save_path)
 
 # generate messages
-rosserial_generate(rospack, args.save_path, ROS_TO_EMBEDDED_TYPES)
+filtered_rospack = FilteredRosPack(rospack, args.exclude_package)
+rosserial_generate(filtered_rospack, args.save_path, ROS_TO_EMBEDDED_TYPES)
 
 # edit files according to options
 filename = os.path.join(args.save_path, 'STM32Hardware.h')
@@ -108,4 +126,3 @@ if args.support_ethernet:
     data_lines = data_lines.replace("#define SUPPORT_LWIP 0", "#define SUPPORT_LWIP 1")
 with open(filename, mode="w") as f:
     f.write(data_lines)
-
