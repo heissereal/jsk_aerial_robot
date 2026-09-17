@@ -17,6 +17,7 @@ use_pwm_test_for_correction: true
 require_arm_geometry_for_prepare: false
 neuron_slave_ids: [1, 2, 3, 4]
 neuron_timeout_sec: 0.10
+neuron_acc_lpf_tau_sec: 0.20
 pressure_safety_limit_kpa: 60.0
 correction_trigger_angle_rad: 0.12
 correction_stop_angle_rad: 0.04
@@ -46,6 +47,9 @@ prepare_stable_duration_sec: 0.30
 # grasp-model bend itself (a straight arm), not a fixed angle.
 prepare_angle_per_moment_rad_per_nm: 1.0
 prepare_min_straighten_angle_rad: 0.0174533  # 1 deg
+# Do not request the physically unreachable 60--70 deg changes seen in the
+# pitch experiment. Pressure/thrust shaping is limited to 15 deg per cycle.
+prepare_max_straighten_angle_rad: 0.2617994  # 15 deg
 prepare_max_rotor_tilt_rad: 1.3962634        # 80 deg
 prepare_angle_tolerance_rad: 0.00872665  # 0.5 deg
 # Reduce pressure gradually first. Thrust remains zero until both the target
@@ -58,7 +62,18 @@ minimum_prepare_pressure_kpa: 0.0
 prepare_initial_thrust_n: 0.0
 prepare_thrust_ramp_rate_n_s: 1.5
 prepare_max_thrust_n: 9.0
-pwm_test_max_thrust_n: 9.0
+pwm_test_max_thrust_n: 11.2
+pwm_test_max_reverse_thrust_n: 4.4
+pwm_test_min_pwm: 0.5
+pwm_test_neutral_pwm: 0.75
+pwm_test_max_pwm: 0.975
+pwm_test_voltage: 21.2
+pwm_test_reference_voltage: 21.2
+# MotorInfo_3D_V has positive thrust below neutral. These are its 21.2 V
+# low-PWM positive and high-PWM negative branches, respectively.
+pwm_test_positive_thrust_below_neutral: true
+pwm_test_forward_polynomial: [65.0663776343, -14.931187117, 0.083500613]
+pwm_test_reverse_polynomial: [-15.9407056717, 5.310953554, -0.043050962]
 # If the pair straightens by less than 1 deg for 0.5 s, accept that shape as
 # the object-dependent limit and reallocate the correction impulse from it.
 prepare_progress_epsilon_rad: 0.0174533
@@ -115,3 +130,166 @@ allocation_bias_weight: 0.01
 # The Neuron IMU is approximately 0.05 m below its rotor. Reserved for the
 # future per-arm quaternion-based rotor pose estimator.
 neuron_z_offset_from_rotor_m: -0.05
+
+# One open-loop/visual-feedback inchworm step. Publish a Vector3Stamped to
+# ~inchworm_command: vector.x/y is the travel direction in main_body and
+# vector.z is the total requested mocap displacement [m]. The controller
+# repeats short regripping strokes until that total is reached.
+inchworm_front_release_kpa: 5.0
+inchworm_swing_pressure_kpa: 0.0
+inchworm_transfer_pressure_kpa: 20.0
+inchworm_rear_unload_kpa: 8.0
+inchworm_pull_pressure_kpa: 5.0
+inchworm_reach_thrust_n: 2.0
+inchworm_reach_max_thrust_n: 6.0
+inchworm_reach_angle_kp_n_rad: 45.0
+inchworm_reach_min_pressure_kpa: 10.0
+inchworm_reach_pressure_ramp_kpa_s: 5.0
+inchworm_min_usable_reach_angle_rad: 0.0349066  # 2 deg
+inchworm_rear_lift_thrust_n: 3.0
+inchworm_rear_lift_max_thrust_n: 7.0
+inchworm_thrust_ramp_n_s: 1.0
+inchworm_default_distance_m: 0.002
+inchworm_stroke_distance_m: 0.002
+inchworm_min_cycle_progress_m: 0.0002
+inchworm_max_cycles: 10
+inchworm_reach_angle_rad: 0.0872665  # 5 deg, or the duration limit below
+# Treat the swing arm as sufficiently extended once its bend is at most 20 deg
+# from straight. This is an absolute bend threshold, not a change from GRASP.
+inchworm_target_bend_angle_rad: 0.3490659  # 20 deg
+# Require a visible body response as well: roll/pitch must change by at least
+# 5 deg from the beginning of FRONT_REACH before the arm is anchored.
+inchworm_body_tilt_target_rad: 0.0872665  # 5 deg
+# Ignore isolated gyro/vibration spikes; only a sustained limit violation is
+# treated as an unsafe body rotation during FRONT_REACH.
+inchworm_angular_rate_fault_delay_sec: 0.20
+inchworm_mocap_timeout_sec: 0.20
+# Leave false on the real machine. The optimization launch enables it because
+# the MuJoCo attitude estimator intentionally freezes IMU attitude on contact.
+use_mocap_attitude_for_inchworm: false
+inchworm_release_timeout_sec: 10.0
+inchworm_reach_duration_sec: 10.0
+inchworm_anchor_timeout_sec: 8.0
+inchworm_pull_timeout_sec: 5.0
+inchworm_settle_duration_sec: 0.5
+inchworm_motion_start_speed_m_s: 0.001
+inchworm_motion_stop_speed_m_s: 0.0002
+inchworm_motion_stop_timeout_sec: 0.3
+# Do not latch on a one-sample mocap velocity spike. Motion must produce this
+# much new forward displacement, and a return beyond the second threshold
+# immediately resumes the minimum-thrust search.
+inchworm_progress_epsilon_m: 0.00025
+inchworm_progress_regression_m: 0.00020
+
+# Experimental two-arm locomotion primitive. Keep false for the existing
+# one-arm Action A. Set true to run Action B for each requested stroke:
+# front-pair unload/thrust -> 5-deg hold and three front pulses -> four-arm GRASP.
+inchworm_action_b_enabled: false
+
+# Action C: model-inverted 90-deg horizontal pull pulses. Action C takes
+# priority over Action B when both switches are true.
+inchworm_action_c_enabled: false
+
+# Whole-body rocking locomotion, independent of Action A/B/C:
+# four-arm grip -> bottom rearward-preload inflation -> pressure-made front
+# wind-up -> front release/high-thrust SWING with immediate bottom exhaust ->
+# front grip/rear release -> rear-only reverse
+# thrust -> normal four-arm grasp.  Bottom is not a swing actuator: it creates
+# the rearward bias before SWING and stays exhausted from SWING onward.
+rocking_gait_enabled: false
+rocking_bottom_low_kpa: 0.0
+rocking_bottom_high_kpa: 50.0
+rocking_front_release_kpa: 0.0
+rocking_rear_release_kpa: 0.0
+# State 20 makes the wind-up with pneumatic pressure while bottom preload is
+# held. State 21 releases the front chamber while keeping bottom inflated,
+# applies model-scale forward thrust, and starts bottom exhaust only after both
+# front arms reach the configured near-straight angle. It then slowly returns
+# to a new cylinder contact and fully regrips.
+rocking_front_windup_pressure_kpa: 30.0
+rocking_front_extend_thrust_n: 6.0
+rocking_front_windup_target_rad: 2.0943951       # 120 deg
+rocking_front_extend_target_rad: 0.3490659       # 20 deg; bottom exhaust trigger (0 deg is exactly straight)
+rocking_front_place_bend_target_rad: 1.5707963   # 90 deg fallback on hardware
+rocking_front_place_pressure_kpa: 40.0
+rocking_front_min_advance_m: 0.003
+rocking_front_angle_tolerance_rad: 0.2617994     # 15 deg; pair asymmetry is measured independently
+rocking_rear_reverse_thrust_n: 0.8
+# MuJoCo maps 50 kPa to 15 deg.  The transition uses 90% of the target so
+# settling error cannot make the pressure-derived posture unreachable.
+rocking_front_tilt_target_rad: 0.2356194       # 13.5 deg
+rocking_recovery_tilt_target_rad: 0.00872665   # 0.5 deg
+rocking_phase_timeout_sec: 10.0
+rocking_thrust_ramp_n_s: 6.0
+rocking_front_windup_hold_sec: 0.20
+rocking_front_extend_hold_sec: 0.05
+rocking_front_lower_rate_n_s: 1.5
+rocking_land_settle_sec: 0.4
+rocking_max_tilt_rad: 0.5235988                # 30 deg
+action_c_min_thrust_n: 5.0
+action_c_max_thrust_n: 8.0
+action_c_thrust_step_n: 0.5
+action_c_target_angle_rad: 1.5707963267948966  # 90 deg
+action_c_angle_tolerance_rad: 0.2617993877991494  # +/-15 deg
+action_c_pressure_gain_kpa_rad: 8.0
+action_c_rear_pressure_kpa: 10.0
+action_c_pulse_duration_sec: 0.50
+# During the ON interval, use the front Neuron IMUs to keep the pair near
+# 90 deg. Pressure changes are rate-limited to avoid chasing IMU noise and
+# pneumatic delay. The correction learned here is reused by the next pulse.
+action_c_pulse_pressure_gain_kpa_rad: 8.0
+action_c_pulse_pressure_rate_kpa_s: 10.0
+action_c_pulse_angle_deadband_rad: 0.05235987755982989  # 3 deg
+action_c_max_pressure_kpa: 50.0
+action_c_success_confirm_sec: 0.15
+action_c_max_angle_retries: 2
+# Never increase thrust when either active front arm is more than 45 deg away
+# from the requested shape.  Recover the grasp instead.
+action_c_max_error_before_thrust_increase_rad: 0.7853981633974483
+# A pulse is accepted only if this fraction of the requested stroke remains
+# after all four arms have returned to 30 kPa.
+action_c_regrip_min_retained_ratio: 0.75
+# Infer each front arm's local pressure-to-bend sign from actual pressure and
+# Neuron angle changes, rather than assuming a common sign for both arms.
+action_c_gradient_min_pressure_delta_kpa: 1.0
+action_c_gradient_min_angle_delta_rad: 0.03490658503988659  # 2 deg
+# Online local model: theta ~= theta0 + dtheta/dP * dP + dtheta/dT * dT.
+# Its predicted pressure compensation is applied before a higher-thrust pulse.
+action_c_model_update_alpha: 0.25
+action_c_max_feedforward_pressure_step_kpa: 10.0
+# The front pair ramps slowly until the minimum measurable lift is reached.
+action_b_front_duration_sec: 20.0
+# Front-pair thrust rise rate used only in ACTION_B_FRONT_REACH.
+action_b_front_thrust_ramp_up_n_s: 0.3
+# Maximum common thrust used while preserving the 0-kPa lift vertical force.
+action_b_shape_target_thrust_n: 8.0
+action_b_prediction_horizon_sec: 0.25
+# Legacy upper reference retained for compatibility.
+action_b_front_transition_tilt_rad: 0.0872665
+# Initial lift guide (5 deg). The later shaping phase may continue up to the
+# independent 30-deg safety bound in the controller.
+action_b_min_lift_tilt_rad: 0.08726646259971647
+# Hold the body at 5 deg, then superimpose three thrust pulses.
+action_b_hold_tilt_tolerance_rad: 0.00872665  # +/- 0.5 deg
+action_b_hold_thrust_up_rate_n_s: 3.0
+action_b_hold_thrust_down_rate_n_s: 20.0
+action_b_hold_tilt_kp_n_rad: 8.0
+action_b_hold_tilt_ki_n_rad_s: 12.0
+action_b_hold_stable_duration_sec: 0.3
+action_b_shape_max_pressure_kpa: 30.0
+action_b_shape_pressure_rate_kpa_s: 5.0
+# Maximum duration for the monotonic 0 -> 30 kPa shape ramp.
+action_b_shape_search_timeout_sec: 60.0
+action_b_shape_settle_timeout_sec: 15.0
+action_b_max_thrust_n: 9.0
+action_b_pre_pulse_max_thrust_n: 8.0
+action_b_pulse_amplitude_n: 1.0
+action_b_pulse_on_duration_sec: 1.25
+action_b_pulse_off_duration_sec: 0.50
+action_b_pulse_repetitions: 3
+# Neuron angle feedback added to the model-inverted pressure during a pulse.
+action_b_pulse_angle_pressure_gain_kpa_rad: 30.0
+# Includes the pressure/angle ramp, endpoint settling, and all pulse intervals.
+# Keep margin for pneumatic delay.
+action_b_front_regrip_timeout_sec: 100.0
+action_b_thrust_ramp_n_s: 3.0

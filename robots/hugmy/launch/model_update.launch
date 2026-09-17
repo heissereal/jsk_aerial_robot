@@ -1,4 +1,10 @@
 <launch>
+  <!--
+    joint_model continuously publishes the straight pose at startup.  Each
+    message on /quadrotor/arm/joint_estimate_enable toggles between that pose
+    and the pressure/thrust-estimated bent pose.  Gazebo joint-state relaying
+    must remain disabled in bringup.launch so this is the sole model input.
+  -->
   <node pkg="hugmy" type="joint_model" name="joint_model" output="screen">
   </node>
 </launch>
