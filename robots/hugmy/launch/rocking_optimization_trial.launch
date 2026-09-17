@@ -1,0 +1,112 @@
+<?xml version="1.0"?>
+<!-- One clean MuJoCo episode for rearward-preload stick-slip locomotion. -->
+<launch>
+  <arg name="gui" default="false" />
+  <arg name="robot_ns" default="quadrotor" />
+  <arg name="human_arm_center_z" default="0.05" />
+
+  <arg name="human_arm_radius" default="0.05" />
+  <arg name="grip_friction_coefficient" default="1.2" />
+  <arg name="grip_force_per_pressure" default="0.08" />
+  <arg name="bottom_force_per_pressure" default="0.12" />
+  <arg name="supply_rate" default="25.0" />
+  <arg name="exhaust_rate" default="18.0" />
+  <arg name="bottom_supply_rate" default="100.0" />
+  <arg name="bottom_exhaust_rate" default="80.0" />
+
+  <arg name="base_pressure_kpa" default="30.0" />
+  <arg name="front_release_kpa" default="0.0" />
+  <arg name="rear_release_kpa" default="0.0" />
+  <arg name="bottom_high_kpa" default="50.0" />
+  <arg name="front_windup_pressure_kpa" default="30.0" />
+  <arg name="front_extend_thrust_n" default="6.0" />
+  <arg name="front_windup_target_rad" default="2.0943951" />
+  <arg name="front_extend_target_rad" default="0.3490659" />
+  <arg name="front_place_bend_target_rad" default="1.5707963" />
+  <arg name="front_place_pressure_kpa" default="40.0" />
+  <arg name="front_min_advance_m" default="0.003" />
+  <arg name="rear_reverse_thrust_n" default="0.8" />
+  <!-- The virtual bottom model maps 50 kPa to 15 deg.  Use 90% of that
+       pressure-derived angle as the transition threshold so settling error
+       cannot turn an achievable posture into a timeout. -->
+  <arg name="front_tilt_target_rad"
+       default="$(eval 0.90 * float(arg('bottom_high_kpa')) * 0.2617994 / 50.0)" />
+  <arg name="recovery_tilt_target_rad" default="0.00872665" />
+  <arg name="phase_timeout_sec" default="10.0" />
+  <arg name="thrust_ramp_n_s" default="6.0" />
+  <arg name="front_windup_hold_sec" default="0.20" />
+  <arg name="front_extend_hold_sec" default="0.05" />
+  <arg name="front_lower_rate_n_s" default="1.5" />
+  <arg name="land_settle_sec" default="0.4" />
+  <arg name="stroke_distance_m" default="0.002" />
+
+  <include file="$(find hugmy)/launch/bringup.launch">
+    <arg name="simulation" value="true" />
+    <arg name="real_machine" value="false" />
+    <arg name="mujoco" value="true" />
+    <arg name="headless" value="$(eval not arg('gui'))" />
+    <arg name="fixed_arms" value="false" />
+    <arg name="enable_pneumatic_plugin" value="true" />
+    <arg name="spawn_human" value="true" />
+    <arg name="human_arm_center_z" value="$(arg human_arm_center_z)" />
+    <arg name="start_pressure_controller" value="false" />
+    <arg name="start_attitude_allocator" value="false" />
+  </include>
+
+  <group ns="$(arg robot_ns)">
+    <param name="simulation/pneumatic/human_arm_radius"
+           value="$(arg human_arm_radius)" />
+    <param name="simulation/pneumatic/grip_friction_coefficient"
+           value="$(arg grip_friction_coefficient)" />
+    <param name="simulation/pneumatic/grip_force_per_pressure"
+           value="$(arg grip_force_per_pressure)" />
+    <param name="simulation/pneumatic/bottom_force_per_pressure"
+           value="$(arg bottom_force_per_pressure)" />
+    <param name="simulation/pneumatic/supply_rate" value="$(arg supply_rate)" />
+    <param name="simulation/pneumatic/exhaust_rate" value="$(arg exhaust_rate)" />
+    <param name="simulation/pneumatic/bottom_supply_rate"
+           value="$(arg bottom_supply_rate)" />
+    <param name="simulation/pneumatic/bottom_exhaust_rate"
+           value="$(arg bottom_exhaust_rate)" />
+  </group>
+
+  <include file="$(find hugmy)/launch/attitude_pressure_controller.launch">
+    <arg name="robot_ns" value="$(arg robot_ns)" />
+    <arg name="bottom_control_enabled" value="true" />
+    <arg name="use_mocap_attitude_for_inchworm" value="true" />
+    <arg name="inchworm_action_b" value="false" />
+    <arg name="inchworm_action_c" value="false" />
+    <arg name="rocking_gait" value="true" />
+    <arg name="base_pressure_kpa" value="$(arg base_pressure_kpa)" />
+    <arg name="rocking_front_release_kpa" value="$(arg front_release_kpa)" />
+    <arg name="rocking_rear_release_kpa" value="$(arg rear_release_kpa)" />
+    <arg name="rocking_bottom_high_kpa" value="$(arg bottom_high_kpa)" />
+    <arg name="rocking_front_windup_pressure_kpa"
+         value="$(arg front_windup_pressure_kpa)" />
+    <arg name="rocking_front_extend_thrust_n"
+         value="$(arg front_extend_thrust_n)" />
+    <arg name="rocking_front_windup_target_rad"
+         value="$(arg front_windup_target_rad)" />
+    <arg name="rocking_front_extend_target_rad"
+         value="$(arg front_extend_target_rad)" />
+    <arg name="rocking_front_place_bend_target_rad"
+         value="$(arg front_place_bend_target_rad)" />
+    <arg name="rocking_front_place_pressure_kpa"
+         value="$(arg front_place_pressure_kpa)" />
+    <arg name="rocking_front_min_advance_m"
+         value="$(arg front_min_advance_m)" />
+    <arg name="rocking_rear_reverse_thrust_n" value="$(arg rear_reverse_thrust_n)" />
+    <arg name="rocking_front_tilt_target_rad" value="$(arg front_tilt_target_rad)" />
+    <arg name="rocking_recovery_tilt_target_rad" value="$(arg recovery_tilt_target_rad)" />
+    <arg name="rocking_phase_timeout_sec" value="$(arg phase_timeout_sec)" />
+    <arg name="rocking_thrust_ramp_n_s" value="$(arg thrust_ramp_n_s)" />
+    <arg name="rocking_front_windup_hold_sec"
+         value="$(arg front_windup_hold_sec)" />
+    <arg name="rocking_front_extend_hold_sec"
+         value="$(arg front_extend_hold_sec)" />
+    <arg name="rocking_front_lower_rate_n_s" value="$(arg front_lower_rate_n_s)" />
+    <arg name="rocking_land_settle_sec" value="$(arg land_settle_sec)" />
+    <arg name="inchworm_stroke_distance_m" value="$(arg stroke_distance_m)" />
+    <arg name="inchworm_max_cycles" value="1" />
+  </include>
+</launch>
