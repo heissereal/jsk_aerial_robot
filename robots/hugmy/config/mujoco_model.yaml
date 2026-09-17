@@ -1,0 +1,7 @@
+package:
+  ["hugmy"]
+
+hugmy:
+  input: ["urdf/hugmy2.mujoco.xacro"]
+  filename: ["hugmy2"]
+  meshdir: "urdf/mesh"

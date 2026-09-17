@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<!-- Convenience wrapper for the MuJoCo pneumatic-arm simulation. -->
+<launch>
+  <arg name="gui" default="true"/>
+  <arg name="robot_spawn_z" default="0.165"/>
+  <arg name="human_arm_center_z" default="0.05"/>
+  <arg name="start_pressure_controller" default="true"/>
+  <arg name="start_attitude_allocator" default="false"/>
+
+  <include file="$(find hugmy)/launch/bringup.launch">
+    <arg name="rm" value="false"/>
+    <arg name="sim" value="true"/>
+    <arg name="real_machine" value="false"/>
+    <arg name="simulation" value="true"/>
+    <arg name="headless" value="$(eval not arg('gui'))"/>
+    <arg name="mujoco" value="true"/>
+    <arg name="fixed_arms" value="false"/>
+    <arg name="enable_pneumatic_plugin" value="true"/>
+    <arg name="spawn_human" value="true"/>
+    <arg name="human_arm_center_z" value="$(arg human_arm_center_z)"/>
+    <arg name="start_pressure_controller" value="$(arg start_pressure_controller)"/>
+    <arg name="start_attitude_allocator" value="$(arg start_attitude_allocator)"/>
+    <arg name="spawn_x" value="0.0"/>
+    <arg name="spawn_y" value="0.0"/>
+    <arg name="spawn_z" value="$(arg robot_spawn_z)"/>
+    <arg name="spawn_yaw" value="0.0"/>
+  </include>
+</launch>

@@ -1,0 +1,76 @@
+simulation:
+  pneumatic:
+    pressure_rate: 100.0
+    sensor_rate: 100.0
+    supply_rate: 25.0
+    exhaust_rate: 18.0
+    # The bottom chamber is driven separately in the real mechanism and must
+    # establish a posture bias before the rotor pulse.  Keep arm-pneumatic
+    # timing unchanged, but make bottom inflation/deflation substantially
+    # faster in simulation.
+    bottom_supply_rate: 100.0
+    bottom_exhaust_rate: 80.0
+    maximum_pressure: 60.0
+    initial_pressure: 0.0
+    leak_rate: 0.0
+    bag_stiffness: 1.0
+    structural_stiffness: 0.01
+    # MuJoCo integrates this as native joint damping.  The Gazebo value 0.05
+    # was an explicit effort gain and is too stiff for the light carrier links.
+    bag_damping: 0.005
+    thrust_offset: 1.8
+    command_timeout: 0.25
+    pressure_noise: 0.05
+    imu_acceleration_noise: 0.017
+    imu_gyro_noise: 0.0002
+    grip_range: 0.035
+    grip_stiffness: 180.0
+    grip_damping: 2.0
+    grip_force_per_pressure: 0.08
+    # The pressure controller settles within about 1 kPa of a zero target.
+    # Treat that residual as an open chamber instead of a permanent 0.08 N
+    # virtual attachment.
+    grip_min_pressure: 1.5
+    grip_friction_coefficient: 1.2
+    grip_tangential_damping: 4.0
+    grip_marker_scale: 0.025
+    grip_marker_rate: 30.0
+    # Finite cylinder aligned with the local x axis.  The optimizer randomizes
+    # its radius between trials to avoid learning one exact arm diameter.
+    human_arm_half_length: 0.25
+    human_arm_radius: 0.05
+    human_arm_roll: 0.0
+    human_arm_pitch: 0.0
+    human_arm_yaw: 0.0
+    thrust_scale: 1.0
+
+    # Disabled for normal bringup. The Gym launch enables this gate so every
+    # policy action advances one 0.1 s MuJoCo interval in headless mode.
+    gym_step_mode: false
+    gym_step_duration: 0.1
+    # Gym launch overrides this to 2 ms. Normal simulations retain the
+    # mujoco_ros_control default (1 ms).
+    gym_physics_timestep: 0.0
+
+    # One hardware-compatible bottom channel acts at the side selected by
+    # pneumatic/bottom_force_direction.  For forward rocking the controller
+    # selects the front-side application point so inflation produces a
+    # rearward/nose-up preload.  The eccentric normal force remains for contact
+    # loading, while the virtual compliant tilt actuator makes the measured
+    # pressure-to-angle relation deterministic.  Bottom supplies a posture
+    # bias; the arm rotors remain the locomotion actuators.
+    bottom_force_per_pressure: 0.12  # N/kPa
+    bottom_lever_arm: 0.040          # m from main_body center
+    bottom_point_z: -0.050           # m in main_body
+    bottom_contact_range: 0.080      # m from the artificial forearm
+    bottom_visual_base_height: 0.003
+    bottom_visual_height_per_pressure: 0.00025
+    bottom_virtual_tilt_enabled: true
+    bottom_tilt_reference_pressure: 50.0
+    bottom_tilt_at_reference: 0.2617994  # 15 deg at 50 kPa
+    bottom_tilt_stiffness: 50.0          # N m/rad
+    bottom_tilt_damping: 3.0            # N m s/rad
+    bottom_tilt_max_torque: 5.0         # N m
+    # While nearly exhausted, follow the settled body orientation and use it
+    # as the zero-angle reference for the next inflation.
+    bottom_tilt_reference_reset_pressure: 0.5

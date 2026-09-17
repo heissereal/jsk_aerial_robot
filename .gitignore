@@ -111,3 +111,7 @@ tags
 # mujoco
 MUJOCO_LOG.txt
 robots/**/mujoco
+!robots/hugmy/include/hugmy/mujoco/
+!robots/hugmy/include/hugmy/mujoco/**
+!robots/hugmy/src/mujoco/
+!robots/hugmy/src/mujoco/**

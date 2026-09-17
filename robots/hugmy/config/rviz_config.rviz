@@ -111,6 +111,24 @@ Visualization Manager:
       Update Interval: 0
       Value: true
       Visual Enabled: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /quadrotor/pneumatic/grip_force_markers
+      Name: Pneumatic Grip Forces
+      Namespaces:
+        hugmy_grip_force: true
+      Queue Size: 10
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /quadrotor/pneumatic/actuator_markers
+      Name: Pneumatic Pressure and Thrust
+      Namespaces:
+        hugmy_bottom_state_text: true
+        hugmy_pressure_thrust_text: true
+        hugmy_rotor_thrust: true
+      Queue Size: 10
+      Value: true
     - Class: rviz/TF
       Enabled: true
       Filter (blacklist): ""
