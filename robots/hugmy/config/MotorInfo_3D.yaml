@@ -1,0 +1,89 @@
+motor_info:
+  # Bidirectional ESC command range. PWM=0.75 is the zero-thrust command.
+  min_pwm: 0.5
+  neutral_pwm: 0.75
+  max_pwm: 0.975
+  bidirectional: true
+  min_thrust: -0.2
+  force_landing_thrust: 1.0
+
+  # The stored coefficients describe F(PWM), so the controller uses the
+  # quadratic inverse (SQRT_MODE) to obtain PWM from target thrust.
+  pwm_conversion_mode: 0
+  m_f_rate: 0.0279
+  vel_ref_num: 5
+
+  simulation:
+    use_pwm_model: true
+    voltage: 21.2
+    neutral_deadband: 0.001
+
+  ref1:
+    voltage: 21.2
+    max_thrust: 9.2519
+    polynominal2: 0.147060789
+    polynominal1: -20.199244257
+    polynominal0: 68.6765763922
+  ref2:
+    voltage: 22.2
+    max_thrust: 10.1798
+    polynominal2: 0.146820913
+    polynominal1: -19.813157565
+    polynominal0: 65.9961259002
+  ref3:
+    voltage: 23.2
+    max_thrust: 10.685
+    polynominal2: 0.135738595
+    polynominal1: -17.410987320
+    polynominal0: 53.7533487563
+  ref4:
+    voltage: 24.2
+    max_thrust: 11.4013
+    polynominal2: 0.148734478
+    polynominal1: -19.267459556
+    polynominal0: 60.5364887183
+  ref5:
+    voltage: 25.2
+    max_thrust: 12.2238
+    polynominal2: 0.167450283
+    polynominal1: -22.180347288
+    polynominal0: 72.0818587252
+
+  # PWM < 0.75 uses this independently measured reverse branch.
+  reverse:
+    # A distinct value can be set here; the supplied YAML only contained
+    # -0.011, so it is retained instead of inventing an unmeasured value.
+    m_f_rate: 0.0092
+    vel_ref_num: 5
+    ref1:
+      voltage: 21.2
+      max_thrust: -0.036312849
+      polynominal2: 0.021151781
+      polynominal1: -1.997627706
+      polynominal0: 3.2057305647
+    ref2:
+      voltage: 22.2
+      max_thrust: 0.025274725
+      polynominal2: -0.045457475
+      polynominal1: 7.038007839
+      polynominal0: -27.2705222083
+    ref3:
+      voltage: 23.2
+      max_thrust: -0.129829545
+      polynominal2: 0.032723609
+      polynominal1: -3.336936933
+      polynominal0: 6.8477872940
+    ref4:
+      voltage: 24.2
+      max_thrust: -0.111388889
+      polynominal2: 0.035773402
+      polynominal1: -3.824073624
+      polynominal0: 8.7266137772
+    ref5:
+      voltage: 25.2
+      max_thrust: 0.121428571
+      polynominal2: 0.010263644
+      polynominal1: -0.194653877
+      polynominal0: -4.1186075975
+
+  speed_rate: 10.0

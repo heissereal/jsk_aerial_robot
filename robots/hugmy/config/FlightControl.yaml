@@ -5,6 +5,19 @@ aerial_robot_control_name: aerial_robot_control/under_actuated_lqi_controller
 # aerial_robot_control_name: aerial_robot_control/under_actuated_controller
 
 controller:
+  # First straighten the compliant arms with sub-hover thrust, then enter the
+  # normal takeoff controller only after every rotor points sufficiently up.
+  takeoff_pre_tension:
+    enabled: true
+    thrust: 3.0
+    min_rotor_normal_z: 0.6
+    max_rotor_normal_z_spread: 0.1
+    max_rotor_normal_rate: 0.3
+    stable_duration: 0.4
+    timeout: 10.0
+    # Switch directly to full gravity-compensated hover after pre-tension.
+    gravity_ramp_duration: 0.0
+
   xy:
     p_gain: 3.0 #5.0
     i_gain: 0.05
@@ -70,4 +83,3 @@ controller:
 
     trans_constraint_weight: 100
     att_control_weight: 1
-

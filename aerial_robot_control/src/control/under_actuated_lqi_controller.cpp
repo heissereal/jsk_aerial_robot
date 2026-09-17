@@ -35,6 +35,9 @@
 
 #include <aerial_robot_control/control/under_actuated_lqi_controller.h>
 
+#include <cmath>
+#include <limits>
+
 using namespace aerial_robot_control;
 
 UnderActuatedLQIController::UnderActuatedLQIController():
@@ -133,6 +136,12 @@ void UnderActuatedLQIController::gainGeneratorFunc()
 void UnderActuatedLQIController::activate()
 {
   ControlBase::activate();
+  takeoff_pre_tension_complete_ = false;
+  takeoff_pre_tension_start_ = ros::Time(0);
+  takeoff_pre_tension_stable_start_ = ros::Time(0);
+  takeoff_pre_tension_complete_time_ = ros::Time(0);
+  takeoff_pre_tension_normal_sample_time_ = ros::Time(0);
+  takeoff_pre_tension_previous_normals_.clear();
 
   // publish gains in start phase for general multirotor
   if(optimalGain()) {
@@ -166,6 +175,8 @@ void UnderActuatedLQIController::sendFourAxisCommand()
 void UnderActuatedLQIController::controlCore()
 {
   PoseLinearController::controlCore();
+
+  if (runTakeoffPreTension()) return;
 
   tf::Vector3 target_acc_w(pid_controllers_.at(X).result(),
                            pid_controllers_.at(Y).result(),
@@ -206,7 +217,17 @@ void UnderActuatedLQIController::controlCore()
   if (navigator_ && navigator_->isPerching()) {
       compensate_gravity_ = true;
   }
-  if(compensate_gravity_) ff_acc_z += robot_model_->getGravity3d().z();
+  if(compensate_gravity_)
+    {
+      double gravity_scale = 1.0;
+      if (takeoff_pre_tension_enabled_ &&
+          !takeoff_pre_tension_complete_time_.isZero() &&
+          takeoff_gravity_ramp_duration_ > 0.0)
+        gravity_scale = std::max(0.0, std::min(1.0,
+            (ros::Time::now() - takeoff_pre_tension_complete_time_).toSec() /
+            takeoff_gravity_ramp_duration_));
+      ff_acc_z += gravity_scale * robot_model_->getGravity3d().z();
+    }
   Eigen::VectorXd ff_term = q_mat_inv.col(0) * ff_acc_z;
   target_thrust_z_term += ff_term;
 
@@ -222,11 +243,128 @@ void UnderActuatedLQIController::controlCore()
 
   for(int i = 0; i < motor_num_; i++)
     {
-      target_base_thrust_.at(i) = target_thrust_z_term(i);
-      pid_msg_.z.total.at(i) =  target_thrust_z_term(i);
+      double target_thrust = target_thrust_z_term(i);
+
+      // Do not drop the thrust to zero when leaving the compliant-arm
+      // pre-tension phase.  Gravity feed-forward starts from zero and ramps up,
+      // so blend continuously from the pre-tension thrust to the normal
+      // controller output over the same interval.
+      if (takeoff_pre_tension_enabled_ && !takeoff_pre_tension_complete_time_.isZero())
+        {
+          const double transition_ratio = takeoff_gravity_ramp_duration_ <= 0.0 ? 1.0 :
+              std::max(0.0, std::min(1.0,
+                  (ros::Time::now() - takeoff_pre_tension_complete_time_).toSec() /
+                  takeoff_gravity_ramp_duration_));
+          target_thrust = (1.0 - transition_ratio) * takeoff_pre_tension_thrust_ +
+                          transition_ratio * target_thrust;
+        }
+
+      target_base_thrust_.at(i) = target_thrust;
+      pid_msg_.z.total.at(i) = target_thrust;
     }
 
   allocateYawTerm();
+}
+
+bool UnderActuatedLQIController::runTakeoffPreTension()
+{
+  if (!takeoff_pre_tension_enabled_ ||
+      navigator_->getNaviState() != aerial_robot_navigation::TAKEOFF_STATE ||
+      takeoff_pre_tension_complete_)
+    return false;
+
+  const ros::Time now = ros::Time::now();
+  if (takeoff_pre_tension_start_.isZero())
+    {
+      takeoff_pre_tension_start_ = now;
+      ROS_INFO("Takeoff pre-tension started: %.2f N per rotor",
+               takeoff_pre_tension_thrust_);
+    }
+
+  const auto normals = robot_model_->getRotorsNormalFromCog<Eigen::Vector3d>();
+  const auto origins = robot_model_->getRotorsOriginFromCog<Eigen::Vector3d>();
+  bool geometry_ready = normals.size() == static_cast<size_t>(motor_num_);
+  double minimum_normal_z = 1.0;
+  double maximum_normal_z = -1.0;
+  for (const auto& normal : normals)
+    {
+      minimum_normal_z = std::min(minimum_normal_z, normal.z());
+      maximum_normal_z = std::max(maximum_normal_z, normal.z());
+      geometry_ready = geometry_ready && normal.allFinite() &&
+                       normal.z() >= takeoff_pre_tension_min_normal_z_;
+    }
+  const double normal_z_spread = maximum_normal_z - minimum_normal_z;
+  geometry_ready = geometry_ready &&
+                   normal_z_spread <= takeoff_pre_tension_max_normal_z_spread_;
+
+  // A direction threshold alone can be crossed while an arm is still moving
+  // quickly.  Estimate each rotor's angular speed from successive unit normals
+  // and require the compliant arms to settle before changing flight modes.
+  double maximum_normal_rate = std::numeric_limits<double>::infinity();
+  if (!takeoff_pre_tension_normal_sample_time_.isZero() &&
+      takeoff_pre_tension_previous_normals_.size() == normals.size())
+    {
+      const double dt = (now - takeoff_pre_tension_normal_sample_time_).toSec();
+      if (dt > 1e-4)
+        {
+          maximum_normal_rate = 0.0;
+          for (size_t i = 0; i < normals.size(); ++i)
+            {
+              const double dot = std::max(-1.0, std::min(1.0,
+                  takeoff_pre_tension_previous_normals_[i].dot(normals[i])));
+              maximum_normal_rate = std::max(maximum_normal_rate, std::acos(dot) / dt);
+            }
+        }
+    }
+  takeoff_pre_tension_previous_normals_ = normals;
+  takeoff_pre_tension_normal_sample_time_ = now;
+  geometry_ready = geometry_ready &&
+                   maximum_normal_rate <= takeoff_pre_tension_max_normal_rate_;
+  r_pub_.publish(packVec3Array(origins));
+  n_pub_.publish(packVec3Array(normals));
+
+  if (geometry_ready)
+    {
+      if (takeoff_pre_tension_stable_start_.isZero())
+        takeoff_pre_tension_stable_start_ = now;
+      if ((now - takeoff_pre_tension_stable_start_).toSec() >=
+          takeoff_pre_tension_stable_duration_)
+        {
+          takeoff_pre_tension_complete_ = true;
+          takeoff_pre_tension_complete_time_ = now;
+          for (auto& controller : pid_controllers_) controller.reset();
+          ROS_INFO("Takeoff pre-tension complete: min n.z=%.3f, spread=%.3f, max rate=%.3f rad/s",
+                   minimum_normal_z, normal_z_spread, maximum_normal_rate);
+          return false;
+        }
+    }
+  else
+    takeoff_pre_tension_stable_start_ = ros::Time(0);
+
+  if ((now - takeoff_pre_tension_start_).toSec() > takeoff_pre_tension_timeout_)
+    {
+      std::fill(target_base_thrust_.begin(), target_base_thrust_.end(), 0.0f);
+      target_roll_ = target_pitch_ = candidate_yaw_term_ = 0.0;
+      navigator_->setNaviState(aerial_robot_navigation::STOP_STATE);
+      ROS_ERROR("Takeoff aborted: rotor geometry did not recover within %.2f s (minimum n.z=%.3f, required %.3f)",
+                takeoff_pre_tension_timeout_, minimum_normal_z,
+                takeoff_pre_tension_min_normal_z_);
+      return true;
+    }
+
+  for (auto& controller : pid_controllers_) controller.reset();
+  std::fill(target_base_thrust_.begin(), target_base_thrust_.end(),
+            static_cast<float>(takeoff_pre_tension_thrust_));
+  // Hold the current attitude so Spinal does not intentionally tilt the body
+  // while the compliant arms are being straightened.
+  target_roll_ = rpy_.x();
+  target_pitch_ = rpy_.y();
+  candidate_yaw_term_ = 0.0;
+  ROS_INFO_THROTTLE(0.5, "Takeoff pre-tension: min n.z=%.3f/%.3f, spread=%.3f/%.3f, rate=%.3f/%.3f rad/s",
+                    minimum_normal_z, takeoff_pre_tension_min_normal_z_,
+                    normal_z_spread, takeoff_pre_tension_max_normal_z_spread_,
+                    maximum_normal_rate, takeoff_pre_tension_max_normal_rate_);
+  return true;
 }
 
 std_msgs::Float64MultiArray UnderActuatedLQIController::packVec3Array(const std::vector<Eigen::Vector3d>& vecs)
@@ -469,6 +607,15 @@ void UnderActuatedLQIController::rosParamInit()
 {
   ros::NodeHandle control_nh(nh_, "controller");
   ros::NodeHandle lqi_nh(control_nh, "lqi");
+  ros::NodeHandle pre_tension_nh(control_nh, "takeoff_pre_tension");
+  pre_tension_nh.param("enabled", takeoff_pre_tension_enabled_, false);
+  pre_tension_nh.param("thrust", takeoff_pre_tension_thrust_, 3.0);
+  pre_tension_nh.param("min_rotor_normal_z", takeoff_pre_tension_min_normal_z_, 0.8);
+  pre_tension_nh.param("max_rotor_normal_z_spread", takeoff_pre_tension_max_normal_z_spread_, 0.1);
+  pre_tension_nh.param("max_rotor_normal_rate", takeoff_pre_tension_max_normal_rate_, 0.3);
+  pre_tension_nh.param("stable_duration", takeoff_pre_tension_stable_duration_, 0.2);
+  pre_tension_nh.param("timeout", takeoff_pre_tension_timeout_, 2.0);
+  pre_tension_nh.param("gravity_ramp_duration", takeoff_gravity_ramp_duration_, 1.5);
   getParam<bool>(lqi_nh, "clamp_gain", clamp_gain_, true);
   getParam<bool>(lqi_nh, "realtime_update", realtime_update_, false);
   getParam<bool>(lqi_nh, "gyro_moment_compensation", gyro_moment_compensation_, false);

@@ -93,6 +93,22 @@ namespace aerial_robot_control
 
     bool gyro_moment_compensation_;
 
+    // Optional fixed-rotor pre-tension phase used by compliant-arm vehicles.
+    bool takeoff_pre_tension_enabled_ = false;
+    bool takeoff_pre_tension_complete_ = false;
+    double takeoff_pre_tension_thrust_ = 3.0;
+    double takeoff_pre_tension_min_normal_z_ = 0.8;
+    double takeoff_pre_tension_max_normal_z_spread_ = 0.1;
+    double takeoff_pre_tension_max_normal_rate_ = 0.3;
+    double takeoff_pre_tension_stable_duration_ = 0.2;
+    double takeoff_pre_tension_timeout_ = 2.0;
+    double takeoff_gravity_ramp_duration_ = 1.5;
+    ros::Time takeoff_pre_tension_start_;
+    ros::Time takeoff_pre_tension_stable_start_;
+    ros::Time takeoff_pre_tension_complete_time_;
+    ros::Time takeoff_pre_tension_normal_sample_time_;
+    std::vector<Eigen::Vector3d> takeoff_pre_tension_previous_normals_;
+
     bool realtime_update_;
     std::thread gain_generator_thread_;
 
@@ -109,6 +125,7 @@ namespace aerial_robot_control
 
     virtual void sendCmd() override;
     virtual void sendFourAxisCommand();
+    bool runTakeoffPreTension();
 
     Eigen::MatrixXd getQInv();
     virtual void allocateYawTerm();

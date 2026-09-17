@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<!-- Articulated-arm flight simulation using the measured Hugmy2 inertia,
+     rotor geometry, and MuJoCo pneumatic dynamics. -->
+<launch>
+  <arg name="gui" default="true" />
+  <arg name="mujoco" default="true" />
+  <arg name="mujoco_model" default="$(find hugmy)/mujoco/hugmy2/robot.xml" />
+  <arg name="fixed_arms" default="false" />
+  <arg name="enable_pneumatic_plugin" default="true" />
+  <arg name="robot_spawn_z" default="0.30" />
+  <arg name="worldtype" default="$(find aerial_robot_simulation)/gazebo_model/world/empty.world" />
+
+  <include file="$(find hugmy)/launch/bringup.launch">
+    <arg name="rm" value="false" />
+    <arg name="sim" value="true" />
+    <arg name="real_machine" value="false" />
+    <arg name="simulation" value="true" />
+    <arg name="headless" value="$(eval not arg('gui'))" />
+    <arg name="mujoco" value="$(arg mujoco)" />
+    <arg name="mujoco_model" value="$(arg mujoco_model)" />
+    <arg name="worldtype" value="$(arg worldtype)" />
+    <arg name="direct_model" value="true" />
+    <arg name="direct_model_name" value="$(find hugmy)/urdf/hugmy2.gazebo.xacro" />
+    <arg name="fixed_arms" value="$(arg fixed_arms)" />
+    <arg name="enable_pneumatic_plugin" value="$(arg enable_pneumatic_plugin)" />
+    <arg name="spawn_human" value="false" />
+    <arg name="start_pressure_controller" value="false" />
+    <arg name="start_attitude_allocator" value="false" />
+    <arg name="spawn_z" value="$(arg robot_spawn_z)" />
+  </include>
+</launch>

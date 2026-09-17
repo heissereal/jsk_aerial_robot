@@ -115,6 +115,11 @@ namespace aerial_robot_model {
     else
       m_f_rate_attr->Attribute("value", &m_f_rate_);
 
+    // MotorInfo is the runtime source of truth when it is loaded.  Retain the
+    // URDF value as the fallback for robots which do not provide this YAML.
+    ros::NodeHandle nh;
+    nh.param("motor_info/m_f_rate", m_f_rate_, m_f_rate_);
+
     std::vector<urdf::LinkSharedPtr> urdf_links;
     model_.getLinks(urdf_links);
     for(const auto& link: urdf_links)
@@ -655,4 +660,3 @@ namespace aerial_robot_model {
   }
 
 } //namespace aerial_robot_model
-

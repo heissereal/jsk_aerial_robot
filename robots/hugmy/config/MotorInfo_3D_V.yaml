@@ -1,0 +1,93 @@
+motor_info:
+  # Bidirectional ESC command range. PWM=0.75 is the zero-thrust command.
+  min_pwm: 0.5
+  neutral_pwm: 0.75
+  max_pwm: 0.975
+  bidirectional: true
+  # This ESC/motor combination has the opposite polarity from the previous
+  # MotorInfo_3D model: commands below neutral generate positive thrust.
+  positive_thrust_below_neutral: true
+  min_thrust: -4.478729282
+  force_landing_thrust: 1.0
+
+  # The stored coefficients describe F(PWM), so the controller uses the
+  # quadratic inverse (SQRT_MODE) to obtain PWM from target thrust.
+  pwm_conversion_mode: 0
+  m_f_rate: 0.0135
+  vel_ref_num: 5
+
+  simulation:
+    use_pwm_model: true
+    voltage: 21.2
+    neutral_deadband: 0.001
+
+  ref1:
+    voltage: 21.2
+    max_thrust: -4.478729282
+    polynominal2: -0.043050962 # = -0.0043050962 x2 + 0.5310953554 x - 15.9407056717
+    polynominal1: 5.310953554
+    polynominal0: -15.9407056717
+  ref2:
+    voltage: 22.2
+    max_thrust: -4.894444444
+    polynominal2: -0.051218937 # y = -0.0051218937 x2 + 0.6461958986 x - 19.9517135356
+    polynominal1: 6.461958986
+    polynominal0: -19.9517135356
+  ref3:
+    voltage: 23.2
+    max_thrust: -5.236235955
+    polynominal2: -0.069362710 #= -0.0069362710 x2 + 0.9348998166 x - 31.4385810762
+    polynominal1: 9.348998166
+    polynominal0: -31.4385810762
+  ref4:
+    voltage: 24.2
+    max_thrust: -5.787016575
+    polynominal2: -0.073275176 # = -0.0073275176 x2 + 0.9726054244 x - 31.9324636412
+    polynominal1:  9.726054244
+    polynominal0: -31.9324636412
+  ref5:
+    voltage: 25.2
+
+    max_thrust: -5.964971751
+    polynominal2: -0.065922850 #y = -0.0065922850 x2 + 0.8334883172 x - 25.6028558021
+    polynominal1:  8.334883172
+    polynominal0: -25.6028558021
+
+  # PWM < 0.75 uses this independently measured low-PWM (positive-thrust)
+  # branch.  The namespace is called "reverse" for compatibility with the
+  # existing MotorInfo file format; thrust polarity is selected above.
+  reverse:
+    m_f_rate: 0.009
+    vel_ref_num: 5
+    ref1:
+      voltage: 21.2
+      max_thrust: 12.29189944
+      polynominal2: 0.083500613 # = 0.0083500613 x2 - 1.4931187117 x + 65.0663776343
+      polynominal1: -14.931187117
+      polynominal0: 65.0663776343
+    ref2:
+      voltage: 22.2
+      max_thrust: 13.13870056
+      polynominal2: 0.102006823 # 0.0102006823 x2 - 1.7651443095 x + 75.1169022269
+      polynominal1: -17.651443095
+      polynominal0: 75.1169022269
+    ref3:
+      voltage: 23.2
+      max_thrust: 12.01740331
+      polynominal2: 0.117205319  #0.0117205319 x2 - 2.0007462987 x + 84.2533180826
+      polynominal1: -20.007462987
+      polynominal0: 84.2533180826
+    ref4:
+      voltage: 24.2
+      max_thrust: 14.82457627
+      polynominal2:  0.126292547 # = 0.0126292547 x2 -2.1555674053 x + 90.7549173795
+      polynominal1: -21.555674053
+      polynominal0: 90.7549173795
+    ref5:
+      voltage: 25.2
+      max_thrust: 13.97944444
+      polynominal2: 0.166010282 # 0.0166010282 x2 - 2.7097419400 x + 110.1242616860
+      polynominal1: -27.097419400
+      polynominal0: 110.1242616860
+
+  speed_rate: 10.0
