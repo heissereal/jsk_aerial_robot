@@ -1,0 +1,59 @@
+optimization:
+  trials: 24
+  initial_random_trials: 8
+  domain_samples: 2
+  seed: 7
+  candidate_pool_size: 4096
+  episode_timeout_sim_sec: 45.0
+  startup_timeout_wall_sec: 30.0
+  direction_xy: [1.0, 0.0]
+  command_distance_m: 0.002
+  result_directory: /tmp/hugmy_inchworm_optimization
+
+  # Nine variables keep the first optimization problem data-efficient.  The
+  # bounds are deliberately inside the pneumatic and rotor safety limits.
+  parameters:
+    base_pressure_kpa:       {min: 24.0, max: 40.0}
+    front_release_kpa:       {min: 0.0,  max: 12.0}
+    transfer_pressure_kpa:   {min: 12.0, max: 24.0}
+    rear_unload_kpa:         {min: 0.0,  max: 12.0}
+    pull_pressure_kpa:       {min: 0.0,  max: 12.0}
+    reach_max_thrust_n:      {min: 2.0,  max: 6.0}
+    rear_lift_thrust_n:      {min: 1.0,  max: 5.0}
+    reach_duration_sec:      {min: 4.0,  max: 10.0}
+    # Relative extension from the grasp pose: 3--15 deg. Unlike an absolute
+    # bend target, this remains meaningful when the forearm radius changes.
+    reach_straightening_rad: {min: 0.0523599, max: 0.2617994}
+
+  # The first trial is a conservative, cycle-completing reference. Remaining
+  # initial trials use the Latin-hypercube design before GP/EI takes over.
+  seed_candidate:
+    base_pressure_kpa: 30.0
+    front_release_kpa: 0.0
+    transfer_pressure_kpa: 20.0
+    rear_unload_kpa: 8.0
+    pull_pressure_kpa: 5.0
+    reach_max_thrust_n: 6.0
+    rear_lift_thrust_n: 3.0
+    reach_duration_sec: 10.0
+    reach_straightening_rad: 0.0523599
+
+  # A candidate is evaluated in several nearby physical domains and their
+  # rewards are averaged. arm_radius is converted to the box half-width and
+  # half-height used by the current artificial-forearm model.
+  domain_randomization:
+    arm_radius_m:                 {min: 0.035, max: 0.055}
+    grip_friction_coefficient:    {min: 0.8,   max: 1.5}
+    grip_force_per_pressure:      {min: 0.065, max: 0.095}
+    supply_rate:                  {min: 20.0,  max: 30.0}
+    exhaust_rate:                 {min: 14.0,  max: 22.0}
+
+  reward:
+    progress: 1000.0
+    lateral: 250.0
+    vertical: 150.0
+    max_tilt: 3.0
+    detached_fraction: 20.0
+    slip_excess: 2.0
+    pump_effort: 0.02
+    timeout: 25.0

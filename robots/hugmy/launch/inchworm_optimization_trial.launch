@@ -1,0 +1,73 @@
+<?xml version="1.0"?>
+<!-- One clean MuJoCo episode for four-arm inchworm gait optimization. -->
+<launch>
+  <arg name="gui" default="false" />
+  <arg name="robot_ns" default="quadrotor" />
+  <arg name="human_arm_center_z" default="0.05" />
+
+  <!-- Domain-randomization values, selected by optimize_inchworm_gait.py. -->
+  <arg name="human_arm_radius" default="0.05" />
+  <arg name="grip_friction_coefficient" default="1.2" />
+  <arg name="grip_force_per_pressure" default="0.08" />
+  <arg name="supply_rate" default="25.0" />
+  <arg name="exhaust_rate" default="18.0" />
+
+  <!-- Parameterized four-arm Action-A gait. -->
+  <arg name="base_pressure_kpa" default="30.0" />
+  <arg name="front_release_kpa" default="5.0" />
+  <arg name="transfer_pressure_kpa" default="20.0" />
+  <arg name="rear_unload_kpa" default="8.0" />
+  <arg name="pull_pressure_kpa" default="5.0" />
+  <arg name="reach_max_thrust_n" default="6.0" />
+  <arg name="rear_lift_thrust_n" default="3.0" />
+  <arg name="reach_duration_sec" default="10.0" />
+  <arg name="reach_straightening_rad" default="0.0872665" />
+  <arg name="stroke_distance_m" default="0.002" />
+
+  <include file="$(find hugmy)/launch/bringup.launch">
+    <arg name="simulation" value="true" />
+    <arg name="real_machine" value="false" />
+    <arg name="mujoco" value="true" />
+    <arg name="headless" value="$(eval not arg('gui'))" />
+    <arg name="fixed_arms" value="false" />
+    <arg name="enable_pneumatic_plugin" value="true" />
+    <arg name="spawn_human" value="true" />
+    <arg name="human_arm_center_z" value="$(arg human_arm_center_z)" />
+    <arg name="start_pressure_controller" value="false" />
+    <arg name="start_attitude_allocator" value="false" />
+  </include>
+
+  <!-- These are loaded after MujocoPneumatic.yaml and therefore become the
+       episode-specific physical domain. -->
+  <group ns="$(arg robot_ns)">
+    <param name="simulation/pneumatic/human_arm_radius"
+           value="$(arg human_arm_radius)" />
+    <param name="simulation/pneumatic/grip_friction_coefficient"
+           value="$(arg grip_friction_coefficient)" />
+    <param name="simulation/pneumatic/grip_force_per_pressure"
+           value="$(arg grip_force_per_pressure)" />
+    <param name="simulation/pneumatic/supply_rate" value="$(arg supply_rate)" />
+    <param name="simulation/pneumatic/exhaust_rate" value="$(arg exhaust_rate)" />
+  </group>
+
+  <include file="$(find hugmy)/launch/attitude_pressure_controller.launch">
+    <arg name="robot_ns" value="$(arg robot_ns)" />
+    <arg name="bottom_control_enabled" value="false" />
+    <arg name="use_mocap_attitude_for_inchworm" value="true" />
+    <arg name="inchworm_action_b" value="false" />
+    <arg name="inchworm_action_c" value="false" />
+    <arg name="base_pressure_kpa" value="$(arg base_pressure_kpa)" />
+    <arg name="inchworm_front_release_kpa" value="$(arg front_release_kpa)" />
+    <arg name="inchworm_swing_pressure_kpa" value="$(arg front_release_kpa)" />
+    <arg name="inchworm_transfer_pressure_kpa" value="$(arg transfer_pressure_kpa)" />
+    <arg name="inchworm_rear_unload_kpa" value="$(arg rear_unload_kpa)" />
+    <arg name="inchworm_pull_pressure_kpa" value="$(arg pull_pressure_kpa)" />
+    <arg name="inchworm_reach_max_thrust_n" value="$(arg reach_max_thrust_n)" />
+    <arg name="inchworm_rear_lift_thrust_n" value="$(arg rear_lift_thrust_n)" />
+    <arg name="inchworm_reach_duration_sec" value="$(arg reach_duration_sec)" />
+    <arg name="inchworm_target_straightening_angle_rad"
+         value="$(arg reach_straightening_rad)" />
+    <arg name="inchworm_stroke_distance_m" value="$(arg stroke_distance_m)" />
+    <arg name="inchworm_max_cycles" value="1" />
+  </include>
+</launch>
