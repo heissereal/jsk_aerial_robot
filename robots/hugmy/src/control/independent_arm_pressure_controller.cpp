@@ -24,6 +24,10 @@ IndependentArmPressureController::IndependentArmPressureController(ros::NodeHand
   pnh_.param("integral_limit", integral_limit_, 20.0);
   pnh_.param("control_rate_hz", control_rate_hz_, 50.0);
   pnh_.param("maximum_target_kpa", maximum_target_kpa_, 55.0);
+  pnh_.param("bottom_maximum_target_kpa", bottom_maximum_target_kpa_, maximum_target_kpa_);
+  pnh_.param("bottom_pressure_scale", bottom_pressure_scale_, 1.0);
+  pnh_.param("bottom_pressure_offset_kpa", bottom_pressure_offset_kpa_, 0.0);
+  pnh_.param("bottom_control_enabled", bottom_control_enabled_, true);
   pnh_.param("pressure_limit_kpa", pressure_limit_kpa_, 60.0);
   pnh_.param("sensor_fault_delay_s", sensor_fault_delay_s_, 0.5);
 
@@ -40,11 +44,20 @@ IndependentArmPressureController::IndependentArmPressureController(ros::NodeHand
     root_adc_sub_ = nh_.subscribe("/neuron/adc_states", 1,
                                   &IndependentArmPressureController::rootAdcCallback, this);
   target_sub_ = pnh_.subscribe("target_pressure", 1, &IndependentArmPressureController::targetCallback, this);
+  bottom_pressure_sub_ = nh_.subscribe("pneumatic/bottom_pressure", 1,
+                                       &IndependentArmPressureController::bottomPressureCallback, this);
+  if (nh_.resolveName("pneumatic/bottom_pressure") != "/pneumatic/bottom_pressure")
+    root_bottom_pressure_sub_ = nh_.subscribe("/pneumatic/bottom_pressure", 1,
+                                              &IndependentArmPressureController::rootBottomPressureCallback, this);
+  bottom_target_sub_ = pnh_.subscribe("bottom_target_pressure", 1,
+                                      &IndependentArmPressureController::bottomTargetCallback, this);
   command_pub_ = nh_.advertise<spinal::PneumaticCommand>("pneumatic/command", 1);
   if (nh_.resolveName("pneumatic/command") != "/pneumatic/command")
     root_command_pub_ = nh_.advertise<spinal::PneumaticCommand>("/pneumatic/command", 1);
   pressure_pub_ = pnh_.advertise<std_msgs::Float32MultiArray>("pressure", 1);
   error_pub_ = pnh_.advertise<std_msgs::Float32MultiArray>("error", 1);
+  bottom_pressure_pub_ = pnh_.advertise<std_msgs::Float32>("bottom_pressure", 1);
+  bottom_error_pub_ = pnh_.advertise<std_msgs::Float32>("bottom_error", 1);
   enable_server_ = pnh_.advertiseService("enable", &IndependentArmPressureController::enableCallback, this);
   timer_ = nh_.createTimer(ros::Duration(1.0 / std::max(1.0, control_rate_hz_)), &IndependentArmPressureController::update, this);
 }
@@ -73,6 +86,19 @@ void IndependentArmPressureController::updatePressure(
         }
 }
 
+void IndependentArmPressureController::bottomPressureCallback(const std_msgs::Float32::ConstPtr& msg)
+{
+  bottom_pressure_ = msg->data * bottom_pressure_scale_ + bottom_pressure_offset_kpa_;
+  use_root_spinal_topics_ = false;
+}
+
+void IndependentArmPressureController::rootBottomPressureCallback(
+    const std_msgs::Float32::ConstPtr& msg)
+{
+  bottom_pressure_ = msg->data * bottom_pressure_scale_ + bottom_pressure_offset_kpa_;
+  use_root_spinal_topics_ = true;
+}
+
 void IndependentArmPressureController::targetCallback(const std_msgs::Float32MultiArray::ConstPtr& msg)
 {
   if (msg->data.size() != ARM_COUNT)
@@ -91,6 +117,19 @@ void IndependentArmPressureController::targetCallback(const std_msgs::Float32Mul
   std::copy(msg->data.begin(), msg->data.end(), target_.begin());
   target_received_ = true;
 }
+
+void IndependentArmPressureController::bottomTargetCallback(
+    const std_msgs::Float32::ConstPtr& msg)
+{
+  if (!std::isfinite(msg->data) || msg->data < 0.0 || msg->data > bottom_maximum_target_kpa_)
+    {
+      ROS_ERROR("Invalid bottom target pressure: %.3f kPa (allowed 0..%.1f)",
+                msg->data, bottom_maximum_target_kpa_);
+      return;
+    }
+  bottom_target_ = msg->data;
+  bottom_target_received_ = true;
+}
 bool IndependentArmPressureController::enableCallback(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res)
 {
   if (req.data && !target_received_)
@@ -99,11 +138,16 @@ bool IndependentArmPressureController::enableCallback(std_srvs::SetBool::Request
         target_[arm] = std::isfinite(pressure_[arm]) ? pressure_[arm] : 0.0;
       target_received_ = true;
     }
+  if (req.data && bottom_control_enabled_ && !bottom_target_received_)
+    {
+      bottom_target_ = std::isfinite(bottom_pressure_) ? bottom_pressure_ : 0.0;
+      bottom_target_received_ = true;
+    }
   enabled_ = req.data;
   resetIntegrators();
   if (!enabled_) publishDisabledCommand();
   res.success = true;
-  res.message = enabled_ ? "four-arm pressure control enabled" : "pressure control disabled";
+  res.message = enabled_ ? "arm and bottom pressure control enabled" : "pressure control disabled";
   return true;
 }
 
@@ -112,6 +156,8 @@ void IndependentArmPressureController::update(const ros::TimerEvent& event)
   spinal::PneumaticCommand command;
   command.enable = enabled_;
   command.pump_pwm = 0.0f;
+  command.bottom_supply_pwm = 0.0f;
+  command.bottom_exhaust_pwm = 0.0f;
   const double dt = std::max(0.0, std::min(0.1, (event.current_real - event.last_real).toSec()));
   bool sensors_healthy = true;
   bool any_arm_pressurizing = false;
@@ -211,6 +257,89 @@ void IndependentArmPressureController::update(const ros::TimerEvent& event)
         }
     }
 
+  const double raw_bottom_pressure = bottom_pressure_;
+  std_msgs::Float32 bottom_pressure_msg, bottom_error_msg;
+  bottom_pressure_msg.data = raw_bottom_pressure;
+  bottom_error_msg.data = bottom_control_enabled_
+      ? bottom_target_ - bottom_pressure_ : 0.0;
+  if (bottom_control_enabled_)
+    {
+  const bool bottom_sample_valid = std::isfinite(raw_bottom_pressure) &&
+                                   raw_bottom_pressure >= -5.0 &&
+                                   raw_bottom_pressure < pressure_limit_kpa_;
+  if (bottom_sample_valid)
+    {
+      bottom_last_valid_pressure_ = raw_bottom_pressure;
+      bottom_invalid_since_ = ros::WallTime();
+      if (bottom_sensor_fault_active_)
+        ROS_WARN("Bottom pressure sensor recovered; pressure control resumes automatically");
+      bottom_sensor_fault_active_ = false;
+    }
+  else if (bottom_invalid_since_.isZero())
+    bottom_invalid_since_ = wall_now;
+
+  const bool bottom_invalid_too_long = !bottom_sample_valid &&
+      (wall_now - bottom_invalid_since_).toSec() >= sensor_fault_delay_s_;
+  if (bottom_invalid_too_long)
+    {
+      sensors_healthy = false;
+      if (!bottom_sensor_fault_active_)
+        ROS_ERROR("Bottom pressure sensor invalid for %.3f s (raw: %.3f kPa); control pauses until recovery",
+                  sensor_fault_delay_s_, raw_bottom_pressure);
+      bottom_sensor_fault_active_ = true;
+    }
+
+  const double bottom_control_pressure = bottom_sample_valid ? raw_bottom_pressure : bottom_last_valid_pressure_;
+  bottom_error_msg.data = bottom_target_ - bottom_control_pressure;
+  if (!std::isfinite(bottom_control_pressure))
+    sensors_healthy = false;
+  else if (!enabled_)
+    {
+      bottom_integral_ = 0.0;
+      bottom_pressurizing_ = false;
+    }
+  else
+    {
+      const double bottom_error = bottom_target_ - bottom_control_pressure;
+      if (bottom_pressurizing_)
+        {
+          if (bottom_error <= pressurize_stop_error_kpa_)
+            {
+              bottom_pressurizing_ = false;
+              bottom_integral_ = 0.0;
+            }
+        }
+      else if (bottom_error >= pressurize_start_error_kpa_)
+        bottom_pressurizing_ = true;
+
+      if (bottom_pressurizing_)
+        {
+          const double pressure_ratio = std::max(0.0, std::min(1.0, bottom_control_pressure /
+              std::max(1.0, gain_schedule_reference_kpa_)));
+          const double gain_scale = enable_gain_scheduling_
+              ? gain_schedule_min_scale_ + (1.0 - gain_schedule_min_scale_) * pressure_ratio
+              : 1.0;
+          const double scheduled_kp = kp_ * gain_scale;
+          const double scheduled_ki = ki_ * gain_scale;
+          const double candidate_integral = std::max(0.0, std::min(
+              integral_limit_, bottom_integral_ + bottom_error * dt));
+          const double candidate_effort = scheduled_kp * bottom_error +
+              scheduled_ki * candidate_integral;
+          if (candidate_effort < maximum_duty_)
+            bottom_integral_ = candidate_integral;
+          const double effort = scheduled_kp * bottom_error + scheduled_ki * bottom_integral_;
+          command.bottom_supply_pwm = std::max(minimum_duty_, std::min(maximum_duty_, effort));
+          any_arm_pressurizing = true;
+        }
+      else if (bottom_error < -deadband_kpa_)
+        {
+          bottom_integral_ = 0.0;
+          command.bottom_exhaust_pwm = std::min(exhaust_maximum_duty_,
+                                                exhaust_kp_ * std::abs(bottom_error));
+        }
+    }
+    }
+
   if (any_arm_pressurizing)
     command.pump_pwm = pump_on_duty_;
 
@@ -225,6 +354,8 @@ void IndependentArmPressureController::update(const ros::TimerEvent& event)
   publishCommand(command);
   pressure_pub_.publish(pressure_msg);
   error_pub_.publish(error_msg);
+  bottom_pressure_pub_.publish(bottom_pressure_msg);
+  bottom_error_pub_.publish(bottom_error_msg);
 }
 
 void IndependentArmPressureController::publishDisabledCommand()
@@ -232,6 +363,8 @@ void IndependentArmPressureController::publishDisabledCommand()
   spinal::PneumaticCommand command;
   command.enable = false;
   command.pump_pwm = 0.0f;
+  command.bottom_supply_pwm = 0.0f;
+  command.bottom_exhaust_pwm = 0.0f;
   for (size_t arm = 0; arm < ARM_COUNT; ++arm)
     command.supply_pwm[arm] = command.exhaust_pwm[arm] = 0.0f;
   publishCommand(command);
@@ -249,4 +382,5 @@ void IndependentArmPressureController::publishCommand(
 void IndependentArmPressureController::resetIntegrators()
 {
   integral_.fill(0.0);
+  bottom_integral_ = 0.0;
 }

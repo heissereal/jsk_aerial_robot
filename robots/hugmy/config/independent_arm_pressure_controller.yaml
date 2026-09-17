@@ -23,4 +23,17 @@ pressurize_stop_error_kpa: 0.0
 maximum_target_kpa: 55.0
 pressure_limit_kpa: 60.0
 
+# Bottom inflatable uses the Spinal ADC and direct Spinal PWM ports:
+# Spinal PWM 5 for supply and Spinal PWM 7 for exhaust.  The shared pumps use
+# PWM 4 and PWM 6, so these outputs are independent.
+# It shares the gains above until its own response is identified.
+bottom_maximum_target_kpa: 55.0
+# Defaults match the Neuron pressure-transducer conversion in Spinal.  These
+# parameters allow a measured bottom-sensor offset/scale to be corrected on PC.
+bottom_pressure_scale: 1.0
+bottom_pressure_offset_kpa: 0.0
+# Set false only when the bottom chamber/sensor is absent (for example the
+# four articulated-arm MuJoCo gait-optimization model).
+bottom_control_enabled: true
+
 sensor_fault_delay_s: 0.5

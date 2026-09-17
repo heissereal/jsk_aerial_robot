@@ -5,6 +5,7 @@
 #include <ros/ros.h>
 #include <spinal/NeuronAdcStates.h>
 #include <spinal/PneumaticCommand.h>
+#include <std_msgs/Float32.h>
 #include <std_msgs/Float32MultiArray.h>
 #include <std_srvs/SetBool.h>
 
@@ -19,6 +20,9 @@ private:
   void rootAdcCallback(const spinal::NeuronAdcStates::ConstPtr& msg);
   void updatePressure(const spinal::NeuronAdcStates::ConstPtr& msg, bool root_topics);
   void targetCallback(const std_msgs::Float32MultiArray::ConstPtr& msg);
+  void bottomPressureCallback(const std_msgs::Float32::ConstPtr& msg);
+  void rootBottomPressureCallback(const std_msgs::Float32::ConstPtr& msg);
+  void bottomTargetCallback(const std_msgs::Float32::ConstPtr& msg);
   bool enableCallback(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res);
   void update(const ros::TimerEvent& event);
   void publishDisabledCommand();
@@ -27,7 +31,9 @@ private:
 
   ros::NodeHandle nh_, pnh_;
   ros::Subscriber adc_sub_, root_adc_sub_, target_sub_;
+  ros::Subscriber bottom_pressure_sub_, root_bottom_pressure_sub_, bottom_target_sub_;
   ros::Publisher command_pub_, root_command_pub_, pressure_pub_, error_pub_;
+  ros::Publisher bottom_pressure_pub_, bottom_error_pub_;
   ros::ServiceServer enable_server_;
   ros::Timer timer_;
 
@@ -39,15 +45,26 @@ private:
   std::array<bool, ARM_COUNT> pressurizing_{};
   std::array<ros::WallTime, ARM_COUNT> invalid_since_;
   std::array<bool, ARM_COUNT> sensor_fault_active_{};
+  double bottom_pressure_ = NAN;
+  double bottom_last_valid_pressure_ = NAN;
+  double bottom_target_ = 0.0;
+  double bottom_integral_ = 0.0;
+  bool bottom_pressurizing_ = false;
+  ros::WallTime bottom_invalid_since_;
+  bool bottom_sensor_fault_active_ = false;
   double kp_, ki_, deadband_kpa_, minimum_duty_, maximum_duty_;
   double exhaust_kp_, exhaust_maximum_duty_, integral_limit_;
   double gain_schedule_min_scale_, gain_schedule_reference_kpa_;
   double pump_on_duty_, pressurize_start_error_kpa_, pressurize_stop_error_kpa_;
   double control_rate_hz_, maximum_target_kpa_, pressure_limit_kpa_;
+  double bottom_maximum_target_kpa_;
+  double bottom_pressure_scale_, bottom_pressure_offset_kpa_;
   double sensor_fault_delay_s_;
   bool enable_gain_scheduling_;
+  bool bottom_control_enabled_ = true;
   bool enabled_ = false;
   bool target_received_ = false;
+  bool bottom_target_received_ = false;
   bool use_root_spinal_topics_ = false;
 };
 
