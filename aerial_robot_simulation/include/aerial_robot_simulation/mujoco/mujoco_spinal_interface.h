@@ -29,6 +29,8 @@ namespace hardware_interface
     int getMotorNum() {return motor_num_;}
     double getForce(int index){return force_.at(index);}
     void setForce(int index, double force) {force_.at(index) = force;}
+    double getPwm(int index) const {return pwm_.at(index);}
+    void setPwm(int index, double pwm) {pwm_.at(index) = pwm;}
 
   private:
     /* attitude estimator */
@@ -36,6 +38,7 @@ namespace hardware_interface
 
     int motor_num_;
     std::vector<double> force_;
+    std::vector<double> pwm_;
     tf::Matrix3x3 baselink_rot_;
     tf::Vector3 baselink_angular_;
     StateEstimate spinal_state_estimator_;

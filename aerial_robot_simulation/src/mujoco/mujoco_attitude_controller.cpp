@@ -1,5 +1,8 @@
 #include <aerial_robot_simulation/mujoco/mujoco_attitude_controller.h>
 
+#include <algorithm>
+#include <cmath>
+
 namespace flight_controllers
 {
   MujocoAttitudeController::MujocoAttitudeController():
@@ -16,6 +19,15 @@ namespace flight_controllers
     std::string robot_ns = n.getNamespace().substr(0, index);
     ros::NodeHandle n_robot = ros::NodeHandle(robot_ns);
     controller_core_->init(&n_robot, robot->getEstimatorPtr());
+    n_robot.param("motor_info/min_pwm", minimum_pwm_, minimum_pwm_);
+    n_robot.param("motor_info/neutral_pwm", neutral_pwm_, neutral_pwm_);
+    n_robot.param("motor_info/max_pwm", maximum_pwm_, maximum_pwm_);
+    pwm_test_values_.assign(motor_num_, neutral_pwm_);
+    pwm_test_active_.assign(motor_num_, false);
+    // The embedded callback is excluded by #ifndef SIMULATION. MuJoCo still
+    // needs the same individual-motor PwmTest semantics for gait experiments.
+    pwm_test_sub_ = n_robot.subscribe(
+        "pwm_test", 1, &MujocoAttitudeController::pwmTestCallback, this);
 
     return true;
 
@@ -36,6 +48,52 @@ namespace flight_controllers
     for(int i = 0; i < motor_num_; i++)
       {
         spinal_interface_->setForce(i, controller_core_->getAttController().getForce(i));
+        // A stopped bidirectional ESC uses its configured neutral, not the
+        // legacy simulation value 0.5 (which is maximum reverse for Hugmy).
+        const double normal_pwm = controller_core_->getAttController().getIntegrateFlag()
+            ? controller_core_->getAttController().getTargetPwm(i)
+            : neutral_pwm_;
+        spinal_interface_->setPwm(i, normal_pwm);
+      }
+
+    std::lock_guard<std::mutex> lock(pwm_test_mutex_);
+    if (pwm_test_mode_)
+      for (int i = 0; i < motor_num_; ++i)
+        spinal_interface_->setPwm(
+            i, pwm_test_active_[i] ? pwm_test_values_[i] : neutral_pwm_);
+  }
+
+  void MujocoAttitudeController::pwmTestCallback(
+      const spinal::PwmTest::ConstPtr& msg)
+  {
+    std::lock_guard<std::mutex> lock(pwm_test_mutex_);
+    if (msg->motor_index.empty() && msg->pwms.empty())
+      {
+        pwm_test_mode_ = false;
+        std::fill(pwm_test_active_.begin(), pwm_test_active_.end(), false);
+        return;
+      }
+    if (msg->motor_index.size() != msg->pwms.size())
+      {
+        ROS_ERROR_THROTTLE(1.0,
+            "MuJoCo PwmTest index/PWM arrays have different lengths");
+        return;
+      }
+    pwm_test_mode_ = true;
+    std::fill(pwm_test_active_.begin(), pwm_test_active_.end(), false);
+    for (size_t item = 0; item < msg->motor_index.size(); ++item)
+      {
+        const size_t motor = msg->motor_index[item];
+        const double pwm = msg->pwms[item];
+        if (motor >= static_cast<size_t>(motor_num_) || !std::isfinite(pwm))
+          {
+            ROS_WARN_THROTTLE(1.0,
+                "MuJoCo PwmTest contains an invalid motor or PWM");
+            continue;
+          }
+        pwm_test_active_[motor] = true;
+        pwm_test_values_[motor] = std::max(
+            minimum_pwm_, std::min(maximum_pwm_, pwm));
       }
   }
 }

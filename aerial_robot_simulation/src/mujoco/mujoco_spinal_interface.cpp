@@ -10,7 +10,10 @@ namespace hardware_interface
   bool MujocoSpinalInterface::init(ros::NodeHandle& nh, int motor_num)
   {
     motor_num_ = motor_num;
-    force_.resize(motor_num_);
+    force_.assign(motor_num_, 0.0);
+    double neutral_pwm = 0.5;
+    nh.param("motor_info/neutral_pwm", neutral_pwm, neutral_pwm);
+    pwm_.assign(motor_num_, neutral_pwm);
     spinal_state_estimator_.init(&nh);
     return true;
   }

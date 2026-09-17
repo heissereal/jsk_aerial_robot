@@ -24,7 +24,7 @@ include_directories(${orocos_kdl_INCLUDE_DIRS} ${urdfdom_headers_INCLUDE_DIRS})
 
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES aerial_robot_hw_sim spinal_interface flight_controllers
+  LIBRARIES aerial_robot_hw_sim spinal_interface flight_controllers mujoco_spinal_interface mujoco_aerial_robot_hw_sim
   CATKIN_DEPENDS aerial_robot_base aerial_robot_estimation aerial_robot_msgs aerial_robot_model gazebo_ros_control kdl_parser roscpp spinal tf
   DEPENDS GAZEBO orocos_kdl urdfdom_headers
 )
