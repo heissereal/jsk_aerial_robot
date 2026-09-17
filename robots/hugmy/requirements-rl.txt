@@ -1,0 +1,6 @@
+gymnasium>=0.29,<1.1
+stable-baselines3>=2.3,<3
+torch>=2.0
+# TensorBoard is optional. On Ubuntu 20.04, mixing its pip dependencies with
+# ROS's apt-installed pyOpenSSL/botocore can break imports. Training always
+# writes Monitor CSV and checkpoints without it.

@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<!-- MuJoCo plant for one synchronous Gymnasium/SB3 environment. -->
+<launch>
+  <arg name="gui" default="false"/>
+  <arg name="control_dt" default="0.1"/>
+  <arg name="physics_timestep" default="0.002"/>
+  <arg name="robot_spawn_z" default="0.165"/>
+  <arg name="human_arm_center_z" default="0.05"/>
+
+  <include file="$(find hugmy)/launch/bringup.launch">
+    <arg name="rm" value="false"/>
+    <arg name="sim" value="true"/>
+    <arg name="real_machine" value="false"/>
+    <arg name="simulation" value="true"/>
+    <arg name="headless" value="$(eval not arg('gui'))"/>
+    <arg name="mujoco" value="true"/>
+    <arg name="fixed_arms" value="false"/>
+    <arg name="enable_pneumatic_plugin" value="true"/>
+    <arg name="spawn_human" value="true"/>
+    <arg name="human_arm_center_z" value="$(arg human_arm_center_z)"/>
+    <arg name="start_pressure_controller" value="true"/>
+    <arg name="start_attitude_allocator" value="false"/>
+    <arg name="gym_step_mode" value="true"/>
+    <arg name="gym_step_duration" value="$(arg control_dt)"/>
+    <arg name="gym_physics_timestep" value="$(arg physics_timestep)"/>
+    <arg name="spawn_x" value="0.0"/>
+    <arg name="spawn_y" value="0.0"/>
+    <arg name="spawn_z" value="$(arg robot_spawn_z)"/>
+    <arg name="spawn_yaw" value="0.0"/>
+  </include>
+</launch>
