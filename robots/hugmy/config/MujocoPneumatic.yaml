@@ -52,20 +52,18 @@ simulation:
     # mujoco_ros_control default (1 ms).
     gym_physics_timestep: 0.0
 
-    # One hardware-compatible bottom channel acts at the side selected by
-    # pneumatic/bottom_force_direction.  For forward rocking the controller
-    # selects the front-side application point so inflation produces a
-    # rearward/nose-up preload.  The eccentric normal force remains for contact
-    # loading, while the virtual compliant tilt actuator makes the measured
-    # pressure-to-angle relation deterministic.  Bottom supplies a posture
-    # bias; the arm rotors remain the locomotion actuators.
+    # One hardware-compatible chamber is centred under the body.  Its rounded
+    # support supplies normal load while remaining neutral to fore/aft rocking;
+    # arm pressure/contact and rotor thrust determine the rocking direction.
+    # The old one-sided virtual tilt is disabled because a single central
+    # chamber cannot command a signed pitch torque.
     bottom_force_per_pressure: 0.12  # N/kPa
-    bottom_lever_arm: 0.040          # m from main_body center
+    bottom_lever_arm: 0.0            # centred in main_body x/y
     bottom_point_z: -0.050           # m in main_body
     bottom_contact_range: 0.080      # m from the artificial forearm
     bottom_visual_base_height: 0.003
     bottom_visual_height_per_pressure: 0.00025
-    bottom_virtual_tilt_enabled: true
+    bottom_virtual_tilt_enabled: false
     bottom_tilt_reference_pressure: 50.0
     bottom_tilt_at_reference: 0.2617994  # 15 deg at 50 kPa
     bottom_tilt_stiffness: 50.0          # N m/rad

@@ -158,12 +158,12 @@ private:
   std::vector<double> previous_grip_qfrc_;
   std::vector<double> previous_bottom_qfrc_;
   double bottom_force_per_kpa_n_ = 0.12;
-  double bottom_lever_arm_m_ = 0.040;
+  double bottom_lever_arm_m_ = 0.0;
   double bottom_point_z_m_ = -0.050;
   double bottom_contact_range_m_ = 0.080;
   double bottom_visual_base_height_m_ = 0.003;
   double bottom_visual_height_per_kpa_m_ = 0.00025;
-  bool bottom_virtual_tilt_enabled_ = true;
+  bool bottom_virtual_tilt_enabled_ = false;
   double bottom_tilt_reference_pressure_kpa_ = 50.0;
   double bottom_tilt_at_reference_rad_ = 0.2617993877991494;
   double bottom_tilt_stiffness_nm_rad_ = 50.0;

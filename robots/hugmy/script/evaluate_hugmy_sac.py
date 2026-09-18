@@ -18,6 +18,9 @@ def main() -> None:
     parser.add_argument("--config", default=default_config)
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--stage", type=int, default=0)
+    parser.add_argument(
+        "--direction", choices=("random", "forward", "backward"),
+        default=None, help="Override the evaluation target direction")
     parser.add_argument("--stochastic", action="store_true")
     args = parser.parse_args()
 
@@ -41,6 +44,8 @@ def main() -> None:
         configuration = yaml.safe_load(stream)
     environment = dict(configuration.get("environment", {}))
     environment.update(environment.pop("reward", {}))
+    if args.direction is not None:
+        environment["target_direction_mode"] = args.direction
     environment["curriculum"] = configuration.get("curriculum", {})
     environment["curriculum_stage"] = args.stage
     raw_env = HugmyMujocoEnv(**environment)
@@ -65,6 +70,7 @@ def main() -> None:
                 print(
                     f"episode {completed}: reward={episode_reward:.3f}, "
                     f"progress={info.get('total_progress_m', float('nan')):.4f} m, "
+                    f"direction={info.get('target_direction', float('nan')):+.0f}, "
                     f"fallen={info.get('fallen', False)}, "
                     f"detached={info.get('detached', False)}")
                 episode_reward = 0.0

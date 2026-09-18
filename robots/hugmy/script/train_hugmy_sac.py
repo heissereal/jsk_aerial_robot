@@ -5,10 +5,23 @@ import argparse
 import os
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 from typing import Any, Dict
 
 import rospkg
 import yaml
+
+
+def save_atomically(save_function: Any, destination: Path) -> None:
+    """Keep an existing artifact intact when serialization fails midway."""
+    temporary = destination.with_name(
+        f".{destination.stem}.tmp{destination.suffix}")
+    try:
+        save_function(str(temporary))
+        os.replace(str(temporary), str(destination))
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def load_configuration(path: str) -> Dict[str, Any]:
@@ -38,6 +51,9 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--start-stage", type=int, default=0)
     parser.add_argument("--stop-stage", type=int, default=None)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--device", choices=("auto", "cpu", "cuda"), default=None,
+        help="SB3/PyTorch device; overrides training.device in the YAML")
     parser.add_argument("--resume", help="Existing SAC .zip file")
     parser.add_argument("--replay-buffer",
                         help="Existing SAC replay-buffer .pkl file")
@@ -106,19 +122,30 @@ def main() -> None:
     initial_stage = args.start_stage
     raw_env = HugmyMujocoEnv(**environment_arguments(configuration, initial_stage))
     if args.check_only:
-        check_env(raw_env, warn=True, skip_render_check=True)
+        # ROS callback timing and MuJoCo sensor noise are intentionally not
+        # bitwise deterministic across two physical resets, even with the
+        # policy/domain RNG seeded. Tell Gymnasium to check API/space validity
+        # without imposing that inappropriate deterministic-step assertion.
+        raw_env.spec = SimpleNamespace(nondeterministic=True)
+        check_env(
+            raw_env, warn=True, skip_render_check=True,
+            skip_close_check=True)
         raw_env.close()
         print("Gymnasium environment check passed")
         return
 
     vec_env = DummyVecEnv([
-        lambda: Monitor(raw_env, filename=str(output / "monitor.csv"))
+        lambda: Monitor(
+            raw_env, filename=str(output / "monitor.csv"),
+            info_keywords=(
+                "target_direction", "total_progress_m", "fallen", "detached"))
     ])
     training = dict(configuration.get("training", {}))
     normalize_observation = bool(training.pop("normalize_observation", True))
     normalize_reward = bool(training.pop("normalize_reward", True))
     checkpoint_frequency = int(training.pop("checkpoint_frequency", 25000))
-    device = training.pop("device", "auto")
+    configured_device = training.pop("device", "auto")
+    device = args.device if args.device is not None else configured_device
     verbose = int(training.pop("verbose", 1))
     policy = training.pop("policy", "MlpPolicy")
     tensorboard_log = None
@@ -170,9 +197,28 @@ def main() -> None:
             if remaining is not None:
                 remaining -= stage_steps
     finally:
-        model.save(str(output / "model_final"))
-        vec_env.save(str(output / "vecnormalize_final.pkl"))
+        # A CUDA launch failure poisons the CUDA context, so even copying model
+        # tensors to CPU for serialization can fail.  Save each artifact
+        # independently and atomically: a partial save must never replace the
+        # last valid checkpoint or masquerade as a usable model_final.zip.
+        training_failed = sys.exc_info()[0] is not None
+        save_errors = []
+        final_artifacts = (
+            (model.save, output / "model_final.zip"),
+            (model.save_replay_buffer, output / "replay_buffer_final.pkl"),
+            (vec_env.save, output / "vecnormalize_final.pkl"),
+        )
+        for save_function, destination in final_artifacts:
+            try:
+                save_atomically(save_function, destination)
+            except Exception as exc:
+                save_errors.append((destination, exc))
+                print(
+                    f"WARNING: could not save {destination}: "
+                    f"{type(exc).__name__}: {exc}", file=sys.stderr)
         vec_env.close()
+        if save_errors and not training_failed:
+            raise save_errors[0][1]
     print(f"saved trained policy to {output / 'model_final.zip'}")
 
 

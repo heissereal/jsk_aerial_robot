@@ -53,6 +53,20 @@ def main():
     print(f"last  {window} reward median: {statistics.median(latest):.3f}")
     print(f"best episode reward:  {max(rewards):.3f}")
     print(f"latest mean length:   {statistics.mean(lengths[-window:]):.1f} step")
+    if "target_direction" in rows[0]:
+        for direction, label in ((1.0, "forward"), (-1.0, "backward")):
+            selected = [
+                row for row in rows
+                if float(row.get("target_direction", 0.0)) == direction]
+            if not selected:
+                continue
+            selected_rewards = [float(row["r"]) for row in selected]
+            selected_progress = [
+                float(row["total_progress_m"]) for row in selected]
+            print(
+                f"{label:8s}: episodes={len(selected):4d}, "
+                f"reward mean={statistics.mean(selected_rewards):8.3f}, "
+                f"progress mean={statistics.mean(selected_progress):+.4f} m")
 
     if not args.plot:
         return

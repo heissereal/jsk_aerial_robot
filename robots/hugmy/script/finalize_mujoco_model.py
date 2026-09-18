@@ -93,26 +93,24 @@ def finalize(model_path):
     main_body = bodies.get("main_body")
     if main_body is None:
         raise RuntimeError("generated MJCF has no main_body")
-    if not any(
-        geom.get("name") == "hugmy_bottom_inflatable"
-        for geom in main_body.findall("geom")
-    ):
-        # Collision is represented by an explicit pressure-dependent force in
-        # HugmyPneumaticHWSim. This visual follows the selected side and grows
-        # with simulated bottom pressure.
-        main_body.append(
-            ET.Element(
-                "geom",
-                name="hugmy_bottom_inflatable",
-                type="ellipsoid",
-                pos="-0.04 0 -0.05",
-                size="0.03 0.035 0.003",
-                rgba="0.2 0.55 1.0 0.15",
-                mass="0",
-                contype="0",
-                conaffinity="0",
-            )
-        )
+    bottom_geom = next((
+        geom for geom in main_body.findall("geom")
+        if geom.get("name") == "hugmy_bottom_inflatable"
+    ), None)
+    if bottom_geom is None:
+        bottom_geom = ET.SubElement(
+            main_body, "geom", name="hugmy_bottom_inflatable")
+    # Collision is represented by the pressure-dependent radial force in
+    # HugmyPneumaticHWSim.  The centred ellipsoid visualises the single rounded
+    # support; its wide lateral radius discourages interpreting it as a second
+    # independently controlled front/rear chamber.
+    bottom_geom.set("type", "ellipsoid")
+    bottom_geom.set("pos", "0 0 -0.05")
+    bottom_geom.set("size", "0.04 0.045 0.003")
+    bottom_geom.set("rgba", "0.2 0.55 1.0 0.15")
+    bottom_geom.set("mass", "0")
+    bottom_geom.set("contype", "0")
+    bottom_geom.set("conaffinity", "0")
 
     sensor = root.find("sensor")
     if sensor is None:

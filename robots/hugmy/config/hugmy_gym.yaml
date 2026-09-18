@@ -10,6 +10,9 @@ environment:
   # Kept inside the 21.2 V polynomial values over PWM=[0.5, 0.975].
   maximum_forward_thrust_n: 8.0
   maximum_reverse_thrust_n: 4.0
+  # Learn both directions along the cylinder with one shared policy.  The
+  # episode target (+1 forward / -1 backward) is included in observation.
+  target_direction_mode: random
   direction_xyz: [1.0, 0.0, 0.0]
   synchronous_step: true
   action_latch_wall_sec: 0.005
@@ -22,7 +25,9 @@ environment:
     pitch_weight: 2.0
     # Bottom is a posture-bias actuator, not the primary gait actuator.
     bottom_usage_weight: 0.02
-    bottom_switch_penalty: 0.1
+    # Penalize abrupt pressure changes; the central single chamber has no
+    # direction switch. A full 0 -> 30 kPa step costs 0.1.
+    bottom_change_weight: 0.1
     # Costs are summed over each rotor. Units are reward/N and reward/delta-N.
     # A sustained pair at 6 N costs 0.24 per step; a 0 -> 6 N jump of that
     # pair costs 0.60 once. Both dominate the bottom-use cost (max 0.02).

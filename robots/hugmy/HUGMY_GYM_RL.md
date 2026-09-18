@@ -61,11 +61,18 @@ The normalized five-dimensional action is
 `[P_front, P_rear, T_front, T_rear, u_bottom]` in `[-1, 1]`.
 
 - Arm pressure maps linearly from 0 to 50 kPa.
-- Positive thrust maps to 0 to 8 N; negative thrust maps to 0 to -3 N.
-- `abs(u_bottom)` sets 0 to 30 kPa and its sign selects the rocking direction.
+- Positive thrust maps to 0 to 8 N; negative thrust maps to 0 to -4 N.
+- `u_bottom` maps linearly from -1/0 kPa to +1/30 kPa. It controls the one
+  central chamber and has no rocking-direction sign.
 - Front is arms 1/4 and rear is arms 2/3, matching the +x travel direction.
 
-The 31 observations, in order, are progress velocity, pitch and pitch rate,
+The bottom chamber is centred under the body and represented by a rounded
+fore/aft rocker. It provides support load but no prescribed pitch torque. At
+each reset the default configuration samples a target direction of +1 or -1;
+the policy sees that sign as the last observation and must use arm contact and
+rotor thrust to select the rocking direction.
+
+The 31 observations, in order, are cylinder-axis velocity, pitch and pitch rate,
 roll and roll rate, four exact joint-sum arm bend angles, four measured
 pressures, four commanded thrusts, four contact flags, four normal forces,
 four tangential forces, bottom pressure, and the target direction sign. A bend
@@ -80,8 +87,8 @@ r = 1000 * delta_forward
     - 2 * max(0, abs(roll)  - 15 deg)^2
     - 2 * max(0, abs(pitch) - 30 deg)^2
     - 20 * I[failure]
-    - 0.02 * abs(u_bottom)
-    - 0.10 * I[bottom direction switched]
+    - 0.02 * bottom_pressure_fraction
+    - 0.10 * abs(bottom_fraction - previous_bottom_fraction)
     - 0.02 * sum_i(abs(T_i))
     - 0.05 * sum_i(abs(T_i - T_i_previous))
 ```
@@ -118,7 +125,8 @@ rosrun hugmy train_hugmy_sac.py \
 ```
 
 Evaluate deterministically (launch with `gui:=true` if visual inspection is
-needed):
+needed). Use `--direction forward` or `--direction backward` to inspect one
+direction repeatedly; the default follows the random training configuration:
 
 ```bash
 rosrun hugmy evaluate_hugmy_sac.py \

@@ -46,7 +46,12 @@ class HugmyMujocoEnv(gym.Env):
 
     * pressure entries: -1 -> 0 kPa, +1 -> configured maximum pressure;
     * thrust entries: negative uses reverse authority, positive uses forward;
-    * bottom: sign selects pitch direction and magnitude selects pressure.
+    * bottom: -1 -> 0 kPa, +1 -> configured maximum pressure.
+
+    The single bottom chamber is mounted on the body centreline.  It changes
+    support load/height but does not command a rocking direction; the arm
+    pressures and rotor thrusts must create fore/aft rocking about the rounded
+    support.
 
     Observation layout (31 values) is documented by ``observation_names``.
     """
@@ -65,12 +70,13 @@ class HugmyMujocoEnv(gym.Env):
         maximum_forward_thrust_n: float = 8.0,
         maximum_reverse_thrust_n: float = 3.0,
         direction_xyz: Sequence[float] = (1.0, 0.0, 0.0),
+        target_direction_mode: str = "forward",
         progress_weight: float = 1000.0,
         detach_penalty: float = 20.0,
         roll_weight: float = 2.0,
         pitch_weight: float = 2.0,
         bottom_usage_weight: float = 0.02,
-        bottom_switch_penalty: float = 0.1,
+        bottom_change_weight: float = 0.1,
         thrust_usage_weight_per_n: float = 0.02,
         thrust_change_weight_per_n: float = 0.05,
         roll_safe_rad: float = math.radians(15.0),
@@ -100,12 +106,17 @@ class HugmyMujocoEnv(gym.Env):
             raise ValueError("direction_xyz must be a nonzero three-vector")
         self._base_direction_xyz = direction / np.linalg.norm(direction)
         self.direction_xyz = self._base_direction_xyz.copy()
+        self.target_direction_mode = str(target_direction_mode).lower()
+        if self.target_direction_mode not in ("forward", "backward", "random"):
+            raise ValueError(
+                "target_direction_mode must be forward, backward, or random")
+        self._target_direction = 1.0
         self.progress_weight = float(progress_weight)
         self.detach_penalty = float(detach_penalty)
         self.roll_weight = float(roll_weight)
         self.pitch_weight = float(pitch_weight)
         self.bottom_usage_weight = float(bottom_usage_weight)
-        self.bottom_switch_penalty = float(bottom_switch_penalty)
+        self.bottom_change_weight = float(bottom_change_weight)
         self.thrust_usage_weight_per_n = float(thrust_usage_weight_per_n)
         self.thrust_change_weight_per_n = float(thrust_change_weight_per_n)
         self.roll_safe_rad = float(roll_safe_rad)
@@ -122,7 +133,7 @@ class HugmyMujocoEnv(gym.Env):
 
         self.action_space = spaces.Box(-1.0, 1.0, shape=(5,), dtype=np.float32)
         self.observation_names = (
-            "velocity_progress", "pitch", "pitch_rate", "roll", "roll_rate",
+            "velocity_axis", "pitch", "pitch_rate", "roll", "roll_rate",
             *(f"arm_bend_{index + 1}" for index in range(ARM_COUNT)),
             *(f"pressure_{index + 1}" for index in range(ARM_COUNT)),
             *(f"thrust_{index + 1}" for index in range(ARM_COUNT)),
@@ -406,7 +417,7 @@ class HugmyMujocoEnv(gym.Env):
         return sampled
 
     def _publish_targets(self, pressures: np.ndarray, thrusts: np.ndarray,
-                         bottom_pressure: float, bottom_sign: float) -> None:
+                         bottom_pressure: float) -> None:
         pressure_message = Float32MultiArray()
         pressure_message.data = [float(value) for value in pressures]
         self._pressure_pub.publish(pressure_message)
@@ -416,9 +427,11 @@ class HugmyMujocoEnv(gym.Env):
         direction.header.frame_id = self.robot_ns.strip("/") + "/root"
         horizontal = self.direction_xyz[:2]
         horizontal_norm = max(1.0e-9, float(np.linalg.norm(horizontal)))
-        sign = 1.0 if bottom_sign >= 0.0 else -1.0
-        direction.vector.x = sign * float(horizontal[0]) / horizontal_norm
-        direction.vector.y = sign * float(horizontal[1]) / horizontal_norm
+        # The central chamber has no commanded rocking sign.  Keep publishing
+        # the cylinder axis for compatibility with the MuJoCo diagnostics and
+        # older plugins, but never reverse it from the bottom action.
+        direction.vector.x = float(horizontal[0]) / horizontal_norm
+        direction.vector.y = float(horizontal[1]) / horizontal_norm
         self._bottom_direction_pub.publish(direction)
         pwm = PwmTest()
         pwm.motor_index = list(range(ARM_COUNT))
@@ -426,7 +439,9 @@ class HugmyMujocoEnv(gym.Env):
         self._pwm_pub.publish(pwm)
         self._commanded_thrust[:] = thrusts
 
-    def _physical_action(self, action: np.ndarray) -> Tuple[np.ndarray, np.ndarray, float, float]:
+    def _physical_action(
+        self, action: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
         bounded = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
         pressures = np.zeros(ARM_COUNT, dtype=np.float64)
         front_pressure = 0.5 * (bounded[0] + 1.0) * self.maximum_pressure_kpa
@@ -441,8 +456,10 @@ class HugmyMujocoEnv(gym.Env):
         thrusts = np.zeros(ARM_COUNT, dtype=np.float64)
         thrusts[list(FRONT_ARMS)] = scale_thrust(float(bounded[2]))
         thrusts[list(REAR_ARMS)] = scale_thrust(float(bounded[3]))
-        bottom_pressure = abs(float(bounded[4])) * self.maximum_bottom_pressure_kpa
-        return pressures, thrusts, bottom_pressure, float(bounded[4])
+        bottom_pressure = (
+            0.5 * (float(bounded[4]) + 1.0)
+            * self.maximum_bottom_pressure_kpa)
+        return pressures, thrusts, bottom_pressure
 
     def _snapshot(self) -> Dict[str, Any]:
         with self._condition:
@@ -461,9 +478,9 @@ class HugmyMujocoEnv(gym.Env):
                 "position": position,
                 "roll": roll,
                 "pitch": pitch,
-                "velocity_progress": linear.x * self.direction_xyz[0]
-                                     + linear.y * self.direction_xyz[1]
-                                     + linear.z * self.direction_xyz[2],
+                "velocity_axis": linear.x * self.direction_xyz[0]
+                                 + linear.y * self.direction_xyz[1]
+                                 + linear.z * self.direction_xyz[2],
                 "roll_rate": angular.x,
                 "pitch_rate": angular.y,
                 "grip": self._grip.copy(),
@@ -477,12 +494,12 @@ class HugmyMujocoEnv(gym.Env):
         grip = state["grip"]
         values = np.concatenate((
             np.asarray([
-                state["velocity_progress"], state["pitch"], state["pitch_rate"],
+                state["velocity_axis"], state["pitch"], state["pitch_rate"],
                 state["roll"], state["roll_rate"],
             ]),
             grip[24:28], state["pressures"], self._commanded_thrust,
             grip[0:4], grip[28:32], grip[32:36],
-            np.asarray([state["bottom_pressure"], 1.0]),
+            np.asarray([state["bottom_pressure"], self._target_direction]),
         )).astype(np.float32)
         return np.clip(values, self.observation_space.low,
                        self.observation_space.high).astype(np.float32)
@@ -532,10 +549,21 @@ class HugmyMujocoEnv(gym.Env):
         super().reset(seed=seed)
         if options and "curriculum_stage" in options:
             self.set_curriculum_stage(int(options["curriculum_stage"]))
+        if options and "target_direction" in options:
+            requested_direction = float(options["target_direction"])
+            if requested_direction == 0.0:
+                raise ValueError("target_direction must be nonzero")
+            self._target_direction = 1.0 if requested_direction > 0.0 else -1.0
+        elif self.target_direction_mode == "random":
+            self._target_direction = (
+                1.0 if int(self.np_random.integers(0, 2)) == 1 else -1.0)
+        else:
+            self._target_direction = (
+                1.0 if self.target_direction_mode == "forward" else -1.0)
         domain = self._apply_domain_randomization()
         neutral_pressure = np.zeros(ARM_COUNT, dtype=np.float64)
         neutral_thrust = np.zeros(ARM_COUNT, dtype=np.float64)
-        self._publish_targets(neutral_pressure, neutral_thrust, 0.0, 1.0)
+        self._publish_targets(neutral_pressure, neutral_thrust, 0.0)
         try:
             self._pressure_enable(False)
         except rospy.ServiceException:
@@ -553,7 +581,7 @@ class HugmyMujocoEnv(gym.Env):
             raise RuntimeError("MuJoCo reset request was not applied")
 
         initial_pressure = np.full(ARM_COUNT, self.reset_pressure_kpa, dtype=np.float64)
-        self._publish_targets(initial_pressure, neutral_thrust, 0.0, 1.0)
+        self._publish_targets(initial_pressure, neutral_thrust, 0.0)
         enable_response = self._pressure_enable(True)
         if not enable_response.success:
             raise RuntimeError(enable_response.message)
@@ -572,18 +600,20 @@ class HugmyMujocoEnv(gym.Env):
             "curriculum_stage": self.curriculum_stage,
             "domain_parameters": domain,
             "observation_names": self.observation_names,
+            "target_direction": self._target_direction,
         }
         return self._observation(state), info
 
     def step(self, action: np.ndarray):
         if not self.action_space.contains(np.asarray(action, dtype=np.float32)):
             action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
-        pressures, thrusts, bottom_pressure, bottom_sign = self._physical_action(action)
-        self._publish_targets(pressures, thrusts, bottom_pressure, bottom_sign)
+        pressures, thrusts, bottom_pressure = self._physical_action(action)
+        self._publish_targets(pressures, thrusts, bottom_pressure)
         self._advance_policy_interval()
         state = self._snapshot()
         displacement = state["position"] - self._previous_position
-        progress = float(np.dot(displacement, self.direction_xyz))
+        axis_progress = float(np.dot(displacement, self.direction_xyz))
+        progress = self._target_direction * axis_progress
         self._previous_position = state["position"].copy()
         self._episode_elapsed += self.control_dt
         contacts = state["grip"][0:4] >= 0.5
@@ -606,14 +636,10 @@ class HugmyMujocoEnv(gym.Env):
         reward_roll = -self.roll_weight * roll_excess * roll_excess
         reward_pitch = -self.pitch_weight * pitch_excess * pitch_excess
         reward_detach = -self.detach_penalty if terminated else 0.0
-        bottom_action = float(np.clip(action[4], -1.0, 1.0))
-        bottom_switched = (
-            abs(bottom_action) >= 0.2
-            and abs(self._previous_bottom_action) >= 0.2
-            and bottom_action * self._previous_bottom_action < 0.0)
-        reward_bottom_usage = -self.bottom_usage_weight * abs(bottom_action)
-        reward_bottom_switch = (
-            -self.bottom_switch_penalty if bottom_switched else 0.0)
+        bottom_action = 0.5 * (float(np.clip(action[4], -1.0, 1.0)) + 1.0)
+        bottom_change = abs(bottom_action - self._previous_bottom_action)
+        reward_bottom_usage = -self.bottom_usage_weight * bottom_action
+        reward_bottom_change = -self.bottom_change_weight * bottom_change
         total_abs_thrust = float(np.sum(np.abs(thrusts)))
         total_thrust_change = float(np.sum(np.abs(
             thrusts - self._previous_reward_thrust)))
@@ -624,13 +650,15 @@ class HugmyMujocoEnv(gym.Env):
         self._previous_reward_thrust[:] = thrusts
         self._previous_bottom_action = bottom_action
         reward = (reward_progress + reward_roll + reward_pitch + reward_detach
-                  + reward_bottom_usage + reward_bottom_switch
+                  + reward_bottom_usage + reward_bottom_change
                   + reward_thrust_usage + reward_thrust_change)
         info = {
             "progress_m": progress,
+            "axis_progress_m": axis_progress,
             "total_progress_m": float(np.dot(
                 state["position"] - self._episode_start_position,
-                self.direction_xyz)),
+                self.direction_xyz)) * self._target_direction,
+            "target_direction": self._target_direction,
             "contact_count": contact_count,
             "fallen": fallen,
             "detached": detached,
@@ -639,7 +667,7 @@ class HugmyMujocoEnv(gym.Env):
             "reward_pitch": reward_pitch,
             "reward_detach": reward_detach,
             "reward_bottom_usage": reward_bottom_usage,
-            "reward_bottom_switch": reward_bottom_switch,
+            "reward_bottom_change": reward_bottom_change,
             "reward_thrust_usage": reward_thrust_usage,
             "reward_thrust_change": reward_thrust_change,
             "total_abs_thrust_n": total_abs_thrust,
@@ -648,7 +676,7 @@ class HugmyMujocoEnv(gym.Env):
                 "pressure_kpa": pressures.tolist(),
                 "thrust_n": thrusts.tolist(),
                 "bottom_pressure_kpa": bottom_pressure,
-                "bottom_sign": bottom_sign,
+                "bottom_pressure_fraction": bottom_action,
             },
             "curriculum_stage": self.curriculum_stage,
             "domain_parameters": self._last_domain,
@@ -657,7 +685,7 @@ class HugmyMujocoEnv(gym.Env):
 
     def close(self) -> None:
         try:
-            self._publish_targets(np.zeros(ARM_COUNT), np.zeros(ARM_COUNT), 0.0, 1.0)
+            self._publish_targets(np.zeros(ARM_COUNT), np.zeros(ARM_COUNT), 0.0)
             self._pressure_enable(False)
         except (rospy.ServiceException, rospy.ROSException):
             pass
