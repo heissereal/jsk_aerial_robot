@@ -1,8 +1,13 @@
 # overwrite parameter for simulation
 
 sensor_plugin:
+  imu:
+    # MuJoCo can advance simulated time while the estimator is still loading.
+    # Give startup enough margin to avoid a spurious force-landing latch.
+    health_timeout: 2.0
   mocap:
     ground_truth_sub_name: ground_truth
+    health_timeout: 2.0
   gps:
     estimate_mode: 4 #1 << 2
     ned_flag: true # hector_gazebo_plugins/GPS

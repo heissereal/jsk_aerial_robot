@@ -1,0 +1,75 @@
+# Load this after FlightControl.yaml. The existing pose/LQI gains remain in
+# controller/*; this file selects the derived controller and its shape layer.
+aerial_robot_control_name: aerial_robot_control/hugmy_quad_bi_controller
+
+controller:
+  lqi:
+    # Keep the takeoff LQI gains during deformation. The current articulated
+    # model still updates wrench allocation and inertia compensation each loop;
+    # the existing CARE solver is not robust at every intermediate geometry.
+    realtime_update: false
+
+  quad_bi:
+    # One-based arm IDs. These match FOLDED_ARMS=(2, 4) in the robust
+    # fixed-tilt Quad-to-Bi optimization.
+    bi_arm_ids: [2, 4]
+    bi_bend_angle_deg: 90.0
+
+    transition_rate_deg_s: 15.0
+    # Limit each rotor's allocation change while deforming. The geometry-aware
+    # transition progressively loads straight arms 1/3 and unloads bent arms
+    # 2/4; this limit prevents a step in either pair. Endpoint scales reproduce
+    # the robust fixed-tilt optimizer's approximately [7.0, 2.1, 7.0, 2.1] N
+    # Bi hover trim from the approximately 3.5 N/rotor Quad trim. During
+    # Quad-to-Bi, arms 2/4 are temporarily unloaded farther; their optimized
+    # thrust is restored in proportion to measured bend feedback.
+    transition_thrust_rate_n_s: 2.0
+    bi_straight_arm_thrust_scale: 2.0
+    bi_bent_arm_thrust_scale: 0.62
+    bend_tolerance_deg: 8.0
+    command_tolerance_deg: 1.0
+    stable_duration_s: 0.5
+    transition_timeout_s: 12.0
+
+    # A transition is accepted only in hover with fresh arm feedback. If that
+    # condition is lost while entering Bi, the controller reverses into Quad.
+    require_hover_state: true
+    feedback_timeout_s: 0.25
+    unsafe_duration_s: 0.30
+    max_tilt_deg: 15.0
+    max_angular_rate_rad_s: 0.5
+
+    # In TO_BI and BI, a persistent severe altitude/attitude excursion starts
+    # an automatic Bi-to-Quad recovery. Height error is target_z-current_z, so
+    # a deliberately commanded descent does not falsely trigger recovery.
+    auto_quad_recovery: true
+    recovery_max_height_error_m: 0.35
+    recovery_max_tilt_deg: 25.0
+    recovery_max_angular_rate_rad_s: 1.5
+    recovery_trigger_duration_s: 0.20
+
+    # Pressure is obtained by inverting the measured pressure/thrust/bend
+    # table, then slew-limited before being sent to the independent pressure
+    # controller.
+    min_pressure_kpa: 0.0
+    max_pressure_kpa: 50.0
+    pressure_rate_kpa_s: 10.0
+    bend_model_thrust_offset_n: 1.8
+
+    neuron_slave_ids: [1, 2, 3, 4]
+    neuron_acc_lpf_tau_s: 0.20
+    # Per-arm correction for the straight-arm Neuron mounting angle. Measure
+    # controller/quad_bi/measured_bend_deg before flight and set these if the
+    # straight pose does not read approximately zero.
+    neuron_bend_offset_deg: [0.0, 0.0, 0.0, 0.0]
+    arm_yaw_rad: [-2.3561944902, -0.7853981634,
+                   0.7853981634,  2.3561944902]
+
+    # Only the total bend is measured. Equal distribution is the same nominal
+    # model used by the current runtime estimator; the offline optimizer still
+    # evaluates uncertainty in the real distribution.
+    # MuJoCo and the normal Hugmy joint_model workflow already publish the
+    # articulated pose on joint_states.  Updating the same RobotModel directly
+    # from the control loop races RobotModelRos' joint-state callback.
+    update_robot_model_from_feedback: false
+    joint_distribution: [0.3333333333, 0.3333333333, 0.3333333333]

@@ -12,6 +12,7 @@
   <arg name="human_arm_center_z" default="0.05"/>
   <arg name="start_pressure_controller" default="False"/>
   <arg name="start_attitude_allocator" default="False"/>
+  <arg name="quad_bi_controller" default="False"/>
   <arg name="inchworm_action_c" default="False"/>
   <arg name="enable_pneumatic_plugin" default="True"/>
   <arg name="worldtype" default="$(find aerial_robot_simulation)/gazebo_model/world/empty.world"/>
@@ -58,6 +59,8 @@
 
     ###########  Control  ###########
     <rosparam file="$(arg config_dir)/FlightControl.yaml" command="load" />
+    <rosparam file="$(arg config_dir)/QuadBiControl.yaml" command="load"
+              if="$(arg quad_bi_controller)" />
 
     ###########  Servo Config  ###########
     <rosparam file="$(arg config_dir)/Servo.yaml" command="load" />
@@ -111,6 +114,11 @@
     <arg name="simulation" value="$(arg simulation)" />
     <arg name="robot_ns" value="$(arg robot_ns)" />
   </include >
+  <!-- sensors.launch.xml loads the generic mocap defaults after Simulation.yaml.
+       Restore the simulation startup grace so delayed first ground-truth data
+       cannot latch a false force-landing state while MuJoCo is starting. -->
+  <param name="$(arg robot_ns)/sensor_plugin/mocap/health_timeout" value="2.0"
+         if="$(eval arg('simulation') and not arg('real_machine'))" />
 
   ###########  Servo Bridge  ###########
   <!-- <node pkg="aerial_robot_model" type="servo_bridge_node" name="servo_bridge"  output="screen" ns="$(arg robot_ns)"> -->
@@ -145,7 +153,7 @@
 
   ########## Hugmy pneumatic controllers #########
   <include file="$(find hugmy)/launch/independent_arm_pressure_controller.launch"
-           if="$(eval arg('simulation') and arg('start_pressure_controller') and not arg('start_attitude_allocator'))">
+           if="$(eval (arg('start_pressure_controller') or arg('quad_bi_controller')) and not arg('start_attitude_allocator'))">
     <arg name="robot_ns" value="$(arg robot_ns)"/>
   </include>
 
