@@ -26,7 +26,7 @@ find_package(catkin REQUIRED COMPONENTS
 find_package(PythonInterp REQUIRED)
 
 catkin_package(
-  LIBRARIES hugmy_pneumatic_mujoco_hw_sim
+  LIBRARIES hugmy_pneumatic_mujoco_hw_sim hugmy_quad_bi_controller
   CATKIN_DEPENDS aerial_robot_control pluginlib aerial_robot_model aerial_robot_simulation mujoco_ros_control spinal std_msgs std_srvs geometry_msgs tf visualization_msgs
   )
 
@@ -61,6 +61,10 @@ add_dependencies(lpv_lqi_qp_controller ${catkin_EXPORTED_TARGETS})
 add_library(lqi_null_controller src/control/lqi_null_controller.cpp)
 target_link_libraries(lqi_null_controller ${catkin_LIBRARIES})
 add_dependencies(lqi_null_controller ${catkin_EXPORTED_TARGETS})
+
+add_library(hugmy_quad_bi_controller src/control/quad_bi_controller.cpp)
+target_link_libraries(hugmy_quad_bi_controller ${catkin_LIBRARIES})
+add_dependencies(hugmy_quad_bi_controller ${catkin_EXPORTED_TARGETS})
 
 add_executable(random_haptics_threshold_node src/control/test/haptics_thre_test.cpp)
 target_link_libraries(random_haptics_threshold_node ${catkin_LIBRARIES})
@@ -136,7 +140,7 @@ install(DIRECTORY config launch plugins mujoco
   USE_SOURCE_PERMISSIONS
   )
 
-install(TARGETS hugmy_pneumatic_mujoco_hw_sim
+install(TARGETS hugmy_pneumatic_mujoco_hw_sim hugmy_quad_bi_controller
   DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
 
 add_library(hugmy_independent_arm_pressure_controller src/control/independent_arm_pressure_controller.cpp)

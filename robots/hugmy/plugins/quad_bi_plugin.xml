@@ -1,0 +1,7 @@
+<library path="lib/libhugmy_quad_bi_controller">
+  <class name="aerial_robot_control/hugmy_quad_bi_controller"
+         type="aerial_robot_control::QuadBiController"
+         base_class_type="aerial_robot_control::ControlBase">
+    <description>In-flight Quad-to-Bi shape controller for Hugmy</description>
+  </class>
+</library>

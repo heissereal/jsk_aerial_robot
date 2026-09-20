@@ -45,6 +45,7 @@
   <export>
     <aerial_robot_control plugin="${prefix}/plugins/navigation_plugin.xml" />
     <aerial_robot_control plugin="${prefix}/plugins/hugmy_control_plugin.xml" />
+    <aerial_robot_control plugin="${prefix}/plugins/quad_bi_plugin.xml" />
     <aerial_robot_control plugin="${prefix}/plugins/lpv_lqi_qp_plugin.xml" />
     <aerial_robot_control plugin="${prefix}/plugins/lqi_null_plugin.xml" />
     <mujoco_ros_control plugin="${prefix}/plugins/mujoco_robot_hw_sim_plugin.xml" />
