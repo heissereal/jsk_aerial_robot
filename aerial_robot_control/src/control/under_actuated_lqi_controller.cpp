@@ -92,7 +92,6 @@ void UnderActuatedLQIController::initialize(ros::NodeHandle nh,
   pid_msg_.yaw.i_term.resize(motor_num_);
   pid_msg_.yaw.d_term.resize(motor_num_);
 
-  if (!robot_model_->isModelFixed()) realtime_update_ = true;
   if (realtime_update_) {
     gain_generator_thread_ = std::thread(boost::bind(&UnderActuatedLQIController::gainGeneratorFunc, this));
   }
@@ -617,7 +616,11 @@ void UnderActuatedLQIController::rosParamInit()
   pre_tension_nh.param("timeout", takeoff_pre_tension_timeout_, 2.0);
   pre_tension_nh.param("gravity_ramp_duration", takeoff_gravity_ramp_duration_, 1.5);
   getParam<bool>(lqi_nh, "clamp_gain", clamp_gain_, true);
-  getParam<bool>(lqi_nh, "realtime_update", realtime_update_, false);
+  // Transformable robots historically regenerated their gains continuously.
+  // Keep that default, but allow a derived controller to explicitly disable
+  // the background CARE solve while traversing singular intermediate shapes.
+  getParam<bool>(lqi_nh, "realtime_update", realtime_update_,
+                 !robot_model_->isModelFixed());
   getParam<bool>(lqi_nh, "gyro_moment_compensation", gyro_moment_compensation_, false);
 
   /* propeller direction and lqi R */

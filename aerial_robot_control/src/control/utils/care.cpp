@@ -116,8 +116,29 @@ namespace control_utils
         H.block(0, state_dim, state_dim, state_dim) = - (B * R_inv * B.transpose()).cast<std::complex<double> >();
         H.block(state_dim, state_dim, state_dim, state_dim) = - (A.transpose()).cast<std::complex<double> >();
 
+        if(!H.allFinite())
+          {
+            std::cout << RED_MESSAGE
+                      << "Error in care: Hamiltonian contains non-finite values"
+                      << RESET_COLOR << std::endl;
+            return false;
+          }
+
         Eigen::ComplexEigenSolver<Eigen::MatrixXcd> ces;
         ces.compute(H);
+
+        if(ces.info() != Eigen::Success ||
+           ces.eigenvalues().size() != 2 * state_dim ||
+           ces.eigenvectors().rows() != 2 * state_dim ||
+           ces.eigenvectors().cols() != 2 * state_dim ||
+           !ces.eigenvalues().allFinite() ||
+           !ces.eigenvectors().allFinite())
+          {
+            std::cout << RED_MESSAGE
+                      << "Error in care: eigen decomposition failed"
+                      << RESET_COLOR << std::endl;
+            return false;
+          }
 
         Eigen::MatrixXcd phy = Eigen::MatrixXcd::Zero(2 * state_dim, state_dim);
         int j = 0;
@@ -154,4 +175,3 @@ namespace control_utils
     return true;
   }
 }
-
