@@ -1156,6 +1156,30 @@ void AttitudeController::pwmConversion()
   auto convert = [this](float target_thrust)
     { return convertThrustToPwm(target_thrust); };
 
+  // A 3D DShot ESC must see the digital stop command until the PC has sent a
+  // valid bidirectional motor configuration and flight control is armed.  At
+  // startup bidirectional_ is still false; using min_duty_ in that window
+  // would turn the normalized 0.5 value into maximum reverse throttle.
+  auto set_safe_stop = [this]()
+    {
+      int output_count = motor_number_;
+#if BIDIRECTIONAL
+      // pwmsControl() always writes the first four DShot channels, including
+      // before Neuron discovery has established motor_number_.
+      output_count = std::max(output_count, 4);
+#endif
+      output_count = std::min(output_count, MAX_MOTOR_NUMBER);
+      for(int i = 0; i < output_count; ++i)
+        {
+#if BIDIRECTIONAL
+          target_pwm_[i] = i < 4 ? DSHOT_NEUTRAL_DUTY
+                                 : (bidirectional_ ? neutral_duty_ : min_duty_);
+#else
+          target_pwm_[i] = bidirectional_ ? neutral_duty_ : min_duty_;
+#endif
+        }
+    };
+
   if(pwm_test_flag_) /* motor pwm test */
     {
       for(int i = 0; i < MAX_MOTOR_NUMBER; i++)
@@ -1165,11 +1189,23 @@ void AttitudeController::pwmConversion()
       return;
     }
 
-  if(motor_info_.size() == 0 ||
-     (bidirectional_ && reverse_motor_info_.size() == 0))
+  // Direct PwmTest above is the only path allowed to drive a disarmed motor.
+  if(!start_control_flag_)
     {
-      for(int i = 0; i < motor_number_; ++i)
-        target_pwm_[i] = bidirectional_ ? neutral_duty_ : min_duty_;
+      set_safe_stop();
+      return;
+    }
+
+  bool motor_config_ready = motor_info_.size() > 0 &&
+    (!bidirectional_ || reverse_motor_info_.size() > 0);
+#if BIDIRECTIONAL
+  // This firmware maps values around 0.75 to the two DShot 3D directions.  A
+  // conventional/invalid runtime configuration must therefore never arm.
+  motor_config_ready = motor_config_ready && bidirectional_;
+#endif
+  if(!motor_config_ready)
+    {
+      set_safe_stop();
       return;
     }
 
