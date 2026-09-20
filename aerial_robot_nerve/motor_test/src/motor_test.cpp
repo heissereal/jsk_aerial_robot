@@ -1,4 +1,5 @@
 #include <ros/ros.h>
+#include <algorithm>
 #include <fstream>
 #include <geometry_msgs/WrenchStamped.h>
 #include <string>
@@ -27,7 +28,7 @@ public:
     nhp_.param("min_pwm_value", min_pwm_value_, 1100);
     nhp_.param("max_pwm_value", max_pwm_value_, 1950);
 
-    nhp_.param("stop_pwm_value", stop_pwm_value_, 1000);
+    nhp_.param("stop_pwm_value", stop_pwm_value_, 1500);
     nhp_.param("pwm_range", pwm_range_, 2000.0);
 
     /* one-shot mode */
@@ -100,9 +101,10 @@ private:
     ofs_.open(file_name, std::ios::out);
 
     pwm_value_ = min_pwm_value_;
+    once_flag_ = true;
 
     spinal::PwmTest cmd_msg;
-    cmd_msg.pwms.push_back(pwm_value_  / pwm_range_);
+    cmd_msg.pwms.push_back(stop_pwm_value_ / pwm_range_);
     motor_pwm_pub_.publish(cmd_msg);
     init_time_ = ros::Time::now();
     ROS_INFO("start pwm test");
@@ -158,73 +160,101 @@ private:
   {
     if(!start_flag_) return;
 
-    if(ros::Time::now().toSec() - init_time_.toSec() > run_duration_)
+    const double elapsed = ros::Time::now().toSec() - init_time_.toSec();
+
+    if(test_mode_ == Mode::ONESHOT)
       {
-        if(test_mode_ == Mode::STEP)
-          {
-            pwm_value_ += pwm_incremental_value_;
-            init_time_ = ros::Time::now();
-          }
-        else if(test_mode_ == Mode::ONESHOT)
-          {
-            if(ros::Time::now().toSec() - init_time_.toSec() > run_duration_ + raise_duration_)
-              {
-                if(once_flag_)
-                  {
-                    spinal::PwmTest cmd_msg;
-                    cmd_msg.pwms.push_back(stop_pwm_value_  / pwm_range_);
-                    motor_pwm_pub_.publish(cmd_msg);
-                    once_flag_ = false;
-                    ROS_WARN("STOP");
-                    return;
-                  }
-              }
-            else
-              {
-                return;
-              }
+        const double run_start = raise_duration_;
+        const double ramp_down_start = run_start + run_duration_;
+        const double cycle_end = ramp_down_start + brake_duration_;
 
-            if(ros::Time::now().toSec() - init_time_.toSec() > run_duration_ + raise_duration_ + brake_duration_)
-              {
-                /* need to wait 1s for calibration */
-                ros::ServiceClient calib_client = nh_.serviceClient<std_srvs::Empty>("/cfs_sensor_calib");
-                std_srvs::Empty srv;
-                if (calib_client.call(srv))
-                  {
-                    ROS_INFO("done force sensor calib");
-                    once_flag_ = true;
-                    pwm_value_ += pwm_incremental_value_;
-                    init_time_ = ros::Time::now();
-                  }
-                else
-                  {
-                    ROS_ERROR("Failed to call service add_two_ints");
-                    pwm_value_ = max_pwm_value_ + pwm_incremental_value_;
-                  }
-              }
-          }
-
-        if(pwm_value_ > max_pwm_value_)
+        if(elapsed < run_start)
           {
-            start_flag_ = false;
+            const double progress = raise_duration_ > 0.0 ?
+              std::min(1.0, elapsed / raise_duration_) : 1.0;
+            const double ramp_pwm = stop_pwm_value_ +
+              (pwm_value_ - stop_pwm_value_) * progress;
             spinal::PwmTest cmd_msg;
-            cmd_msg.pwms.push_back(stop_pwm_value_  / pwm_range_);
+            cmd_msg.pwms.push_back(ramp_pwm / pwm_range_);
             motor_pwm_pub_.publish(cmd_msg);
-
-            ROS_WARN("finish pwm test");
-            ofs_ << "done" << std::endl;
-            ofs_.close();
-
             return;
           }
 
-        if(once_flag_)
+        if(elapsed < ramp_down_start)
           {
-            ROS_INFO("target_pwm: %d", pwm_value_);
             spinal::PwmTest cmd_msg;
-            cmd_msg.pwms.push_back(pwm_value_  / pwm_range_);
+            cmd_msg.pwms.push_back(pwm_value_ / pwm_range_);
             motor_pwm_pub_.publish(cmd_msg);
+            return;
           }
+
+        if(elapsed < cycle_end)
+          {
+            if(once_flag_)
+              {
+                once_flag_ = false;
+                ROS_WARN("RAMP DOWN TO NEUTRAL");
+              }
+
+            const double progress = brake_duration_ > 0.0 ?
+              std::min(1.0, (elapsed - ramp_down_start) / brake_duration_) : 1.0;
+            const double ramp_pwm = pwm_value_ +
+              (stop_pwm_value_ - pwm_value_) * progress;
+            spinal::PwmTest cmd_msg;
+            cmd_msg.pwms.push_back(ramp_pwm / pwm_range_);
+            motor_pwm_pub_.publish(cmd_msg);
+            return;
+          }
+
+        spinal::PwmTest stop_msg;
+        stop_msg.pwms.push_back(stop_pwm_value_ / pwm_range_);
+        motor_pwm_pub_.publish(stop_msg);
+
+        ros::ServiceClient calib_client = nh_.serviceClient<std_srvs::Empty>("/cfs_sensor_calib");
+        std_srvs::Empty srv;
+        if (calib_client.call(srv))
+          {
+            ROS_INFO("done force sensor calib");
+            once_flag_ = true;
+            pwm_value_ += pwm_incremental_value_;
+            init_time_ = ros::Time::now();
+          }
+        else
+          {
+            ROS_ERROR("Failed to call service /cfs_sensor_calib");
+            pwm_value_ = max_pwm_value_ + pwm_incremental_value_;
+          }
+      }
+    else if(elapsed > run_duration_)
+      {
+        pwm_value_ += pwm_incremental_value_;
+        init_time_ = ros::Time::now();
+      }
+    else
+      {
+        return;
+      }
+
+    if(pwm_value_ > max_pwm_value_)
+      {
+        start_flag_ = false;
+        spinal::PwmTest cmd_msg;
+        cmd_msg.pwms.push_back(stop_pwm_value_ / pwm_range_);
+        motor_pwm_pub_.publish(cmd_msg);
+
+        ROS_WARN("finish pwm test");
+        ofs_ << "done" << std::endl;
+        ofs_.close();
+
+        return;
+      }
+
+    if(once_flag_)
+      {
+        ROS_INFO("target_pwm: %d", pwm_value_);
+        spinal::PwmTest cmd_msg;
+        cmd_msg.pwms.push_back(pwm_value_ / pwm_range_);
+        motor_pwm_pub_.publish(cmd_msg);
       }
   }
 

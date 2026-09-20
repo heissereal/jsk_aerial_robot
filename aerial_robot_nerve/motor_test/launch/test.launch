@@ -6,11 +6,14 @@
   <arg name="pwm_incremental_value" default="25" />
   <arg name="min_pwm_value" default="1200" />
   <arg name="max_pwm_value" default="1700" />
+  <arg name="stop_pwm_value" default="1500" /> <!-- bidirectional ESC neutral -->
   <!-- parameters for oneshot -->
   <arg name="raise_duration" default="2.0" />
   <arg name="brake_duration" default="4.0" />
   <!-- <arg name="force_sensor" default="CFS034CA301U" /> <!-\- other sensor: PFS055YA501U6 -\-> -->
   <arg name="force_sensor" default="PFS055YA501U6" />
+  <!-- The CFS sensor commonly occupies /dev/ttyACM0. -->
+  <arg name="spinal_port" default="/dev/flight_controller" />
 
   <node name="power_node"  pkg="takasako_sps" type="scpi_tcp_client_node" output="screen" />
 
@@ -19,7 +22,7 @@
   </node>
 
   <include file="$(find rosserial_server)/launch/serial.launch" >
-    <arg name="port" value="/dev/ttyACM0" />
+    <arg name="port" value="$(arg spinal_port)" />
     <arg name="baud" value="921600" />
   </include>
 
@@ -32,6 +35,7 @@
     <param name="pwm_incremental_value" value="$(arg pwm_incremental_value)" />
     <param name="min_pwm_value" value="$(arg min_pwm_value)" />
     <param name="max_pwm_value" value="$(arg max_pwm_value)" />
+    <param name="stop_pwm_value" value="$(arg stop_pwm_value)" />
     <param name="raise_duration" value="$(arg raise_duration)" />
     <param name="brake_duration" value="$(arg brake_duration)" />
   </node>

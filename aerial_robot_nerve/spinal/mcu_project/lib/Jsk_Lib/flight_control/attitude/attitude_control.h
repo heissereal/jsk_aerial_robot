@@ -51,7 +51,16 @@
 #include <spinal/PMatrixPseudoInverseWithInertia.h>
 #include <spinal/TorqueAllocationMatrixInv.h>
 
+#ifndef BIDIRECTIONAL
+#define BIDIRECTIONAL 0
+#endif
+
 #define IDLE_DUTY 0.5f
+#if BIDIRECTIONAL
+#define DSHOT_NEUTRAL_DUTY 0.75f
+#else
+#define DSHOT_NEUTRAL_DUTY IDLE_DUTY
+#endif
 #define FORCE_LANDING_INTEGRAL 0.0025f // 500Hz * 0.0025 = 1.25 N / sec
 
 #define MAX_MOTOR_NUMBER 10
@@ -221,13 +230,19 @@ private:
   float target_gimbal_angles_[MAX_MOTOR_NUMBER];
   float min_duty_;
   float max_duty_;
+  float neutral_duty_;
+  bool bidirectional_;
+  bool positive_thrust_below_neutral_;
   float min_thrust_; // max thrust is variant according to the voltage
   float force_landing_thrust_;
   int8_t rotor_devider_;
   int8_t pwm_conversion_mode_;
   std::vector<spinal::MotorInfo> motor_info_;
+  std::vector<spinal::MotorInfo> reverse_motor_info_;
   uint8_t motor_ref_index_;
+  uint8_t reverse_motor_ref_index_;
   float v_factor_;
+  float reverse_v_factor_;
   uint32_t voltage_update_last_time_;
   uint32_t control_term_pub_last_time_, control_feedback_state_pub_last_time_;
   uint32_t pwm_pub_last_time_;
@@ -247,6 +262,10 @@ private:
   // void pwmIndivTestCallback(const spinal::PwmState& pwm_msg);
   void pwmConversion(void);
   void pwmsControl(void);
+  void updateMotorReference(float voltage);
+  float convertThrustToPwm(float target_thrust) const;
+  float forceMagnitudeAtPwm(const spinal::MotorInfo& motor_info,
+                            float pwm) const;
 
   void reset(void);
 

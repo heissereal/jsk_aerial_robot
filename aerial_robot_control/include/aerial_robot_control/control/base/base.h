@@ -82,6 +82,10 @@ namespace aerial_robot_control
       ros::NodeHandle motor_nh(nh_, "motor_info");
       getParam<double>(motor_nh, "max_pwm", max_pwm_, 0.0);
       getParam<double>(motor_nh, "min_pwm", min_pwm_, 0.0);
+      getParam<double>(motor_nh, "neutral_pwm", neutral_pwm_, min_pwm_);
+      getParam<bool>(motor_nh, "bidirectional", bidirectional_, false);
+      getParam<bool>(motor_nh, "positive_thrust_below_neutral",
+                     positive_thrust_below_neutral_, false);
       getParam<double>(motor_nh, "min_thrust", min_thrust_, 0.0);
       getParam<double>(motor_nh, "force_landing_thrust", force_landing_thrust_, 0.0);
       getParam<double>(motor_nh, "m_f_rate", m_f_rate_, 0.0);
@@ -108,6 +112,31 @@ namespace aerial_robot_control
               ss2 << j;
               getParam<double>(nh, "polynominal" + ss2.str(), val, 0);
               motor_info_[i].polynominal[j] = val;
+            }
+        }
+
+      ros::NodeHandle reverse_motor_nh(motor_nh, "reverse");
+      int reverse_vel_ref_num = 0;
+      getParam<int>(reverse_motor_nh, "vel_ref_num", reverse_vel_ref_num, 0);
+      reverse_motor_info_.resize(reverse_vel_ref_num);
+      for(int i = 0; i < reverse_vel_ref_num; ++i)
+        {
+          std::stringstream index;
+          index << i + 1;
+          double value;
+          ros::NodeHandle reference_nh(
+              reverse_motor_nh, "ref" + index.str());
+          getParam<double>(reference_nh, "voltage", value, 0.0);
+          reverse_motor_info_[i].voltage = value;
+          getParam<double>(reference_nh, "max_thrust", value, 0.0);
+          reverse_motor_info_[i].max_thrust = value;
+          for(int coefficient = 0; coefficient < 5; ++coefficient)
+            {
+              std::stringstream coefficient_index;
+              coefficient_index << coefficient;
+              getParam<double>(reference_nh,
+                  "polynominal" + coefficient_index.str(), value, 0.0);
+              reverse_motor_info_[i].polynominal[coefficient] = value;
             }
         }
     }
@@ -144,12 +173,19 @@ namespace aerial_robot_control
           spinal::PwmInfo motor_info_msg;
           motor_info_msg.max_pwm = max_pwm_;
           motor_info_msg.min_pwm = min_pwm_;
+          motor_info_msg.neutral_pwm = neutral_pwm_;
+          motor_info_msg.bidirectional = bidirectional_;
+          motor_info_msg.positive_thrust_below_neutral =
+              positive_thrust_below_neutral_;
           motor_info_msg.min_thrust = min_thrust_;
           motor_info_msg.force_landing_thrust = force_landing_thrust_;
           motor_info_msg.pwm_conversion_mode = pwm_conversion_mode_;
           motor_info_msg.motor_info.resize(0);
           for(int i = 0; i < motor_info_.size(); i++)
             motor_info_msg.motor_info.push_back(motor_info_[i]);
+          motor_info_msg.reverse_motor_info.resize(0);
+          for(int i = 0; i < reverse_motor_info_.size(); ++i)
+            motor_info_msg.reverse_motor_info.push_back(reverse_motor_info_[i]);
           motor_info_pub_.publish(motor_info_msg);
 
           spinal::UavInfo uav_info_msg;
@@ -186,9 +222,11 @@ namespace aerial_robot_control
     int uav_model_;
 
     double m_f_rate_;
-    double max_pwm_, min_pwm_;
+    double max_pwm_, min_pwm_, neutral_pwm_;
+    bool bidirectional_, positive_thrust_below_neutral_;
     double min_thrust_;
     std::vector<spinal::MotorInfo> motor_info_;
+    std::vector<spinal::MotorInfo> reverse_motor_info_;
 
     double force_landing_thrust_; //pwm
     int pwm_conversion_mode_;

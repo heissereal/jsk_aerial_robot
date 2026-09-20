@@ -7,7 +7,9 @@ motor_info:
   # This ESC/motor combination has the opposite polarity from the previous
   # MotorInfo_3D model: commands below neutral generate positive thrust.
   positive_thrust_below_neutral: true
-  min_thrust: -4.478729282
+  # Normal flight allocation is positive-only. Reverse thrust remains
+  # available exclusively through the direct PwmTest path.
+  min_thrust: 0.0
   force_landing_thrust: 1.0
 
   # The stored coefficients describe F(PWM), so the controller uses the
@@ -17,7 +19,11 @@ motor_info:
   vel_ref_num: 5
 
   simulation:
-    use_pwm_model: true
+    # Keep MuJoCo on the controller's ideal signed-thrust output.  The
+    # controller still computes/publishes the measured bidirectional PWM
+    # command, but feeding that PWM through another fitted curve in the
+    # physics backend causes a takeoff regression and adds no control fidelity.
+    use_pwm_model: false
     voltage: 21.2
     neutral_deadband: 0.001
 
