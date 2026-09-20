@@ -53,7 +53,7 @@ class HugmyMujocoEnv(gym.Env):
     pressures and rotor thrusts must create fore/aft rocking about the rounded
     support.
 
-    Observation layout (31 values) is documented by ``observation_names``.
+    Observation layout (33 values) is documented by ``observation_names``.
     """
 
     metadata = {"render_modes": []}
@@ -67,18 +67,32 @@ class HugmyMujocoEnv(gym.Env):
         reset_settle_sim_sec: float = 1.5,
         maximum_pressure_kpa: float = 50.0,
         maximum_bottom_pressure_kpa: float = 30.0,
-        maximum_forward_thrust_n: float = 8.0,
+        maximum_forward_thrust_n: float = 6.0,
         maximum_reverse_thrust_n: float = 3.0,
+        maximum_thrust_rate_n_s: float = 10.0,
         direction_xyz: Sequence[float] = (1.0, 0.0, 0.0),
         target_direction_mode: str = "forward",
         progress_weight: float = 1000.0,
         detach_penalty: float = 20.0,
+        minimum_progress_contacts: int = 2,
+        stride_target_m: float = 0.020,
+        stride_preferred_maximum_m: float = 0.030,
+        stride_failure_maximum_m: float = 0.100,
+        stride_success_bonus: float = 20.0,
+        stride_overshoot_weight_per_m: float = 500.0,
+        stride_failure_penalty: float = 100.0,
+        stride_recovery_contacts: int = 3,
+        stride_recovery_velocity_m_s: float = 0.03,
+        stride_recovery_max_total_thrust_n: float = 4.0,
+        stride_recovery_duration_sec: float = 0.5,
         roll_weight: float = 2.0,
         pitch_weight: float = 2.0,
         bottom_usage_weight: float = 0.02,
         bottom_change_weight: float = 0.1,
         thrust_usage_weight_per_n: float = 0.02,
         thrust_change_weight_per_n: float = 0.05,
+        thrust_soft_limit_n: float = 4.0,
+        thrust_excess_weight_per_n2: float = 0.5,
         roll_safe_rad: float = math.radians(15.0),
         pitch_safe_rad: float = math.radians(30.0),
         fall_roll_rad: float = math.radians(60.0),
@@ -101,6 +115,7 @@ class HugmyMujocoEnv(gym.Env):
         self.maximum_bottom_pressure_kpa = float(maximum_bottom_pressure_kpa)
         self.maximum_forward_thrust_n = float(maximum_forward_thrust_n)
         self.maximum_reverse_thrust_n = float(maximum_reverse_thrust_n)
+        self.maximum_thrust_rate_n_s = float(maximum_thrust_rate_n_s)
         direction = np.asarray(direction_xyz, dtype=np.float64)
         if direction.shape != (3,) or np.linalg.norm(direction) < 1.0e-9:
             raise ValueError("direction_xyz must be a nonzero three-vector")
@@ -113,12 +128,44 @@ class HugmyMujocoEnv(gym.Env):
         self._target_direction = 1.0
         self.progress_weight = float(progress_weight)
         self.detach_penalty = float(detach_penalty)
+        self.minimum_progress_contacts = int(minimum_progress_contacts)
+        self.stride_target_m = float(stride_target_m)
+        self.stride_preferred_maximum_m = float(
+            stride_preferred_maximum_m)
+        self.stride_failure_maximum_m = float(stride_failure_maximum_m)
+        self.stride_success_bonus = float(stride_success_bonus)
+        self.stride_overshoot_weight_per_m = float(
+            stride_overshoot_weight_per_m)
+        self.stride_failure_penalty = float(stride_failure_penalty)
+        self.stride_recovery_contacts = int(stride_recovery_contacts)
+        self.stride_recovery_velocity_m_s = float(
+            stride_recovery_velocity_m_s)
+        self.stride_recovery_max_total_thrust_n = float(
+            stride_recovery_max_total_thrust_n)
+        self.stride_recovery_duration_sec = float(
+            stride_recovery_duration_sec)
         self.roll_weight = float(roll_weight)
         self.pitch_weight = float(pitch_weight)
         self.bottom_usage_weight = float(bottom_usage_weight)
         self.bottom_change_weight = float(bottom_change_weight)
         self.thrust_usage_weight_per_n = float(thrust_usage_weight_per_n)
         self.thrust_change_weight_per_n = float(thrust_change_weight_per_n)
+        self.thrust_soft_limit_n = float(thrust_soft_limit_n)
+        self.thrust_excess_weight_per_n2 = float(
+            thrust_excess_weight_per_n2)
+        if not 1 <= self.minimum_progress_contacts <= ARM_COUNT:
+            raise ValueError("minimum_progress_contacts must be between 1 and 4")
+        if not (0.0 < self.stride_target_m
+                <= self.stride_preferred_maximum_m
+                < self.stride_failure_maximum_m):
+            raise ValueError(
+                "stride limits must satisfy 0 < target <= preferred < failure")
+        if not 1 <= self.stride_recovery_contacts <= ARM_COUNT:
+            raise ValueError("stride_recovery_contacts must be between 1 and 4")
+        if self.stride_recovery_duration_sec <= 0.0:
+            raise ValueError("stride_recovery_duration_sec must be positive")
+        if self.maximum_thrust_rate_n_s <= 0.0:
+            raise ValueError("maximum_thrust_rate_n_s must be positive")
         self.roll_safe_rad = float(roll_safe_rad)
         self.pitch_safe_rad = float(pitch_safe_rad)
         self.fall_roll_rad = float(fall_roll_rad)
@@ -141,20 +188,21 @@ class HugmyMujocoEnv(gym.Env):
             *(f"normal_force_{index + 1}" for index in range(ARM_COUNT)),
             *(f"tangential_force_{index + 1}" for index in range(ARM_COUNT)),
             "bottom_pressure", "target_direction",
+            "stride_progress_fraction", "stride_recovery_phase",
         )
         low = np.asarray(
             [-2.0, -math.pi, -10.0, -math.pi, -10.0]
             + [0.0] * 4 + [0.0] * 4
             + [-self.maximum_reverse_thrust_n] * 4
             + [0.0] * 4 + [0.0] * 4 + [0.0] * 4
-            + [0.0, -1.0], dtype=np.float32,
+            + [0.0, -1.0, -5.0, 0.0], dtype=np.float32,
         )
         high = np.asarray(
             [2.0, math.pi, 10.0, math.pi, 10.0]
             + [math.pi] * 4 + [60.0] * 4
             + [self.maximum_forward_thrust_n] * 4
             + [1.0] * 4 + [20.0] * 4 + [20.0] * 4
-            + [60.0, 1.0], dtype=np.float32,
+            + [60.0, 1.0, 5.0, 1.0], dtype=np.float32,
         )
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
@@ -178,6 +226,12 @@ class HugmyMujocoEnv(gym.Env):
         self._previous_position = np.zeros(3, dtype=np.float64)
         self._episode_elapsed = 0.0
         self._detached_duration = 0.0
+        self._qualified_progress_m = 0.0
+        self._stride_start_position = np.zeros(3, dtype=np.float64)
+        self._stride_recovery_phase = False
+        self._stride_recovery_stable_duration = 0.0
+        self._episode_stride_count = 0
+        self._episode_completed_stride_distance_m = 0.0
         self._previous_bottom_action = 0.0
         self._previous_reward_thrust = np.zeros(ARM_COUNT, dtype=np.float64)
         self._last_domain: Dict[str, float] = {}
@@ -461,6 +515,19 @@ class HugmyMujocoEnv(gym.Env):
             * self.maximum_bottom_pressure_kpa)
         return pressures, thrusts, bottom_pressure
 
+    def _rate_limited_thrust(self, requested: np.ndarray) -> np.ndarray:
+        """Apply a hard slew-rate limit before a thrust reaches MuJoCo.
+
+        Penalising thrust changes helps the policy choose smooth commands, but
+        exploration is random at the beginning of training.  The physical
+        limit also keeps those exploratory commands inside the actuator rate
+        that will be allowed when the policy is evaluated on the robot.
+        """
+        maximum_delta = self.maximum_thrust_rate_n_s * self.control_dt
+        delta = np.clip(
+            requested - self._commanded_thrust, -maximum_delta, maximum_delta)
+        return self._commanded_thrust + delta
+
     def _snapshot(self) -> Dict[str, Any]:
         with self._condition:
             if self._odom is None:
@@ -499,7 +566,11 @@ class HugmyMujocoEnv(gym.Env):
             ]),
             grip[24:28], state["pressures"], self._commanded_thrust,
             grip[0:4], grip[28:32], grip[32:36],
-            np.asarray([state["bottom_pressure"], self._target_direction]),
+            np.asarray([
+                state["bottom_pressure"], self._target_direction,
+                self._qualified_progress_m / self.stride_target_m,
+                float(self._stride_recovery_phase),
+            ]),
         )).astype(np.float32)
         return np.clip(values, self.observation_space.low,
                        self.observation_space.high).astype(np.float32)
@@ -591,9 +662,15 @@ class HugmyMujocoEnv(gym.Env):
             self._advance_policy_interval()
         state = self._snapshot()
         self._episode_start_position = state["position"].copy()
+        self._stride_start_position = state["position"].copy()
         self._previous_position = state["position"].copy()
         self._episode_elapsed = 0.0
         self._detached_duration = 0.0
+        self._qualified_progress_m = 0.0
+        self._stride_recovery_phase = False
+        self._stride_recovery_stable_duration = 0.0
+        self._episode_stride_count = 0
+        self._episode_completed_stride_distance_m = 0.0
         self._previous_bottom_action = 0.0
         self._previous_reward_thrust.fill(0.0)
         info = {
@@ -607,19 +684,111 @@ class HugmyMujocoEnv(gym.Env):
     def step(self, action: np.ndarray):
         if not self.action_space.contains(np.asarray(action, dtype=np.float32)):
             action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
-        pressures, thrusts, bottom_pressure = self._physical_action(action)
+        pressures, requested_thrusts, bottom_pressure = self._physical_action(
+            action)
+        thrusts = self._rate_limited_thrust(requested_thrusts)
         self._publish_targets(pressures, thrusts, bottom_pressure)
         self._advance_policy_interval()
         state = self._snapshot()
         displacement = state["position"] - self._previous_position
         axis_progress = float(np.dot(displacement, self.direction_xyz))
         progress = self._target_direction * axis_progress
+        total_progress = self._target_direction * float(np.dot(
+            state["position"] - self._episode_start_position,
+            self.direction_xyz))
+        previous_stride_raw_progress = self._target_direction * float(np.dot(
+            self._previous_position - self._stride_start_position,
+            self.direction_xyz))
+        stride_raw_progress = self._target_direction * float(np.dot(
+            state["position"] - self._stride_start_position,
+            self.direction_xyz))
         self._previous_position = state["position"].copy()
         self._episode_elapsed += self.control_dt
         contacts = state["grip"][0:4] >= 0.5
         contact_count = int(np.count_nonzero(contacts))
         self._detached_duration = (
-            self._detached_duration + self.control_dt if contact_count == 0 else 0.0)
+            self._detached_duration + self.control_dt
+            if contact_count == 0 else 0.0)
+
+        total_abs_thrust = float(np.sum(np.abs(thrusts)))
+        total_thrust_change = float(np.sum(np.abs(
+            thrusts - self._previous_reward_thrust)))
+
+        # Only motion made with at least two contacts advances the rewarded
+        # stride coordinate.  Raw CoM motion is tracked separately so a launch
+        # cannot hide behind the contact gate.
+        previous_qualified_progress = self._qualified_progress_m
+        qualified_progress = (
+            progress if contact_count >= self.minimum_progress_contacts else 0.0)
+        self._qualified_progress_m += qualified_progress
+
+        # Progress shaping saturates at the nominal 20 mm target.  It therefore
+        # encourages reaching the target but gives no additional reward for a
+        # long slide.  Backsliding below the target removes the earlier reward.
+        previous_progress_potential = min(
+            previous_qualified_progress, self.stride_target_m)
+        progress_potential = min(
+            self._qualified_progress_m, self.stride_target_m)
+        reward_progress = self.progress_weight * (
+            progress_potential - previous_progress_potential)
+
+        previous_stride_excess_m = max(
+            0.0,
+            max(previous_qualified_progress, previous_stride_raw_progress)
+            - self.stride_preferred_maximum_m)
+        stride_excess_m = max(
+            0.0,
+            max(self._qualified_progress_m, stride_raw_progress)
+            - self.stride_preferred_maximum_m)
+        # Crossing 30 mm is allowed; only the incremental excess gets a soft
+        # cost.  Returning to a controlled stride length refunds that cost.
+        reward_stride_overshoot = (
+            -self.stride_overshoot_weight_per_m
+            * (stride_excess_m - previous_stride_excess_m))
+        stride_failure_excess_m = max(
+            0.0,
+            max(self._qualified_progress_m, stride_raw_progress)
+            - self.stride_failure_maximum_m)
+        stride_runaway = stride_failure_excess_m > 0.0
+
+        # A stride is complete only after reaching the target and returning to
+        # a low-speed, low-thrust, well-supported state.  This prevents steady
+        # sliding from being counted as a sequence of stable strides.
+        if (not self._stride_recovery_phase
+                and self._qualified_progress_m >= self.stride_target_m
+                and not stride_runaway):
+            self._stride_recovery_phase = True
+            self._stride_recovery_stable_duration = 0.0
+        if (self._stride_recovery_phase
+                and self._qualified_progress_m < self.stride_target_m):
+            self._stride_recovery_phase = False
+            self._stride_recovery_stable_duration = 0.0
+
+        recovery_stable = bool(
+            self._stride_recovery_phase
+            and contact_count >= self.stride_recovery_contacts
+            and abs(float(state["velocity_axis"]))
+                <= self.stride_recovery_velocity_m_s
+            and total_abs_thrust
+                <= self.stride_recovery_max_total_thrust_n)
+        self._stride_recovery_stable_duration = (
+            self._stride_recovery_stable_duration + self.control_dt
+            if recovery_stable else 0.0)
+        stride_completed = bool(
+            self._stride_recovery_phase
+            and self._stride_recovery_stable_duration
+                >= self.stride_recovery_duration_sec
+            and not stride_runaway)
+        completed_stride_m = 0.0
+        if stride_completed:
+            completed_stride_m = max(
+                0.0, self._qualified_progress_m, stride_raw_progress)
+            self._episode_stride_count += 1
+            self._episode_completed_stride_distance_m += completed_stride_m
+            self._stride_start_position = state["position"].copy()
+            self._qualified_progress_m = 0.0
+            self._stride_recovery_phase = False
+            self._stride_recovery_stable_duration = 0.0
 
         roll_excess = max(0.0, abs(float(state["roll"])) - self.roll_safe_rad)
         pitch_excess = max(0.0, abs(float(state["pitch"])) - self.pitch_safe_rad)
@@ -630,34 +799,61 @@ class HugmyMujocoEnv(gym.Env):
                >= self.maximum_vertical_excursion_m
         )
         detached = self._detached_duration >= self.detached_grace_sec
-        terminated = bool(fallen or detached)
+        terminated = bool(stride_runaway or fallen or detached)
         truncated = bool(self._episode_elapsed >= self.episode_duration)
-        reward_progress = self.progress_weight * progress
         reward_roll = -self.roll_weight * roll_excess * roll_excess
         reward_pitch = -self.pitch_weight * pitch_excess * pitch_excess
-        reward_detach = -self.detach_penalty if terminated else 0.0
+        # A fall at the natural end of the episode is acceptable.  An earlier
+        # fall stops the remaining stride opportunities and receives a modest
+        # terminal cost so one-stride-then-fall is not optimal.
+        terminal_failure = bool((fallen or detached) and not truncated)
+        reward_detach = -self.detach_penalty if terminal_failure else 0.0
+        reward_stride_success = (
+            self.stride_success_bonus if stride_completed else 0.0)
+        reward_stride_failure = (
+            -self.stride_failure_penalty if stride_runaway else 0.0)
         bottom_action = 0.5 * (float(np.clip(action[4], -1.0, 1.0)) + 1.0)
         bottom_change = abs(bottom_action - self._previous_bottom_action)
         reward_bottom_usage = -self.bottom_usage_weight * bottom_action
         reward_bottom_change = -self.bottom_change_weight * bottom_change
-        total_abs_thrust = float(np.sum(np.abs(thrusts)))
-        total_thrust_change = float(np.sum(np.abs(
-            thrusts - self._previous_reward_thrust)))
         reward_thrust_usage = (
             -self.thrust_usage_weight_per_n * total_abs_thrust)
         reward_thrust_change = (
             -self.thrust_change_weight_per_n * total_thrust_change)
+        thrust_excess = np.maximum(
+            0.0, np.abs(thrusts) - self.thrust_soft_limit_n)
+        reward_thrust_excess = (
+            -self.thrust_excess_weight_per_n2
+            * float(np.sum(thrust_excess * thrust_excess)))
         self._previous_reward_thrust[:] = thrusts
         self._previous_bottom_action = bottom_action
         reward = (reward_progress + reward_roll + reward_pitch + reward_detach
+                  + reward_stride_success + reward_stride_overshoot
+                  + reward_stride_failure
                   + reward_bottom_usage + reward_bottom_change
-                  + reward_thrust_usage + reward_thrust_change)
+                  + reward_thrust_usage + reward_thrust_change
+                  + reward_thrust_excess)
         info = {
             "progress_m": progress,
+            "qualified_progress_m": qualified_progress,
+            "stride_progress_m": self._qualified_progress_m,
+            "stride_target_m": self.stride_target_m,
+            "stride_recovery_phase": self._stride_recovery_phase,
+            "stride_recovery_stable": recovery_stable,
+            "stride_completed": stride_completed,
+            "completed_stride_m": completed_stride_m,
+            "completed_stride_count": self._episode_stride_count,
+            "mean_completed_stride_m": (
+                self._episode_completed_stride_distance_m
+                / self._episode_stride_count
+                if self._episode_stride_count > 0 else 0.0),
+            "stride_success": self._episode_stride_count > 0,
+            "stride_overshoot": stride_excess_m > 0.0,
+            "stride_overshoot_m": stride_excess_m,
+            "stride_runaway": stride_runaway,
+            "stride_failure_excess_m": stride_failure_excess_m,
             "axis_progress_m": axis_progress,
-            "total_progress_m": float(np.dot(
-                state["position"] - self._episode_start_position,
-                self.direction_xyz)) * self._target_direction,
+            "total_progress_m": total_progress,
             "target_direction": self._target_direction,
             "contact_count": contact_count,
             "fallen": fallen,
@@ -666,15 +862,20 @@ class HugmyMujocoEnv(gym.Env):
             "reward_roll": reward_roll,
             "reward_pitch": reward_pitch,
             "reward_detach": reward_detach,
+            "reward_stride_success": reward_stride_success,
+            "reward_stride_overshoot": reward_stride_overshoot,
+            "reward_stride_failure": reward_stride_failure,
             "reward_bottom_usage": reward_bottom_usage,
             "reward_bottom_change": reward_bottom_change,
             "reward_thrust_usage": reward_thrust_usage,
             "reward_thrust_change": reward_thrust_change,
+            "reward_thrust_excess": reward_thrust_excess,
             "total_abs_thrust_n": total_abs_thrust,
             "total_thrust_change_n": total_thrust_change,
             "physical_action": {
                 "pressure_kpa": pressures.tolist(),
                 "thrust_n": thrusts.tolist(),
+                "requested_thrust_n": requested_thrusts.tolist(),
                 "bottom_pressure_kpa": bottom_pressure,
                 "bottom_pressure_fraction": bottom_action,
             },

@@ -138,7 +138,10 @@ def main() -> None:
         lambda: Monitor(
             raw_env, filename=str(output / "monitor.csv"),
             info_keywords=(
-                "target_direction", "total_progress_m", "fallen", "detached"))
+                "target_direction", "total_progress_m", "stride_progress_m",
+                "completed_stride_count", "mean_completed_stride_m",
+                "stride_success", "stride_overshoot", "stride_runaway",
+                "fallen", "detached"))
     ])
     training = dict(configuration.get("training", {}))
     normalize_observation = bool(training.pop("normalize_observation", True))

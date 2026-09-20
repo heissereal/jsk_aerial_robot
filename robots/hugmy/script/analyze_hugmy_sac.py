@@ -7,6 +7,10 @@ from pathlib import Path
 import statistics
 
 
+def monitor_bool(value):
+    return str(value).strip().lower() in ("1", "true", "yes")
+
+
 def rolling_mean(values, window):
     result = []
     running = 0.0
@@ -53,6 +57,41 @@ def main():
     print(f"last  {window} reward median: {statistics.median(latest):.3f}")
     print(f"best episode reward:  {max(rewards):.3f}")
     print(f"latest mean length:   {statistics.mean(lengths[-window:]):.1f} step")
+    if "stride_success" in rows[0]:
+        latest_rows = rows[-window:]
+        success_rate = 100.0 * statistics.mean(
+            monitor_bool(row["stride_success"]) for row in latest_rows)
+        print(f"last  {window} episodes with a stride: {success_rate:.1f}%")
+        if "completed_stride_count" in rows[0]:
+            stride_counts = [
+                int(float(row["completed_stride_count"]))
+                for row in latest_rows]
+            completed_lengths = [
+                1000.0 * float(row["mean_completed_stride_m"])
+                for row in latest_rows
+                if int(float(row["completed_stride_count"])) > 0]
+            runaway_rate = 100.0 * statistics.mean(
+                monitor_bool(row["stride_runaway"]) for row in latest_rows)
+            print(
+                f"last  {window} completed strides/episode: "
+                f"mean={statistics.mean(stride_counts):.2f}, "
+                f"max={max(stride_counts)}")
+            if completed_lengths:
+                print(
+                    f"last  {window} completed stride length: "
+                    f"mean={statistics.mean(completed_lengths):.1f} mm")
+            print(f"last  {window} runaway (>100 mm): {runaway_rate:.1f}%")
+        else:
+            overshoot_rate = 100.0 * statistics.mean(
+                monitor_bool(row["stride_overshoot"]) for row in latest_rows)
+            stride_progress = [
+                1000.0 * float(row["stride_progress_m"])
+                for row in latest_rows]
+            print(f"last  {window} stride overshoot: {overshoot_rate:.1f}%")
+            print(
+                f"last  {window} qualified stride: "
+                f"mean={statistics.mean(stride_progress):.1f} mm, "
+                f"median={statistics.median(stride_progress):.1f} mm")
     if "target_direction" in rows[0]:
         for direction, label in ((1.0, "forward"), (-1.0, "backward")):
             selected = [
@@ -63,10 +102,30 @@ def main():
             selected_rewards = [float(row["r"]) for row in selected]
             selected_progress = [
                 float(row["total_progress_m"]) for row in selected]
-            print(
+            summary = (
                 f"{label:8s}: episodes={len(selected):4d}, "
                 f"reward mean={statistics.mean(selected_rewards):8.3f}, "
                 f"progress mean={statistics.mean(selected_progress):+.4f} m")
+            if "stride_success" in rows[0]:
+                successes = 100.0 * statistics.mean(
+                    monitor_bool(row["stride_success"]) for row in selected)
+                summary += f", episodes with stride={successes:.1f}%"
+                if "completed_stride_count" in rows[0]:
+                    mean_count = statistics.mean(
+                        int(float(row["completed_stride_count"]))
+                        for row in selected)
+                    runaways = 100.0 * statistics.mean(
+                        monitor_bool(row["stride_runaway"])
+                        for row in selected)
+                    summary += (
+                        f", strides/episode={mean_count:.2f}, "
+                        f"runaway={runaways:.1f}%")
+                else:
+                    overshoots = 100.0 * statistics.mean(
+                        monitor_bool(row["stride_overshoot"])
+                        for row in selected)
+                    summary += f", overshoot={overshoots:.1f}%"
+            print(summary)
 
     if not args.plot:
         return

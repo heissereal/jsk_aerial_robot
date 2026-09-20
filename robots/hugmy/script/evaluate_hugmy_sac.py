@@ -70,6 +70,11 @@ def main() -> None:
                 print(
                     f"episode {completed}: reward={episode_reward:.3f}, "
                     f"progress={info.get('total_progress_m', float('nan')):.4f} m, "
+                    f"strides={info.get('completed_stride_count', 0)}, "
+                    f"mean_stride={1000.0 * info.get('mean_completed_stride_m', 0.0):.1f} mm, "
+                    f"partial={1000.0 * info.get('stride_progress_m', float('nan')):.1f} mm, "
+                    f"success={info.get('stride_success', False)}, "
+                    f"runaway={info.get('stride_runaway', False)}, "
                     f"direction={info.get('target_direction', float('nan')):+.0f}, "
                     f"fallen={info.get('fallen', False)}, "
                     f"detached={info.get('detached', False)}")

@@ -7,9 +7,14 @@ environment:
   reset_settle_sim_sec: 1.5
   maximum_pressure_kpa: 50.0
   maximum_bottom_pressure_kpa: 30.0
-  # Kept inside the 21.2 V polynomial values over PWM=[0.5, 0.975].
-  maximum_forward_thrust_n: 8.0
-  maximum_reverse_thrust_n: 4.0
+  # Hard limits for human-contact learning.  Six newtons still permits the
+  # arm-extension motion seen in the measured model, but removes the 8 N
+  # launch strategy learned by the previous policy.
+  maximum_forward_thrust_n: 6.0
+  maximum_reverse_thrust_n: 3.0
+  # Commands are also slew-limited in the environment.  At control_dt=0.1 s,
+  # no rotor can change by more than 1 N in one policy step.
+  maximum_thrust_rate_n_s: 10.0
   # Learn both directions along the cylinder with one shared policy.  The
   # episode target (+1 forward / -1 backward) is included in observation.
   target_direction_mode: random
@@ -19,7 +24,26 @@ environment:
   detached_grace_sec: 0.2
   maximum_vertical_excursion_m: 0.25
   reward:
-    progress_weight: 1000.0       # 1 mm forward = +1 reward
+    # One episode trains a continuous sequence of strides.  Each stride aims
+    # for 20 mm; exceeding the preferred 30 mm gets only a soft incremental
+    # cost, while 100 mm is the hard runaway/failure boundary.
+    minimum_progress_contacts: 2
+    stride_target_m: 0.020
+    stride_preferred_maximum_m: 0.030
+    stride_failure_maximum_m: 0.100
+    progress_weight: 1000.0
+    stride_success_bonus: 20.0
+    stride_overshoot_weight_per_m: 500.0
+    stride_failure_penalty: 100.0
+    # After reaching 20 mm, count the stride only after the robot has returned
+    # to a supported, slow, low-thrust state for 0.5 s.  Then reset the local
+    # stride coordinate and continue the same episode with the next stride.
+    stride_recovery_contacts: 3
+    stride_recovery_velocity_m_s: 0.03
+    stride_recovery_max_total_thrust_n: 4.0
+    stride_recovery_duration_sec: 0.5
+    # Applied to a fall/detach before the natural end of the episode. Falling
+    # at the final time limit itself is acceptable.
     detach_penalty: 20.0
     roll_weight: 2.0
     pitch_weight: 2.0
@@ -28,11 +52,14 @@ environment:
     # Penalize abrupt pressure changes; the central single chamber has no
     # direction switch. A full 0 -> 30 kPa step costs 0.1.
     bottom_change_weight: 0.1
-    # Costs are summed over each rotor. Units are reward/N and reward/delta-N.
-    # A sustained pair at 6 N costs 0.24 per step; a 0 -> 6 N jump of that
-    # pair costs 0.60 once. Both dominate the bottom-use cost (max 0.02).
-    thrust_usage_weight_per_n: 0.02
-    thrust_change_weight_per_n: 0.05
+    # Thrust is deliberately much more expensive than bottom use.  Costs are
+    # summed over all four rotors.  A sustained 4 N pair costs 0.64 per step;
+    # changing that pair by 1 N costs 0.40.  Above 4 N there is an additional
+    # quadratic cost, so 4--6 N is available only when it materially helps.
+    thrust_usage_weight_per_n: 0.08
+    thrust_change_weight_per_n: 0.20
+    thrust_soft_limit_n: 4.0
+    thrust_excess_weight_per_n2: 0.5
     roll_safe_rad: 0.2617994      # 15 deg
     pitch_safe_rad: 0.5235988     # 30 deg: useful rocking is not penalized
     fall_roll_rad: 1.0471976      # 60 deg
