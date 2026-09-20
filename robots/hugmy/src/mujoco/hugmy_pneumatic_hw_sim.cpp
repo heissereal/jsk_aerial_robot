@@ -849,6 +849,7 @@ void HugmyPneumaticHWSim::applyBagSprings(
 {
   std::array<double, ARM_COUNT> target_bend_rad{};
   std::array<double, ARM_COUNT> measured_bend_rad{};
+  std::array<double, ARM_COUNT> spring_reference_bend_rad{};
   for (size_t arm = 0; arm < ARM_COUNT; ++arm)
     {
       pressure_trend_[arm] = updateTrend(
@@ -910,6 +911,7 @@ void HugmyPneumaticHWSim::applyBagSprings(
           mujoco_model_->dof_damping[dof_address] = bag_damping_nms_rad_;
           control_input_.at(actuator_ids_[arm][joint]) = 0.0;
           measured_bend_rad[arm] += mujoco_data_->qpos[qpos_address];
+          spring_reference_bend_rad[arm] += spring_reference;
         }
     }
   ROS_DEBUG_THROTTLE(0.2,
@@ -918,6 +920,15 @@ void HugmyPneumaticHWSim::applyBagSprings(
       target_bend_rad[0] * 180.0 / M_PI,
       target_bend_rad[3] * 180.0 / M_PI,
       measured_bend_rad[0] * 180.0 / M_PI,
+      measured_bend_rad[3] * 180.0 / M_PI);
+  ROS_DEBUG_THROTTLE(0.2,
+      "Hugmy bend diagnostic arms(2,4): pressure [%.1f %.1f] kPa, force [%.2f %.2f] N, target [%.1f %.1f] deg, spring reference [%.1f %.1f] deg, measured [%.1f %.1f] deg",
+      pressure_kpa_[1], pressure_kpa_[3], thrust[1], thrust[3],
+      target_bend_rad[1] * 180.0 / M_PI,
+      target_bend_rad[3] * 180.0 / M_PI,
+      spring_reference_bend_rad[1] * 180.0 / M_PI,
+      spring_reference_bend_rad[3] * 180.0 / M_PI,
+      measured_bend_rad[1] * 180.0 / M_PI,
       measured_bend_rad[3] * 180.0 / M_PI);
 }
 
