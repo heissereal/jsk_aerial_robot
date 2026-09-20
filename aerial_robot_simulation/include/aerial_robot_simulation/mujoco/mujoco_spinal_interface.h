@@ -31,6 +31,8 @@ namespace hardware_interface
     void setForce(int index, double force) {force_.at(index) = force;}
     double getPwm(int index) const {return pwm_.at(index);}
     void setPwm(int index, double pwm) {pwm_.at(index) = pwm;}
+    bool getPwmTestMode() const {return pwm_test_mode_;}
+    void setPwmTestMode(bool active) {pwm_test_mode_ = active;}
 
   private:
     /* attitude estimator */
@@ -39,6 +41,7 @@ namespace hardware_interface
     int motor_num_;
     std::vector<double> force_;
     std::vector<double> pwm_;
+    bool pwm_test_mode_{false};
     tf::Matrix3x3 baselink_rot_;
     tf::Vector3 baselink_angular_;
     StateEstimate spinal_state_estimator_;

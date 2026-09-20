@@ -57,6 +57,7 @@ namespace flight_controllers
       }
 
     std::lock_guard<std::mutex> lock(pwm_test_mutex_);
+    spinal_interface_->setPwmTestMode(pwm_test_mode_);
     if (pwm_test_mode_)
       for (int i = 0; i < motor_num_; ++i)
         spinal_interface_->setPwm(

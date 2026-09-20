@@ -279,7 +279,10 @@ namespace mujoco_ros_control
       {
         int rotor_id = mj_name2id(mujoco_model_, mjOBJ_ACTUATOR, rotor_list_.at(i).c_str());
         double rotor_force = spinal_interface_.getForce(i);
-        if(use_pwm_motor_model_)
+        // Normal flight may use the ideal force command for numerical
+        // fidelity, while PwmTest must still exercise the bidirectional PWM
+        // curve (including negative thrust).
+        if(use_pwm_motor_model_ || spinal_interface_.getPwmTestMode())
           {
             const double pwm = std::max(
               motor_min_pwm_, std::min(motor_max_pwm_, spinal_interface_.getPwm(i)));
@@ -289,6 +292,14 @@ namespace mujoco_ros_control
                                                    : forward_m_f_rate_;
             mujoco_model_->actuator_gear[6 * rotor_id + 5] =
               rotor_direction_signs_.at(i) * m_f_rate;
+          }
+        else
+          {
+            // A reverse PwmTest may have changed the signed drag-torque gear.
+            // Restore the normal-flight value when returning to ideal force
+            // input.
+            mujoco_model_->actuator_gear[6 * rotor_id + 5] =
+              rotor_direction_signs_.at(i) * forward_m_f_rate_;
           }
         control_input_.at(rotor_id) = rotor_force;
       }
@@ -329,6 +340,12 @@ namespace mujoco_ros_control
     // separate property because some bidirectional ESCs reverse that polarity.
     const auto& curve = low_pwm_branch ? reverse_motor_curve_
                                        : forward_motor_curve_;
+    if(curve.empty())
+      {
+        ROS_ERROR_THROTTLE(1.0,
+          "mujoco: no motor curve for the selected PwmTest direction");
+        return 0.0;
+      }
     const auto reference = std::min_element(
       curve.begin(), curve.end(), [this](const auto& lhs, const auto& rhs)
       {

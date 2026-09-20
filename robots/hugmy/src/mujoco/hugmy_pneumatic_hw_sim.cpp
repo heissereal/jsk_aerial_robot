@@ -520,7 +520,7 @@ void HugmyPneumaticHWSim::write(const ros::Time& time,
   // normal flight-controller request. Without this bridge the pressure spring
   // did not compensate the follower-force moment and a positive 6 N command
   // bent the arm farther, opposite to the measured pressure/thrust table.
-  if (use_pwm_motor_model_)
+  if (use_pwm_motor_model_ || spinal_interface_.getPwmTestMode())
     for (size_t arm = 0; arm < ARM_COUNT &&
                          arm < static_cast<size_t>(spinal_interface_.getMotorNum());
          ++arm)
