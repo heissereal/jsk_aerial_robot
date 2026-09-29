@@ -49,6 +49,13 @@ IndependentArmPressureController::IndependentArmPressureController(ros::NodeHand
   if (nh_.resolveName("pneumatic/bottom_pressure") != "/pneumatic/bottom_pressure")
     root_bottom_pressure_sub_ = nh_.subscribe("/pneumatic/bottom_pressure", 1,
                                               &IndependentArmPressureController::rootBottomPressureCallback, this);
+  bottom_pressure_sensor_sub_ = nh_.subscribe(
+      "pressure/bottom", 1,
+      &IndependentArmPressureController::bottomPressureSensorCallback, this);
+  if (nh_.resolveName("pressure/bottom") != "/pressure/bottom")
+    root_bottom_pressure_sensor_sub_ = nh_.subscribe(
+        "/pressure/bottom", 1,
+        &IndependentArmPressureController::rootBottomPressureSensorCallback, this);
   bottom_target_sub_ = pnh_.subscribe("bottom_target_pressure", 1,
                                       &IndependentArmPressureController::bottomTargetCallback, this);
   command_pub_ = nh_.advertise<spinal::PneumaticCommand>("pneumatic/command", 1);
@@ -96,6 +103,24 @@ void IndependentArmPressureController::rootBottomPressureCallback(
     const std_msgs::Float32::ConstPtr& msg)
 {
   bottom_pressure_ = msg->data * bottom_pressure_scale_ + bottom_pressure_offset_kpa_;
+  use_root_spinal_topics_ = true;
+}
+
+void IndependentArmPressureController::bottomPressureSensorCallback(
+    const spinal::Pressure::ConstPtr& msg)
+{
+  bottom_pressure_ = msg->valid
+      ? msg->pressure * bottom_pressure_scale_ + bottom_pressure_offset_kpa_
+      : NAN;
+  use_root_spinal_topics_ = false;
+}
+
+void IndependentArmPressureController::rootBottomPressureSensorCallback(
+    const spinal::Pressure::ConstPtr& msg)
+{
+  bottom_pressure_ = msg->valid
+      ? msg->pressure * bottom_pressure_scale_ + bottom_pressure_offset_kpa_
+      : NAN;
   use_root_spinal_topics_ = true;
 }
 

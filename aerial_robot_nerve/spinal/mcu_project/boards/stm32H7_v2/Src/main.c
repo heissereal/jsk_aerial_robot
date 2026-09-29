@@ -43,6 +43,7 @@
 #include "sensors/encoder/mag_encoder.h"
 
 #include "battery_status/battery_status.h"
+#include "bottom_pressure/bottom_pressure.h"
 
 #include "servo/servo.h"
 
@@ -123,6 +124,7 @@ ICM20948 imu_;
 Baro baro_;
 GPS gps_;
 BatteryStatus battery_status_;
+BottomPressure bottom_pressure_;
 
 /* servo instance */
 DirectServo servo_;
@@ -273,6 +275,7 @@ int main(void)
   DShot* dshotptr = nullptr;
 #if DSHOT
   battery_status_.init(&hadc1, &nh_, false);
+  bottom_pressure_.init(&hadc1, &nh_);
   estimator_.init(&imu_, &baro_, &gps_, &nh_);  // imu + baro + gps => att + alt + pos(xy)
   dshot_.init(DSHOT600, &htim1,TIM_CHANNEL_1, &htim1,TIM_CHANNEL_2, &htim1,TIM_CHANNEL_3, &htim1, TIM_CHANNEL_4);
   dshot_.initTelemetry(&huart6);
@@ -1331,8 +1334,13 @@ void voltageTask(void const * argument)
   /* Infinite loop */
   for(;;)
   {
+#if DSHOT
+    bottom_pressure_.update();
+    osDelay(BOTTOM_PRESSURE_CHECK_INTERVAL);
+#else
     battery_status_.update();
     osDelay(VOLTAGE_CHECK_INTERVAL);
+#endif
   }
   /* USER CODE END voltageTask */
 }

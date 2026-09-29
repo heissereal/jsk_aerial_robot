@@ -1,0 +1,16 @@
+<launch>
+  <arg name="trajectory" />
+  <arg name="shadow" default="true" />
+  <arg name="allow_actuation" default="false" />
+  <arg name="config" default="$(find hugmy)/config/hugmy_real_stride.yaml" />
+
+  <group ns="quadrotor">
+    <node pkg="hugmy" type="run_hugmy_real_stride.py"
+          name="hugmy_real_stride_runner" output="screen">
+      <rosparam command="load" file="$(arg config)" />
+      <param name="trajectory" value="$(arg trajectory)" />
+      <param name="shadow" value="$(arg shadow)" />
+      <param name="allow_actuation" value="$(arg allow_actuation)" />
+    </node>
+  </group>
+</launch>

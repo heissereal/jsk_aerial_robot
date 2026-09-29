@@ -67,6 +67,7 @@
 
 /* fail safe */
 #define FLIGHT_COMMAND_TIMEOUT 500 //500ms
+#define PWM_TEST_COMMAND_TIMEOUT 200 // ms
 #define MAX_TILT_ANGLE 1.0f // rad
 #define MAX_PWM 1.0f
 
@@ -117,7 +118,16 @@ public:
   float getTargetPwm(uint8_t index) {return target_pwm_[index];}
   void setAuxiliaryPwm(uint8_t index, float pwm)
   {
-    if (index < MAX_MOTOR_NUMBER) target_pwm_[index] = std::max(0.0f, std::min(MAX_PWM, pwm));
+    if (index < MAX_MOTOR_NUMBER)
+      {
+        const float bounded_pwm = std::max(0.0f, std::min(MAX_PWM, pwm));
+        target_pwm_[index] = bounded_pwm;
+        // Flight-rotor PwmTest playback copies pwm_test_value_ to every PWM
+        // output.  Keep auxiliary outputs (the pneumatic pumps on PWM4/6) in
+        // that shadow array too, otherwise starting the stride rotors
+        // immediately overwrites a valid pneumatic pump command with zero.
+        if (index >= 4) pwm_test_value_[index] = bounded_pwm;
+      }
   }
   float getForce(uint8_t index) {return target_thrust_[index];}
 
@@ -248,6 +258,7 @@ private:
   uint32_t pwm_pub_last_time_;
   uint32_t thrust_pub_last_time_;
   float pwm_test_value_[MAX_MOTOR_NUMBER]; // PWM Test
+  uint32_t pwm_test_last_command_ms_;
 
   void fourAxisCommandCallback( const spinal::FourAxisCommand &cmd_msg);
   void pwmInfoCallback( const spinal::PwmInfo &info_msg);

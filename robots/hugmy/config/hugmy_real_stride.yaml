@@ -1,0 +1,138 @@
+# Safety envelope and conservative sim-to-real scale bounds for the first
+# secured-cylinder test.  This node is shadow-only unless both launch flags
+# shadow:=false and allow_actuation:=true are supplied.
+control_rate_hz: 50.0
+sensor_timeout_sec: 0.30
+pressure_timeout_sec: 0.75
+# Pressure-adaptive playback can stretch the nominal 3.5 s stride.  This is a
+# hard wall-clock limit, including the smooth lead-in.
+maximum_duration_sec: 40.0
+
+maximum_arm_pressure_kpa: 50.0
+maximum_bottom_pressure_kpa: 30.0
+maximum_forward_thrust_n: 5.0
+maximum_reverse_thrust_n: 2.5
+maximum_thrust_rate_n_s: 10.0
+# Adaptive playback must not turn a tracking failure into indefinite rotor use.
+maximum_thrust_integral_n_s: 60.0
+neutral_pwm: 0.75
+
+# Advance one shared virtual clock for pressure and thrust.  Large measured
+# pressure error slows that clock; it never stops completely, so the thrust
+# trajectory also continues slowly instead of being held indefinitely.
+pressure_feedback:
+  enabled: true
+  # Joint 0 represents the front pressure group and joint 1 the rear group.
+  # Their measured response sets the shared pressure/thrust virtual clock.
+  # Joints 2 and 3 are still checked by every pressure safety limit.
+  arm_indices: [0, 1]
+  minimum_playback_rate: 0.15
+  full_speed_arm_error_kpa: 2.0
+  slow_arm_error_kpa: 10.0
+  full_speed_bottom_error_kpa: 1.0
+  slow_bottom_error_kpa: 5.0
+  rate_filter_time_constant_sec: 0.25
+  # Smoothly connect measured initial pressures / zero thrust to sample 0.
+  lead_in_duration_sec: 1.0
+
+# The learned pressure/thrust trajectory remains the feed-forward command.
+# Neuron IMU bend feedback adds only bounded fine corrections around it.  The
+# fixed sensor mounting angle is cancelled at the beginning of each stride;
+# the controller therefore follows the learned bend change, not an uncalibrated
+# absolute IMU angle.
+angle_feedback:
+  enabled: true
+  required: true
+  playback_arm_indices: [0, 1]
+  neuron_timeout_sec: 0.30
+  acc_lpf_tau_sec: 0.20
+  arm_yaw_rad: [-2.3561944902, -0.7853981634,
+                 0.7853981634,  2.3561944902]
+  bend_offset_rad: [0.0, 0.0, 0.0, 0.0]
+  deadband_rad: 0.0872665          # 5 deg
+  full_speed_error_rad: 0.1396263  # 8 deg
+  slow_error_rad: 0.4363323        # 25 deg
+  # Positive pressure bends an arm; positive rotor thrust straightens it.
+  pressure_bend_sign: [1.0, 1.0, 1.0, 1.0]
+  thrust_bend_sign: [-1.0, -1.0, -1.0, -1.0]
+  pressure_kp_kpa_rad: 8.0
+  maximum_pressure_correction_kpa: 3.0
+  pressure_correction_rate_kpa_s: 5.0
+  thrust_kp_n_rad: 0.5
+  maximum_thrust_correction_n: 0.25
+  thrust_correction_rate_n_s: 0.5
+
+maximum_progress_m: 0.100
+maximum_lateral_m: 0.050
+maximum_vertical_m: 0.080
+maximum_relative_roll_rad: 0.7853982   # 45 deg
+maximum_relative_pitch_rad: 1.0471976 # 60 deg
+maximum_measured_pressure_kpa: 60.0
+minimum_start_pressure_kpa: 20.0
+maximum_start_speed_m_s: 0.03
+
+# Stopping thrust must not release a suspended robot.  The pressure controller
+# remains enabled at this common grasp pressure unless explicitly configured
+# otherwise.
+stop_grip_pressure_kpa: 30.0
+disable_pressure_controller_on_stop: false
+reject_other_pwm_publishers: true
+reject_other_command_publishers: true
+arm_slave_ids: [1, 2, 3, 4]
+
+topics:
+  # bridge.launch inside bringup uses /quadrotor, while a standalone bridge
+  # exposes root topics. Subscribe to both without requiring a remap.
+  mocap_pose: [/quadrotor/mocap/pose, /mocap/pose]
+  spinal_imu: [/quadrotor/imu, /imu]
+  neuron_adc: [/quadrotor/neuron/adc_states, /neuron/adc_states]
+  neuron_imu: [/quadrotor/neuron/imu_states, /neuron/imu_states]
+  bottom_pressure_sensor: [/quadrotor/pressure/bottom, /pressure/bottom]
+  bottom_pressure: [/quadrotor/pneumatic/bottom_pressure, /pneumatic/bottom_pressure]
+  pressure_target: /quadrotor/independent_arm_pressure_controller/target_pressure
+  bottom_pressure_target: /quadrotor/independent_arm_pressure_controller/bottom_target_pressure
+  pressure_enable_service: /quadrotor/independent_arm_pressure_controller/enable
+  # bringup starts bridge.launch inside the quadrotor namespace.
+  pwm_test: /quadrotor/pwm_test
+
+# These are read at the start of every one-stride trial.  The optimizer writes
+# only values inside the bounds below.
+scales:
+  front_pressure: 1.0
+  rear_pressure: 1.0
+  forward_thrust: 0.50
+  reverse_thrust: 0.50
+  bottom_pressure: 0.80
+  time: 1.20
+
+optimization:
+  trials: 20
+  initial_random_trials: 6
+  candidate_pool_size: 4096
+  seed: 7
+  parameters:
+    front_pressure: {min: 0.85, max: 1.05}
+    rear_pressure: {min: 0.85, max: 1.05}
+    forward_thrust: {min: 0.35, max: 0.80}
+    reverse_thrust: {min: 0.35, max: 0.80}
+    bottom_pressure: {min: 0.60, max: 1.00}
+    time: {min: 0.90, max: 1.35}
+  seed_candidate:
+    front_pressure: 1.0
+    rear_pressure: 1.0
+    forward_thrust: 0.50
+    reverse_thrust: 0.50
+    bottom_pressure: 0.80
+    time: 1.20
+  reward:
+    progress_per_m: 1000.0
+    minimum_progress_m: 0.010
+    shortfall_per_m: 1000.0
+    progress_cap_m: 0.030
+    overshoot_per_m: 1000.0
+    lateral_per_m: 300.0
+    vertical_per_m: 150.0
+    tilt_per_rad: 2.0
+    thrust_integral: 0.20
+    thrust_change: 0.40
+    abort: 100.0

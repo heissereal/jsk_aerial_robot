@@ -21,6 +21,7 @@ namespace Spine
     FlightControl* controller_;
 
     uint8_t slave_num_ = 0;
+    uint8_t flight_motor_num_ = 0;
     uint8_t servo_num_ = 0;
     int8_t uav_model_ = -1;
     uint8_t baselink_ = 2;
@@ -36,20 +37,24 @@ namespace Spine
     // exhausted bag.  Two seconds falsely latched the disconnected-sensor
     // protection during normal 0 -> 10 kPa identification steps.
     constexpr uint32_t ARM_PRESSURE_SUPPLY_SENSOR_TIMEOUT_MS = 10000;
-    constexpr uint32_t ARM_PRESSURE_COMMAND_TIMEOUT_MS = 200;
     constexpr uint8_t ARM_PRESSURE_PUMP_PWM_PORT_1 = 4;
     constexpr uint8_t ARM_PRESSURE_PUMP_PWM_PORT_2 = 6;
+    constexpr uint8_t BOTTOM_PRESSURE_SLAVE_ID = 5;
     uint8_t arm_pressure_slave_ids_[ARM_PRESSURE_COUNT] = {1, 2, 3, 4};
     float arm_pressures_[ARM_PRESSURE_COUNT] = {NAN, NAN, NAN, NAN};
     float arm_pressure_supply_duties_[ARM_PRESSURE_COUNT] = {};
     float arm_pressure_exhaust_duties_[ARM_PRESSURE_COUNT] = {};
+    float bottom_pressure_supply_duty_ = 0.0f;
+    float bottom_pressure_exhaust_duty_ = 0.0f;
     uint32_t arm_pressure_low_supply_start_ms_[ARM_PRESSURE_COUNT] = {};
     bool arm_pressure_supply_sensor_fault_[ARM_PRESSURE_COUNT] = {};
     uint32_t arm_pressure_value_fault_start_ms_[ARM_PRESSURE_COUNT] = {};
     float arm_pressure_pump_duty_ = 0.0f;
+    // Pneumatic outputs intentionally latch like the Neuron joint valves.
+    // They change only on the next valid command, an explicit disable, or a
+    // sensor/command validation fault; there is no communication-age timeout.
     bool arm_pressure_command_enabled_ = false;
     bool arm_pressure_command_received_ = false;
-    uint32_t arm_pressure_last_command_ms_ = 0;
     uint32_t arm_pressure_last_update_ms_ = 0;
 
     Neuron* findNeuron(uint8_t slave_id)
@@ -72,14 +77,6 @@ namespace Spine
       arm_pressure_last_update_ms_ = now;
       if (!arm_pressure_command_received_ || !arm_pressure_command_enabled_)
         return;
-      if (now - arm_pressure_last_command_ms_ > ARM_PRESSURE_COMMAND_TIMEOUT_MS)
-        {
-          setArmPressurePumpDuty(0.0f);
-          arm_pressure_command_enabled_ = false;
-          arm_pressure_command_received_ = false;
-          return;
-        }
-
       bool all_sensors_fresh = true;
       bool pressure_fault = false;
       for (uint8_t arm = 0; arm < ARM_PRESSURE_COUNT; ++arm)
@@ -149,6 +146,9 @@ namespace Spine
           neuron->can_motor_.setValvePwm(1, static_cast<uint16_t>(arm_pressure_exhaust_duties_[arm] * 1000.0f));
           any_healthy_supply = any_healthy_supply || supply_duty > 0.0f;
         }
+      setNeuronValvePwm(BOTTOM_PRESSURE_SLAVE_ID, 0, bottom_pressure_supply_duty_);
+      setNeuronValvePwm(BOTTOM_PRESSURE_SLAVE_ID, 1, bottom_pressure_exhaust_duty_);
+      any_healthy_supply = any_healthy_supply || bottom_pressure_supply_duty_ > 0.0f;
       setArmPressurePumpDuty(any_healthy_supply ? arm_pressure_pump_duty_ : 0.0f);
     }
 
@@ -286,6 +286,10 @@ namespace Spine
 
     slave_num_ = neuron_.size();
     if(slave_num_ == 0) return false;
+    flight_motor_num_ = 0;
+    for (auto& neuron : neuron_)
+      if (neuron.getSlaveId() != BOTTOM_PRESSURE_SLAVE_ID)
+        ++flight_motor_num_;
 
     //add CAN devices to CANDeviceManager
     for (unsigned int i = 0; i < neuron_.size(); i++) {
@@ -331,18 +335,18 @@ namespace Spine
       {
         uav_model_ = spinal::UavInfo::HYDRUS;
       }
-    if(gimbal_servo_num  == slave_num_)
+    if(gimbal_servo_num  == flight_motor_num_)
       {
         uav_model_ = spinal::UavInfo::HYDRUS_XI;
       }
-    if(gimbal_servo_num  == 2 * slave_num_)
+    if(gimbal_servo_num  == 2 * flight_motor_num_)
       {
         uav_model_ = spinal::UavInfo::DRAGON;
       }
 
     /* update controller */
     controller_->setUavModel(uav_model_);
-    controller_->setMotorNumber(slave_num_);
+    controller_->setMotorNumber(flight_motor_num_);
 
     servo_state_msg_.servos_length = servo_with_send_flag_.size();
     servo_state_msg_.servos = new spinal::ServoState[servo_with_send_flag_.size()];
@@ -408,10 +412,16 @@ namespace Spine
     if (slave_num_ == 0) return;
 
     /* update the motor PWM command */
-    for(int i = 0; i < slave_num_; i++) {
-      float pwm_rate = controller_->getTargetPwm(i);
+    uint8_t motor_index = 0;
+    for (auto& neuron : neuron_) {
+      if (neuron.getSlaveId() == BOTTOM_PRESSURE_SLAVE_ID)
+        {
+          neuron.can_motor_.setPwm(0);
+          continue;
+        }
+      float pwm_rate = controller_->getTargetPwm(motor_index++);
       uint16_t pwm_bit = pwm_rate * 2000 - 1000;
-      neuron_.at(i).can_motor_.setPwm(pwm_bit);
+      neuron.can_motor_.setPwm(pwm_bit);
     }
 
     /* uodate IMU */
@@ -582,21 +592,28 @@ namespace Spine
       valid = valid && std::isfinite(command.supply_pwm[arm]) && command.supply_pwm[arm] >= 0.0f && command.supply_pwm[arm] <= 1.0f &&
               std::isfinite(command.exhaust_pwm[arm]) && command.exhaust_pwm[arm] >= 0.0f && command.exhaust_pwm[arm] <= 1.0f &&
               !(command.supply_pwm[arm] > 0.0f && command.exhaust_pwm[arm] > 0.0f);
+    valid = valid &&
+            std::isfinite(command.bottom_supply_pwm) && command.bottom_supply_pwm >= 0.0f && command.bottom_supply_pwm <= 1.0f &&
+            std::isfinite(command.bottom_exhaust_pwm) && command.bottom_exhaust_pwm >= 0.0f && command.bottom_exhaust_pwm <= 1.0f &&
+            !(command.bottom_supply_pwm > 0.0f && command.bottom_exhaust_pwm > 0.0f);
     if (!valid)
       {
         arm_pressure_command_enabled_ = false;
         setArmPressurePumpDuty(0.0f);
+        setNeuronValvePwm(BOTTOM_PRESSURE_SLAVE_ID, 0, 0.0f);
+        setNeuronValvePwm(BOTTOM_PRESSURE_SLAVE_ID, 1, 0.0f);
         return;
       }
     arm_pressure_command_enabled_ = command.enable;
     arm_pressure_command_received_ = true;
-    arm_pressure_last_command_ms_ = HAL_GetTick();
     arm_pressure_pump_duty_ = command.enable ? command.pump_pwm : 0.0f;
     for (uint8_t arm = 0; arm < ARM_PRESSURE_COUNT; ++arm)
       {
         arm_pressure_supply_duties_[arm] = command.enable ? command.supply_pwm[arm] : 0.0f;
         arm_pressure_exhaust_duties_[arm] = command.enable ? command.exhaust_pwm[arm] : 0.0f;
       }
+    bottom_pressure_supply_duty_ = command.enable ? command.bottom_supply_pwm : 0.0f;
+    bottom_pressure_exhaust_duty_ = command.enable ? command.bottom_exhaust_pwm : 0.0f;
     if (!command.enable && pneumatic_was_enabled)
       {
         setArmPressurePumpDuty(0.0f);

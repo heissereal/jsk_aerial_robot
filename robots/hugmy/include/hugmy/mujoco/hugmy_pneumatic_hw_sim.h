@@ -138,6 +138,7 @@ private:
   double imu_gyro_noise_rads_ = 0.0002;
   bool spawn_human_ = false;
   double human_arm_center_z_ = 0.05;
+  double initial_height_offset_m_ = 0.0;
   double human_arm_half_length_m_ = 0.25;
   double human_arm_radius_m_ = 0.05;
   double human_arm_roll_rad_ = 0.0;

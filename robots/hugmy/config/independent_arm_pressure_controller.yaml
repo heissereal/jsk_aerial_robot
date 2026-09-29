@@ -23,9 +23,10 @@ pressurize_stop_error_kpa: 0.0
 maximum_target_kpa: 55.0
 pressure_limit_kpa: 60.0
 
-# Bottom inflatable uses the Spinal ADC and direct Spinal PWM ports:
-# Spinal PWM 5 for supply and Spinal PWM 7 for exhaust.  The shared pumps use
-# PWM 4 and PWM 6, so these outputs are independent.
+# The bottom inflatable pressure transducer uses the flight-controller ADC and
+# arrives from Spinal as pressure/bottom (spinal/Pressure).  Its valves use
+# Neuron ID 5: CH1 for supply and CH2 for exhaust.
+# The shared pumps remain on the existing Spinal PWM outputs.
 # It shares the gains above until its own response is identified.
 bottom_maximum_target_kpa: 55.0
 # Defaults match the Neuron pressure-transducer conversion in Spinal.  These

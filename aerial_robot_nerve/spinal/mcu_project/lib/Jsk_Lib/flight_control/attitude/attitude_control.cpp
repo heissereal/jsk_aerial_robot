@@ -152,6 +152,7 @@ void AttitudeController::baseInit()
   force_landing_thrust_ = 0;
   pwm_pub_last_time_ = 0;
   pwm_test_flag_ = false;
+  pwm_test_last_command_ms_ = 0;
 
   // voltage
   motor_info_.resize(0);
@@ -824,6 +825,26 @@ void AttitudeController::pwmTestCallback(const spinal::PwmTest& pwm_msg)
           nh_->logerror("The number of index does not match the number of pwms.");
           return;
         }
+      bool controls_flight_motor = false;
+      for(int i = 0; i < pwm_msg.motor_index_length; ++i)
+        {
+          if(pwm_msg.motor_index[i] < 4)
+            {
+              controls_flight_motor = true;
+              break;
+            }
+        }
+      // Individual rotor commands must remain active between ROS callbacks.
+      // Otherwise pwmConversion() immediately replaces target_pwm_ with the
+      // disarmed safe-stop value.  Auxiliary PWM-only commands (indices >= 4)
+      // must not place the flight motors in test mode.
+      if(controls_flight_motor && !pwm_test_flag_)
+        {
+          pwm_test_flag_ = true;
+          nh_->logwarn("Enter individual pwm test mode");
+        }
+      if(controls_flight_motor)
+        pwm_test_last_command_ms_ = HAL_GetTick();
       for(int i = 0; i < pwm_msg.motor_index_length; i++){
         int motor_index = pwm_msg.motor_index[i];
         /*fail safe*/
@@ -858,6 +879,7 @@ void AttitudeController::pwmTestCallback(const spinal::PwmTest& pwm_msg)
             pwm_test_flag_ = true;
             nh_->logwarn("Enter pwm test mode");
           }
+          pwm_test_last_command_ms_ = HAL_GetTick();
           /*Simultaneous test mode*/
           for(int i = 0; i < MAX_MOTOR_NUMBER; i++){
             /*fail safe*/
@@ -1182,6 +1204,19 @@ void AttitudeController::pwmConversion()
 
   if(pwm_test_flag_) /* motor pwm test */
     {
+#ifndef SIMULATION
+      if(HAL_GetTick() - pwm_test_last_command_ms_ > PWM_TEST_COMMAND_TIMEOUT)
+        {
+          pwm_test_flag_ = false;
+          for(int i = 0; i < 4; ++i)
+            {
+              target_pwm_[i] = neutral_duty_;
+              pwm_test_value_[i] = neutral_duty_;
+            }
+          nh_->logerror("PWM test command timed out; motors neutralized");
+          return;
+        }
+#endif
       for(int i = 0; i < MAX_MOTOR_NUMBER; i++)
         {
           target_pwm_[i] = pwm_test_value_[i];

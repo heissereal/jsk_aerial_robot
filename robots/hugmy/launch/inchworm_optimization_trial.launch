@@ -18,9 +18,15 @@
   <arg name="transfer_pressure_kpa" default="20.0" />
   <arg name="rear_unload_kpa" default="8.0" />
   <arg name="pull_pressure_kpa" default="5.0" />
+  <arg name="front_pull_pressure_kpa" default="30.0" />
   <arg name="reach_max_thrust_n" default="6.0" />
-  <arg name="rear_lift_thrust_n" default="3.0" />
+  <arg name="rear_reverse_thrust_n" default="0.0" />
   <arg name="reach_duration_sec" default="10.0" />
+  <arg name="place_bend_target_rad" default="1.5707963" />
+  <arg name="place_thrust_down_rate_n_s" default="1.5" />
+  <arg name="rear_thrust_down_rate_n_s" default="2.0" />
+  <arg name="action_a_bottom_low_kpa" default="0.0" />
+  <arg name="action_a_bottom_high_kpa" default="30.0" />
   <arg name="reach_straightening_rad" default="0.0872665" />
   <arg name="stroke_distance_m" default="0.002" />
 
@@ -52,7 +58,7 @@
 
   <include file="$(find hugmy)/launch/attitude_pressure_controller.launch">
     <arg name="robot_ns" value="$(arg robot_ns)" />
-    <arg name="bottom_control_enabled" value="false" />
+    <arg name="bottom_control_enabled" value="true" />
     <arg name="use_mocap_attitude_for_inchworm" value="true" />
     <arg name="inchworm_action_b" value="false" />
     <arg name="inchworm_action_c" value="false" />
@@ -62,9 +68,21 @@
     <arg name="inchworm_transfer_pressure_kpa" value="$(arg transfer_pressure_kpa)" />
     <arg name="inchworm_rear_unload_kpa" value="$(arg rear_unload_kpa)" />
     <arg name="inchworm_pull_pressure_kpa" value="$(arg pull_pressure_kpa)" />
+    <arg name="inchworm_front_pull_pressure_kpa"
+         value="$(arg front_pull_pressure_kpa)" />
     <arg name="inchworm_reach_max_thrust_n" value="$(arg reach_max_thrust_n)" />
-    <arg name="inchworm_rear_lift_thrust_n" value="$(arg rear_lift_thrust_n)" />
+    <arg name="inchworm_rear_reverse_thrust_n"
+         value="$(arg rear_reverse_thrust_n)" />
     <arg name="inchworm_reach_duration_sec" value="$(arg reach_duration_sec)" />
+    <arg name="action_a_place_bend_target_rad" value="$(arg place_bend_target_rad)" />
+    <arg name="action_a_place_thrust_down_rate_n_s"
+         value="$(arg place_thrust_down_rate_n_s)" />
+    <arg name="action_a_rear_thrust_down_rate_n_s"
+         value="$(arg rear_thrust_down_rate_n_s)" />
+    <arg name="action_a_bottom_low_kpa"
+         value="$(arg action_a_bottom_low_kpa)" />
+    <arg name="action_a_bottom_high_kpa"
+         value="$(arg action_a_bottom_high_kpa)" />
     <arg name="inchworm_target_straightening_angle_rad"
          value="$(arg reach_straightening_rad)" />
     <arg name="inchworm_stroke_distance_m" value="$(arg stroke_distance_m)" />

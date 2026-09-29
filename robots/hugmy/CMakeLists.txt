@@ -135,7 +135,7 @@ add_custom_command(
   WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 add_custom_target(generate_hugmy_mujoco_model ALL DEPENDS ${HUGMY_MUJOCO_MODEL})
 
-install(DIRECTORY config launch plugins mujoco
+install(DIRECTORY config doc launch plugins mujoco
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
   USE_SOURCE_PERMISSIONS
   )
@@ -159,12 +159,16 @@ target_link_libraries(joy_arm_pressure_command_node ${catkin_LIBRARIES})
 catkin_install_python(PROGRAMS
   script/analyze_hugmy_sac.py
   script/arm_bend_identification.py
+  script/export_hugmy_stride.py
   script/finalize_mujoco_model.py
   script/hugmy_gym_env.py
   script/train_hugmy_sac.py
   script/evaluate_hugmy_sac.py
+  script/optimize_hugmy_real_stride.py
   script/optimize_inchworm_gait.py
   script/optimize_rocking_gait.py
+  script/replay_hugmy_stride_mujoco.py
+  script/run_hugmy_real_stride.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
 add_library(hugmy_attitude_pressure_controller src/control/attitude_pressure_controller.cpp)

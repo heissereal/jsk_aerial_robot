@@ -49,7 +49,11 @@ public:
 
     FlashMemory::addValue(&adc_scale_, sizeof(float));
 
-    HAL_ADC_Start(hadc_);
+    // On DShot targets battery voltage comes from ESC telemetry.  Do not
+    // start or consume the flight-controller ADC in that configuration; the
+    // ADC is used by the dedicated bottom-pressure sensor instead.
+    if (is_adc_measure_)
+      HAL_ADC_Start(hadc_);
   }
 
   void adcScaleCallback(const std_msgs::Float32& cmd_msg)

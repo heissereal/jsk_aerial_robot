@@ -85,6 +85,8 @@ bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
   pneumatic_nh.param("imu_gyro_noise", imu_gyro_noise_rads_, imu_gyro_noise_rads_);
   pneumatic_nh.param("spawn_human", spawn_human_, spawn_human_);
   pneumatic_nh.param("human_arm_center_z", human_arm_center_z_, human_arm_center_z_);
+  pneumatic_nh.param("initial_height_offset", initial_height_offset_m_,
+                     initial_height_offset_m_);
   pneumatic_nh.param("human_arm_half_length", human_arm_half_length_m_,
                      human_arm_half_length_m_);
   pneumatic_nh.param("human_arm_radius", human_arm_radius_m_,
@@ -218,7 +220,19 @@ bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
       ROS_ERROR("Hugmy MuJoCo model is missing main_body");
       return false;
     }
-  const double target_z = spawn_human_ ? human_arm_center_z_ : -100.0;
+  const int root_joint_id = mujoco_model_->body_jntadr[main_body_id_];
+  if (root_joint_id < 0 ||
+      mujoco_model_->jnt_type[root_joint_id] != mjJNT_FREE)
+    {
+      ROS_ERROR("Hugmy MuJoCo main_body must have a free joint");
+      return false;
+    }
+  const int root_qpos_address = mujoco_model_->jnt_qposadr[root_joint_id];
+  mujoco_data_->qpos[root_qpos_address + 2] += initial_height_offset_m_;
+  ROS_INFO("Hugmy MuJoCo initial height offset %.3f m: robot and cylinder moved together",
+           initial_height_offset_m_);
+  const double target_z = spawn_human_
+      ? human_arm_center_z_ + initial_height_offset_m_ : -100.0;
   mujoco_model_->body_pos[3 * grip_target_body_id_ + 0] = 0.0;
   mujoco_model_->body_pos[3 * grip_target_body_id_ + 1] = 0.0;
   mujoco_model_->body_pos[3 * grip_target_body_id_ + 2] = target_z;
@@ -1138,15 +1152,18 @@ void HugmyPneumaticHWSim::publishGripMarkers(
           static_cast<float>(grip_azimuth_rad_[arm]);
       grip_state.data[5 * ARM_COUNT + arm] =
           static_cast<float>(grip_surface_gap_m_[arm]);
-      double joint_sum = 0.0;
-      for (size_t joint = 0; joint < JOINT_COUNT; ++joint)
+      // The Neuron is mounted directly below link_<id>_rotor.  Its attitude
+      // relative to Spinal therefore contains only joints 1--3.  Joints 4--5
+      // are distal to the rotor/Neuron and must not change the reported bend.
+      double rotor_neuron_bend = 0.0;
+      for (size_t joint = 0; joint < BAG_JOINT_COUNT; ++joint)
         {
           const int qpos_address = mujoco_model_->jnt_qposadr[
               joint_ids_[arm][joint]];
-          joint_sum += mujoco_data_->qpos[qpos_address];
+          rotor_neuron_bend += mujoco_data_->qpos[qpos_address];
         }
       grip_state.data[6 * ARM_COUNT + arm] =
-          static_cast<float>(joint_sum);
+          static_cast<float>(rotor_neuron_bend);
       grip_state.data[7 * ARM_COUNT + arm] =
           static_cast<float>(normal_forces[arm]);
       grip_state.data[8 * ARM_COUNT + arm] =

@@ -37,6 +37,7 @@
   <run_depend>nav_msgs</run_depend>
   <run_depend>python3-rospkg</run_depend>
   <run_depend>python3-yaml</run_depend>
+  <run_depend>rosgraph</run_depend>
   <run_depend>tf</run_depend>
   <run_depend>gazebo_ros</run_depend>
   <run_depend>topic_tools</run_depend>

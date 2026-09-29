@@ -42,7 +42,9 @@ def load_config(path: Path) -> dict:
     if len(config["direction_xy"]) != 2:
         raise ValueError("direction_xy must contain exactly two values")
     if not config.get("required_phases"):
-        config["required_phases"] = [8, 9]
+        # Action A no longer uses the rear PULL phase (8). A complete stride
+        # must place the front contacts, restore all-arm pressure, and settle.
+        config["required_phases"] = [25, 9, 10]
     if not config["parameters"]:
         raise ValueError("at least one gait parameter is required")
     aggregation = str(config.get("reward_aggregation", "mean"))

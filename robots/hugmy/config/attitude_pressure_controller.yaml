@@ -4,6 +4,61 @@ thrust_timeout_sec: 0.20
 
 # GRASP -> PREPARE -> THRUST_CORRECTION -> RECOVER
 state_machine_enabled: true
+# Ignore pitch in recovery start/finish, motion detection and moment allocation
+# (including gravity compensation). Applies before/after Action C as well.
+# Pulse-relative tilt safety guards remain enabled; this is not a safety bypass.
+correction_roll_only: true
+# Action C only: exhaust selected arms + bottom while ramping a synchronous
+# correcting pair. No pressure-zero prerequisite or timed correction pulse.
+# A/B/D and explicit fixed-arm tests retain their original recovery path.
+action_c_continuous_recovery_enabled: true
+# Continuous C recovery ONLY: restoring moment / measured geometry + rate PI.
+# NO full-gravity FF: unknown contact reactions already support the body.
+# Overspeed always reduces commanded thrust, regardless of model FF or I.
+# Spinal Euler roll rate includes p,q,r coupling; pitch itself is NOT a target.
+# The existing 0.30 N/s parameter below caps the sole PI integrator, not an
+# additional constant ramp. Breakaway thrust is logged, never held forever.
+recovery_angle_gain_s_inv: 1.0
+recovery_target_rate_rad_s: 0.12
+recovery_rate_kp_n_s_rad: 4.0
+recovery_rate_ki_n_rad: 3.0
+recovery_model_min_lever_m: 0.015  # summed pair moment / each rotor's thrust
+recovery_model_fallback_thrust_n: 0.5 # invalid geometry: conservative FF + rate PI
+recovery_rotor_cant_rad: 0.11344640137963143  # 6.5 deg, matches URDF
+# Delay-aligned local response learning, separately for each correction pair.
+# No learning while pressure/bend change; at least 3 accepted windows to use it.
+recovery_response_delay_sec: 0.20
+recovery_response_learning_enabled: true
+recovery_response_window_sec: 0.40
+recovery_stable_pressure_kpa: 1.0
+recovery_stable_bend_rad: 0.035
+# Pressure is the slow actuator. Preserve current immediate exhaust target
+# (no measured-zero prerequisite). If set above the floor, a persistent stall
+# near the thrust cap slowly lowers it; at zero there is nothing more to vent.
+recovery_release_pressure_kpa: 0.0
+recovery_pressure_down_rate_kpa_s: 0.5
+# On progress timeout, zero thrust + grasp, retain the locomotion goal and
+# wait for +/-3 deg and <=0.05 rad/s for 1 s before resuming. No correction retry.
+# Sensor/rate faults still require a new operator command after inspection.
+action_c_recovery_no_progress_timeout_sec: 10.0
+# Renew progress when first/last quarter-window mean roll error drops by
+# correction_progress_epsilon_rad (0.5 deg), even above the initial error.
+# The independent prepare_timeout_sec (60 s) is never renewed by progress.
+recovery_progress_window_sec: 1.0
+# Five-scenario, two-knot predictive recovery. SHADOW ONLY by default:
+# candidate logging/adaptation does not alter the existing actuator commands.
+# Explicitly set shadow=false after prediction validation on a supported rig.
+recovery_predictive_enabled: true
+recovery_predictive_shadow: true
+recovery_predictive_adapt: true  # bounded local corrections, cleared each recovery
+recovery_predictive_period_sec: 0.10
+recovery_predictive_horizon_sec: 2.0
+recovery_predictive_budget_ms: 8.0 # return best fully evaluated candidate on deadline
+recovery_predictive_pressure_tau_sec: 0.6  # initial hypothesis, NOT identified
+recovery_predictive_bend_tau_sec: 0.35     # initial hypothesis, NOT identified
+recovery_predictive_moment_gain: 8.0       # local acceleration/Nm hypothesis
+recovery_predictive_thrust_step_n: 0.6     # first-move trust bound; 4 N cap unchanged
+recovery_predictive_pressure_step_kpa: 2.0
 # Initial real-machine motion test: pressurize arm 1 only, then drive motor 0
 # through pwm_test. Disable this after confirming the state sequence.
 fixed_arm_test_enabled: false
@@ -19,28 +74,66 @@ neuron_slave_ids: [1, 2, 3, 4]
 neuron_timeout_sec: 0.10
 neuron_acc_lpf_tau_sec: 0.20
 pressure_safety_limit_kpa: 60.0
-correction_trigger_angle_rad: 0.12
-correction_stop_angle_rad: 0.04
+pressure_safety_confirm_sec: 0.08  # reject isolated pressure-sensor spikes
+# Ignore short roll excursions. Shared recovery and Action C both require
+# >8 deg continuously for 0.30 s; active correction stops inside 5 deg.
+# Gyro and pulse-relative tilt safety stops do NOT wait for this timer.
+correction_trigger_angle_rad: 0.13962634015954636  # 8 deg
+correction_stop_angle_rad: 0.08726646259971647     # 5 deg
+correction_trigger_confirm_sec: 0.30
 correction_max_angular_rate_rad_s: 0.8
 correction_thrust_duration_sec: 0.20
 correction_planning_thrust_n: 2.0
 # A lower command is too close to ESC idle to start the real rotor reliably.
 correction_min_thrust_n: 2.0
-# Spinal independently enforces the same 3 N ceiling and a 300 ms pulse limit.
-correction_max_thrust_n: 3.0
-# 2 N is used to start a stationary rotor. Once Spinal detects correction-
-# direction body rotation, thrust may be reduced to this running value.
-correction_hold_min_thrust_n: 0.8
+# Per-rotor recovery ceiling (separate from the 5 N locomotion pulse ceiling).
+# The pwm_test path is streamed; do not assume a firmware pulse timer here.
+correction_max_thrust_n: 4.0
+# Once Spinal confirms whole-body correction, captured breakaway thrust is
+# held outside the slowdown band. Near the target it may taper almost to idle.
+correction_hold_min_thrust_n: 0.3
+# Do not interpret pressure-release motion, residual Action-C motion, or IMU
+# noise as a rotor-driven correction stroke before useful thrust is present.
+correction_motion_detection_min_thrust_n: 0.5
 correction_motion_start_rate_rad_s: 0.05
+# Reject a brief attitude twitch caused by arm extension. The Spinal gyro
+# must remain in the correction direction and roll error must actually fall
+# by at least 1 deg over this confirmation window.
+correction_motion_confirm_sec: 0.15
+correction_motion_min_error_reduction_rad: 0.0174533  # 1 deg
+# This threshold now detects a temporary pause only. Once breakaway is
+# detected, the captured thrust remains latched instead of starting a new
+# search; it is tapered by attitude error inside the slowdown band below.
 correction_motion_stop_rate_rad_s: 0.02
 correction_motion_stop_timeout_sec: 0.30
-# Begin reducing thrust before entering the final 0.04 rad stop band.
-correction_slowdown_angle_rad: 0.10
-correction_thrust_down_rate_n_s: 1.5
+# Begin reducing thrust at 10 deg. Predict roll 0.20 s ahead from the Spinal
+# gyro so rotor/body inertia is removed before crossing the target. The high
+# down-rate permits a prompt cut at the 5-deg stop band; the angle schedule,
+# rather than this rate limit, keeps the approach gradual.
+correction_slowdown_angle_rad: 0.1745329  # 10 deg
+correction_prediction_horizon_sec: 0.20
+# Continuous C adds current thrust / down-rate to this prediction so braking
+# accounts for command rundown; legacy recovery uses the fixed horizon.
+# After confirmed motion, consider the correction stalled when roll improves
+# by less than 0.5 deg for 0.5 s and the Spinal roll rate is nearly zero.
+# Raise the captured hold thrust gently, never beyond the 4-N recovery limit.
+# Continuous C: this is the rate PI integral's maximum change (N/s).
+# Accumulate from signed rate error, including before breakaway, with amplitude
+# and slew anti-windup. No extra stall ramp is added. Prediction retains I;
+# actual finish/fault/reset clears it. Speed braking always overrides I.
+# The 0.5-s stall gate below remains diagnostic for C / active for legacy.
+# Legacy recovery aborts after 5 s; continuous C uses the timeout above.
+correction_progress_epsilon_rad: 0.00872665  # 0.5 deg
+correction_stall_timeout_sec: 0.50
+correction_stall_thrust_ramp_n_s: 0.30
+correction_stall_abort_timeout_sec: 5.0
+correction_thrust_down_rate_n_s: 6.0
 # With a 5 kPa/s target slew, traversing the full measured range from the
 # 10 kPa grasp pressure takes up to 8 s, before the stability dwell begins.
-# 30 -> 0 kPa at 10 kPa/s requires about 3 s before pressure settling.
-prepare_timeout_sec: 30.0
+# Arm 2 currently exhausts much more slowly than the other chambers. Keep the
+# paired posture-correction gate synchronous, but allow up to 60 s for both
+# selected chambers to reach their target before abandoning the correction.
+prepare_timeout_sec: 60.0
 prepare_stable_duration_sec: 0.30
 # The straightening target grows with required moment. It is also increased as
 # needed to bring a rotor below the 80 deg tilt boundary. Maximum change is the
@@ -93,7 +186,8 @@ pitch_moment_kp_nm_per_rad: 0.10
 roll_moment_kd_nm_per_rad_s: 0.015
 pitch_moment_kd_nm_per_rad_s: 0.015
 
-# Gravity moment about the contact point: (CoM - contact) x m*g.
+# Legacy/other allocator only: (CoM - contact) x m*g.
+# Continuous Action-C recovery intentionally ignores this flag/term.
 gravity_compensation: true
 mass_kg: 1.244
 center_of_mass_main_body_m: [-0.00348932, 0.00065510, 0.01200916]
@@ -135,11 +229,19 @@ neuron_z_offset_from_rotor_m: -0.05
 # ~inchworm_command: vector.x/y is the travel direction in main_body and
 # vector.z is the total requested mocap displacement [m]. The controller
 # repeats short regripping strokes until that total is reached.
+# Action C accepts longitudinal [+1, 0] and [-1, 0]. It uses arms 0/3 for +x
+# and arms 1/2 for -x, and evaluates progress with signed raw mocap x.
 inchworm_front_release_kpa: 5.0
 inchworm_swing_pressure_kpa: 0.0
 inchworm_transfer_pressure_kpa: 20.0
 inchworm_rear_unload_kpa: 8.0
+# During PULL the rear pair is reduced to this absolute pressure so it can
+# slide while the front pair remains anchored.
 inchworm_pull_pressure_kpa: 5.0
+# Front pressure is applied to both new contacts while their extension-hold
+# thrust is removed together. Keep this at the normal human-contact grasp
+# pressure initially.
+inchworm_front_pull_pressure_kpa: 30.0
 inchworm_reach_thrust_n: 2.0
 inchworm_reach_max_thrust_n: 6.0
 inchworm_reach_angle_kp_n_rad: 45.0
@@ -148,6 +250,8 @@ inchworm_reach_pressure_ramp_kpa_s: 5.0
 inchworm_min_usable_reach_angle_rad: 0.0349066  # 2 deg
 inchworm_rear_lift_thrust_n: 3.0
 inchworm_rear_lift_max_thrust_n: 7.0
+# Disabled after the physical test showed that this phase moved backwards.
+inchworm_rear_reverse_thrust_n: 0.0
 inchworm_thrust_ramp_n_s: 1.0
 inchworm_default_distance_m: 0.002
 inchworm_stroke_distance_m: 0.002
@@ -157,18 +261,82 @@ inchworm_reach_angle_rad: 0.0872665  # 5 deg, or the duration limit below
 # Treat the swing arm as sufficiently extended once its bend is at most 20 deg
 # from straight. This is an absolute bend threshold, not a change from GRASP.
 inchworm_target_bend_angle_rad: 0.3490659  # 20 deg
-# Require a visible body response as well: roll/pitch must change by at least
-# 5 deg from the beginning of FRONT_REACH before the arm is anchored.
-inchworm_body_tilt_target_rad: 0.0872665  # 5 deg
 # Ignore isolated gyro/vibration spikes; only a sustained limit violation is
 # treated as an unsafe body rotation during FRONT_REACH.
 inchworm_angular_rate_fault_delay_sec: 0.20
-inchworm_mocap_timeout_sec: 0.20
+# OptiTrack occasionally has 0.20--0.23 s gaps on the real machine.  Accept
+# those short gaps while retaining a timeout below the estimator's long-loss
+# safety path.
+inchworm_mocap_timeout_sec: 0.50
 # Leave false on the real machine. The optimization launch enables it because
 # the MuJoCo attitude estimator intentionally freezes IMU attitude on contact.
+# Keep posture recovery in the Spinal body roll/pitch convention. Mocap is
+# still used for locomotion displacement, but not for correction-pair signs.
 use_mocap_attitude_for_inchworm: false
-inchworm_release_timeout_sec: 10.0
+# Arm 3 exhaust is slower on the current pneumatic hardware. FRONT_RELEASE
+# keeps all rotor thrust at zero, so allow the measured pressure more time to
+# settle before declaring a fault.
+inchworm_release_timeout_sec: 30.0
 inchworm_reach_duration_sec: 10.0
+# After reaching the near-straight angle, raise the arm pressure and lower its
+# thrust immediately. Anchor after the arm bends back to the placement angle
+# or MuJoCo reports a sufficiently small gap.
+action_a_place_bend_target_rad: 1.5707963  # 90 deg
+action_a_place_hold_sec: 0.0
+action_a_place_thrust_down_rate_n_s: 1.5
+# Stop the 4 N rear pull in about two seconds while rear pressure is restored
+# and the bottom support is exhausted.
+action_a_rear_thrust_down_rate_n_s: 2.0
+action_a_place_timeout_sec: 15.0
+# MuJoCo's pneumatic grip is effective inside 35 mm. Start pressurizing a
+# little inside that boundary instead of overshooting the closest approach.
+action_a_place_contact_gap_m: 0.030
+action_a_place_min_bend_change_rad: 0.0872665  # 5 deg
+# Body-tilt feedback for front-arm extension. Between 5 and 12 deg the
+# permitted thrust falls linearly to zero. The ceiling never rises again in
+# the same swing, avoiding reapplication of static-friction-level thrust after
+# the body starts sliding. A 150 ms prediction reacts to increasing tilt.
+action_a_tilt_soft_limit_rad: 0.0872665       # 5 deg
+action_a_tilt_hard_limit_rad: 0.2094395       # 12 deg
+action_a_tilt_prediction_horizon_sec: 0.15
+action_a_tilt_thrust_down_rate_n_s: 3.0
+# If tilt feedback has already reduced the safe thrust ceiling, accept a
+# swing that reached at least 45 deg bend even when the ideal 20-deg target is
+# unreachable. a2 reached 38 deg and +12 mm mocap x before timing out.
+action_a_tilt_limited_bend_target_rad: 0.7853982  # 45 deg
+# Yaw-assisted single-arm placement. For +x travel, arm 0 uses negative
+# thrust on rotors 1+3 to turn -yaw, and arm 3 uses rotors 0+2 to turn +yaw.
+# With a 70--100 mm lateral contact offset, 10 deg adds about 12--17 mm in +x.
+# The yaw seen in the 2026-09-25 trial was applied manually, so that bag does
+# not identify the rotor-to-yaw sign. Keep this legacy reverse-thrust assist
+# disabled; the arm0+arm2 diagonal extension below is used instead.
+action_a_yaw_assist_enabled: false
+action_a_yaw_target_rad: 0.1745329             # 10 deg relative per swing
+action_a_yaw_tolerance_rad: 0.0174533          # 1 deg
+action_a_yaw_max_reverse_thrust_n: 0.6         # per assisting rotor
+action_a_yaw_thrust_ramp_n_s: 0.3
+action_a_yaw_thrust_down_rate_n_s: 1.5
+action_a_yaw_kp_n_rad: 3.5
+action_a_yaw_max_rate_rad_s: 0.3490659         # 20 deg/s
+action_a_yaw_wrong_way_limit_rad: 0.0523599    # stop if 3 deg opposite
+# Arm0 placement uses the opposite arm2 as a lightly driven diagonal helper.
+# Both chambers are released together, but arm2 receives only a small positive
+# extension thrust. This frees the body to yaw without the former large
+# reverse-thrust pair. When arm0 starts to bend back, arm2 returns to the
+# normal 30 kPa grasp and arm0 rises to 40 kPa to pull from its new contact.
+action_a_diagonal_assist_enabled: true
+action_a_diagonal_assist_thrust_n: 2.0  # measured minimum useful rotor thrust
+action_a_diagonal_assist_thrust_ramp_n_s: 0.3
+action_a_diagonal_assist_thrust_down_rate_n_s: 1.5
+action_a_arm0_rebend_pressure_kpa: 40.0
+# Bottom support is synchronized with each individual front-arm swing:
+# inflate while thrust extends the arm, then exhaust as thrust is lowered and
+# arm pressure rises for placement. It is inflated again during rear reverse
+# thrust and exhausted when that thrust is lowered. The single central bladder
+# stays within the requested 30 kPa.
+action_a_bottom_enabled: true
+action_a_bottom_low_kpa: 0.0
+action_a_bottom_high_kpa: 30.0
 inchworm_anchor_timeout_sec: 8.0
 inchworm_pull_timeout_sec: 5.0
 inchworm_settle_duration_sec: 0.5
@@ -189,6 +357,61 @@ inchworm_action_b_enabled: false
 # Action C: model-inverted 90-deg horizontal pull pulses. Action C takes
 # priority over Action B when both switches are true.
 inchworm_action_c_enabled: false
+
+# Action D: pressure feedback acts only outside the 75--105 deg hold band.
+# Bend angle is zero when straight and increases with flexion. A front arm
+# starting above 120 deg is depressurized toward the 75--105 deg band without
+# blocking the gait. Rapid extension means a decreasing angle; feedback stays
+# active down to 60 deg and returns to GRASP only after crossing that edge.
+# Once mocap detects forward motion, the current front/rear thrusts are held.
+inchworm_action_d_enabled: false
+action_d_target_angle_rad: 1.5707963       # 90 deg nominal
+action_d_soft_min_angle_rad: 1.3089969      # 75 deg: pressure FB lower edge
+action_d_soft_max_angle_rad: 1.8325957      # 105 deg: pressure FB upper edge
+action_d_hard_min_angle_rad: 1.0471976     # 60 deg: straight/extension-side hard limit
+action_d_hard_max_angle_rad: 2.0943951     # 120 deg: nominal flexion edge; initial excess is allowed
+action_d_max_angle_rate_rad_s: 0.7853982   # 45 deg/s decreasing bend: abrupt extension
+action_d_immediate_angle_rate_rad_s: 2.0943951 # 120 deg/s: stop immediately
+action_d_angle_rate_confirm_sec: 0.10      # 45 deg/s must persist; reject one-sample IMU spikes
+action_d_rear_extension_margin_rad: 0.1745329 # rear stop edge = RAMP-start bend - 10 deg
+action_d_rear_rate_filter_alpha: 0.25      # low-pass rear Neuron bend-rate spikes
+action_d_prediction_horizon_sec: 0.20
+action_d_pressure_kp_kpa_rad: 20.0
+action_d_pressure_rate_kpa_s: 10.0          # pressure must lead the slow thrust ramp
+action_d_max_pressure_kpa: 50.0             # model covers 8 N up to 50 kPa
+action_d_front_pressure_per_thrust_kpa_n: 2.5
+action_d_front_pressure_lead_n: 2.0         # preload for thrust arriving 4 s later
+action_d_rear_pressure_drop_per_thrust_kpa_n: 0.0
+action_d_rear_min_pressure_kpa: 0.0          # safety floor; rear grasp pressure is retained
+action_d_bottom_pressure_kpa: 30.0
+# Pulsed static-friction search. Each pulse rises smoothly at 2 N/s, remains
+# ON for 0.6 s, then falls rapidly so retained chamber pressure can bend the
+# front arms during the 1.0-s OFF interval. Amplitude advances 1--6 N only
+# after a complete ON/OFF cycle fails to move the body.
+action_d_front_thrust_ramp_n_s: 2.0
+action_d_rear_thrust_ramp_n_s: 1.0           # reaches half-front target at the same time
+action_d_thrust_step_n: 1.0
+action_d_pulse_on_sec: 0.6
+action_d_pulse_off_sec: 1.0
+action_d_thrust_down_rate_n_s: 20.0
+action_d_max_front_thrust_n: 6.0
+action_d_max_rear_thrust_n: 1.5            # initial safety cap: -0.25 N rear per +1 N front
+action_d_motion_min_front_thrust_n: 0.5 # ignore mocap settling before thrust acts
+action_d_motion_min_travel_m: 0.002     # require 2 mm forward displacement
+action_d_motion_confirm_sec: 0.20       # and sustained forward speed
+action_d_prepare_tolerance_rad: 0.0523599  # 3 deg
+action_d_prepare_stable_sec: 0.50
+action_d_prepare_timeout_sec: 30.0
+action_d_ramp_timeout_sec: 30.0
+# RAMP posture protection is referenced to the attitude after PREPARE. Start
+# reducing thrust at 12 deg, resume below 8 deg, and enter controlled REGRIP
+# at 20 deg or on a real angular-rate spike. In d_11, normal RAMP rate had a
+# 0.10 rad/s 95th percentile and posture collapse reached 2.32 rad/s.
+action_d_tilt_soft_limit_rad: 0.2094395    # 12 deg
+action_d_tilt_resume_rad: 0.1396263        # 8 deg
+action_d_max_tilt_rad: 0.3490659           # 20 deg
+action_d_max_body_rate_rad_s: 0.8
+action_d_posture_thrust_down_rate_n_s: 1.0
 
 # Whole-body rocking locomotion, independent of Action A/B/C:
 # four-arm grip -> bottom rearward-preload inflation -> pressure-made front
@@ -226,17 +449,84 @@ rocking_front_extend_hold_sec: 0.05
 rocking_front_lower_rate_n_s: 1.5
 rocking_land_settle_sec: 0.4
 rocking_max_tilt_rad: 0.5235988                # 30 deg
-action_c_min_thrust_n: 5.0
-action_c_max_thrust_n: 8.0
+action_c_min_thrust_n: 3.0
+# Normal optimizer gait (2026-09-28 pressure correction): release front to 0,
+# not the static 90-degree pressure table. Noisy pressure-sign identification
+# stays OFF. Rear exhaust is verified before ON and held during powered flexion.
+# The objective still selects [pulse thrust, bottom pressure, burst count].
+# Timed reference search remains opt-in; pressure-driven pull is enabled below.
+action_c_reference_pulse_mode: false
+action_c_reference_single_pulse: false
+action_c_pulse_search_enabled: false
+action_c_pulse_search_step_n: 0.5
+action_c_pulse_search_progress_m: 0.002  # hold amplitude once retained advance >=2 mm/pulse
+action_c_reference_thrust_n: 3.0  # initial per-front-rotor amplitude
+action_c_reference_off_sec: 1.0
+action_c_pressure_pull_enabled: true  # normal C too; does NOT enable reference/timed search
+# Owns pressure timing/pull calibration at trial boundaries; the existing
+# bounded live left/right assist remains active. Thrust caps are unchanged.
+action_c_propulsion_enabled: true
+# After extension, use pressure to flex while retaining limited positive thrust.
+# Per front rotor: 35% of the pulse target, at most 1.5 N; never above actual ON output.
+action_c_pressure_pull_ratio: 0.35
+action_c_pressure_pull_max_n: 1.5
+action_c_pressure_pull_timeout_sec: 5.0  # wait for both pressure-driven bends, then stop on failure
+action_c_powered_regrip_timeout_sec: 3.0 # retain residual until rear pressure is ready for 0.15 s
+action_c_flexion_lookahead_sec: 0.08     # per-arm soft transition BEFORE unchanged hard guards
+action_c_rear_release_max_kpa: 8.0      # measured rear pressure, not just command=0
+action_c_rear_release_hold_kpa: 10.0    # after acquisition, retain release through ripple
+action_c_rear_release_hard_kpa: 12.0    # above this stops immediately (no grace)
+action_c_rear_release_grace_sec: 0.10   # bounded excursion above hold, NOT sensor-fault grace
+action_c_rear_release_timeout_sec: 3.0
+action_c_abort_reverse_travel_m: 0.03   # large retreat remains a hard stop
+# In timed mode, individual/pressure adaptation below are overridden off;
+# pulse_search_enabled controls amplitude search, independently of the waveform.
+# PULL uses a
+# short relative-gyro integral anchored by a settled acceleration bend. No
+# in-pulse acceleration correction, angle trim or roll differential is applied.
+# Both front commands are equal; posture recovery remains a separate process.
+# Existing bend/rate/tilt/reverse-travel guards remain active. Invalid gyro
+# integration stops the pulse. Verify mounting/sign before enabling angle FB.
+action_c_max_thrust_n: 5.0  # per rotor, including feedback; unsafe trials may lower it
 action_c_thrust_step_n: 0.5
 action_c_target_angle_rad: 1.5707963267948966  # 90 deg
 action_c_angle_tolerance_rad: 0.2617993877991494  # +/-15 deg
 action_c_pressure_gain_kpa_rad: 8.0
-action_c_rear_pressure_kpa: 10.0
-action_c_pulse_duration_sec: 0.50
-# During the ON interval, use the front Neuron IMUs to keep the pair near
-# 90 deg. Pressure changes are rate-limited to avoid chasing IMU noise and
-# pneumatic delay. The correction learned here is reused by the next pulse.
+action_c_pulse_duration_sec: 0.60       # baseline maximum ON incl. rise; angle/guard may end earlier
+action_c_thrust_ramp_n_s: 8.0           # do not apply the pulse as a step
+action_c_thrust_down_rate_n_s: 30.0     # cut promptly when extension is detected
+action_c_extension_target_rad: 0.13962634015954636  # both front arms extend 8 deg
+action_c_max_extension_rad: 0.3490658503988659      # cut if either extends 20 deg
+action_c_max_extension_mismatch_rad: 0.2617993877991494  # cut at 15 deg, only after one arm really extends by 8 deg
+action_c_prepare_min_bend_rad: 0.6981317007977318  # PREPARE/ON: >=40 deg with excursion headroom
+action_c_hard_min_bend_rad: 0.5235987755982988     # absolute pulse floor 30 deg; hardware validation required
+action_c_start_extension_margin_rad: 0.03490658503988659  # 2 deg beyond requested extension
+action_c_pulse_roll_handoff_enabled: true
+action_c_pulse_roll_handoff_lookahead_sec: 0.10  # bend-rate prediction, not a delay
+action_c_pulse_roll_handoff_margin_rad: 0.03490658503988659  # 2 deg remaining
+# Early handoff requires roll >8 deg, >=1 deg growth since ON, and outward
+# gyro >=1 deg/s (uses roll-trend settings). Hard roll/rate limits are immediate.
+# Per-arm floor: max(30, min(55, ON-start bend - target extension - 2)) deg.
+# Relative extension, rate and mismatch guards remain active.
+action_c_min_safe_angle_rad: 0.9599310885968813     # nominal pulse floor, NOT the start gate
+action_c_extension_rate_limit_rad_s: 3.141592653589793  # cut above 180 deg/s extension
+action_c_rebend_target_rad: 0.10471975511965977     # verify 6 deg rebound after OFF
+action_c_rebend_pressure_boost_kpa: 5.0
+# Used only by the optional timed-pulse mode. The optimizer baseline uses
+# the calibrated table at the selected thrust, as in the supplied diff.
+action_c_front_pulse_pressure_kpa: 5.0
+# Normal gait: release front pair to zero BEFORE pulse; retain rear grasp.
+# Arrival allows sensor/exhaust residual within +/-5 kPa, not a 5-kPa command.
+action_c_front_release_enabled: true
+action_c_front_release_tolerance_kpa: 5.0
+action_c_recovery_timeout_sec: 1.5
+action_c_recovery_settle_sec: 0.10
+action_c_max_reverse_travel_m: 0.005      # pressure-pull mode: diagnostic only, score AFTER regrip
+action_c_max_body_tilt_change_rad: 0.17453292519943295  # cut after 10 deg
+# During the ON interval, use each front Neuron IMU to hold that arm near its
+# pulse-start angle minus the requested 8-deg extension. Pressure changes are
+# rate-limited to avoid chasing IMU noise and pneumatic delay. The correction
+# learned here is reused by the next pulse.
 action_c_pulse_pressure_gain_kpa_rad: 8.0
 action_c_pulse_pressure_rate_kpa_s: 10.0
 action_c_pulse_angle_deadband_rad: 0.05235987755982989  # 3 deg
@@ -257,6 +547,168 @@ action_c_gradient_min_angle_delta_rad: 0.03490658503988659  # 2 deg
 # Its predicted pressure compensation is applied before a higher-thrust pulse.
 action_c_model_update_alpha: 0.25
 action_c_max_feedforward_pressure_step_kpa: 10.0
+# Legacy reduction-only feedback (used when individual extension is disabled).
+action_c_angle_thrust_kp_n_rad: 2.0
+action_c_angle_thrust_kd_n_rad_s: 0.08
+action_c_angle_thrust_max_trim_n: 2.0
+# Extension is relative to each arm's own pulse-start angle. The individual
+# controller below uses this deadband/prediction for positive assistance and
+# target-overshoot protection; the old sync gain is for the legacy mode only.
+action_c_extension_sync_kp_n_rad: 0.0  # disable later pair-synchronization overlay
+action_c_extension_sync_deadband_rad: 0.03490658503988659
+action_c_extension_prediction_sec: 0.04
+# Both front arms track the same smooth 0 -> 8 deg relative trajectory.
+# Normally BOOST the lagging arm, not cut the leading arm. Initial nominal
+# thrust is 3 N per arm with up to +0.25 N feedback headroom. The hard safety
+# ceiling and 5-N configured maximum always apply, including the headroom.
+# A safe completed, saturated/lagging cycle may raise ONE arm's next nominal
+# by 0.25 N. Opposite angle response, excessive mismatch, incomplete regrip,
+# posture recovery or any pulse guard prohibit that learned increase.
+# Pair ceiling limits the common/base candidate, not this bounded individual
+# calibration. Target overshoot can still reduce nominal thrust by 0.25 N.
+action_c_individual_extension_enabled: false  # no later tracking-first / per-arm boost overlay
+action_c_extension_trajectory_sec: 0.45
+action_c_individual_kp_n_rad: 6.0
+action_c_individual_kd_n_rad_s: 0.12
+action_c_individual_assist_max_n: 0.25
+action_c_sync_brake_band_rad: 0.06981317007977318  # 4 deg beyond target+deadband -> zero
+action_c_arm_learning_step_n: 0.25
+action_c_angle_rate_filter_alpha: 0.25
+# A 0.6-s pulse is too short to identify pressure-to-angle sign from an
+# accelerometer-based Neuron IMU: c6 flipped the sign and drove the next
+# front targets to [40, 0] kPa. Keep the normal front-release target at zero;
+# do not learn a new pressure-sign model during these short pulses.
+action_c_online_pressure_adaptation_enabled: false
+# During the common arm 0+3 pulse, resist roll drift by reducing only the rotor
+# that reinforces the measured roll. Positive roll reduces arm 0; negative roll
+# reduces arm 3. Roll correction remains reduction-only, after individual
+# extension feedback, and cannot raise a rotor above its individual ceiling.
+action_c_pulse_roll_kp_n_rad: 1.5
+action_c_pulse_roll_kd_n_rad_s: 0.05
+action_c_pulse_roll_max_trim_n: 0.3
+# Correct roll before each common front pulse. Positive roll drives rotors
+# 2+3; negative roll drives 0+1. The correction is fully ramped back to zero
+# before the equal 0+3 forward pulse is allowed to start.
+action_c_roll_target_rad: 0.0
+action_c_pre_roll_deadband_rad: 0.03490658503988659  # 2 deg
+# After roll has entered the 2-deg band once, do not interrupt every pulse.
+# Pause the pulse train and resume posture recovery only outside this band.
+action_c_roll_recorrect_threshold_rad: 0.17453292519943295  # 10 deg
+action_c_pre_roll_rate_tolerance_rad_s: 0.17453292519943295  # 10 deg/s
+action_c_pre_roll_kp_n_rad: 8.0
+action_c_pre_roll_min_thrust_n: 1.0
+action_c_pre_roll_max_thrust_n: 2.5
+action_c_pre_roll_thrust_ramp_n_s: 6.0
+action_c_pre_roll_settle_sec: 0.10
+# Only the two rotors used for roll correction are commanded to 0 kPa while
+# their thrust rises. Do not wait for measured pressure: arm 2 exhausted from
+# 30 to only 22 kPa in eight seconds in c3, so an arrival gate prevented every
+# correction rotor command. Normal pressure is restored before the pulse.
+action_c_pre_roll_pressure_drop_kpa: 40.0
+action_c_pre_roll_min_pressure_kpa: 0.0
+action_c_prepare_timeout_sec: 20.0
+# c4 showed the current automatic pair mapping increasing roll. Pause and
+# wait for manual recovery by default; set true only after the mapping is
+# verified on the current mounting.
+action_c_auto_roll_correction_enabled: false
+# Online bounded pattern-search optimizer for
+# u = [pulse thrust, bottom pressure, number of pulses per burst]. A candidate
+# is held fixed through its complete burst. Its score is evaluated only after
+# regrip, or after shared attitude recovery when recovery was required.
+action_c_optimizer_enabled: true
+# Bounded residuals around the successful pulse. Exclusive with the older
+# individual trajectory / online pressure-sign adaptation / reference modes.
+# No new phase or wait: early pressure only after >=50% measured extension.
+action_c_coordination_enabled: true
+action_c_coordination_assist_max_n: 0.3  # TOTAL extra N across the front pair
+action_c_coordination_lag_kp_n_rad: 6.0  # live relative-extension feedback, 2-deg deadband
+action_c_coordination_pressure_lead_max_sec: 0.12
+action_c_coordination_learning_trials: 3  # per operator task, not per recovery
+# J = retained_dx / total_time - wT*integral(sum(T_i^2))/total_time
+#     - wR*recovery_time/total_time. Total time includes pressure waits and
+# recovery. Recovery forward drift earns no credit; backward slip subtracts.
+# Legacy weights below remain available for explicit A/B comparison only.
+action_c_efficiency_objective_enabled: true
+action_c_efficiency_thrust_weight: 0.0001
+action_c_efficiency_recovery_time_weight: 0.001
+# Additional cost w * max(0, 1 - retained / frozen burst goal), in m/s.
+# Zero progress costs 0.010 m/s; waiting longer cannot dilute this penalty.
+action_c_efficiency_shortfall_weight: 0.010
+# Preserve completed trials and the next candidate across repeated operator
+# commands while this controller process remains alive.
+action_c_optimizer_reset_on_command: false
+# Resume J-based bottom search too (within the existing 20--30-kPa bounds).
+# Search is centered on the best eligible measured trial, not a fixed 3 N.
+action_c_optimize_bottom_enabled: true
+action_c_bottom_initial_kpa: 30.0
+action_c_bottom_min_kpa: 20.0
+action_c_bottom_max_kpa: 30.0
+action_c_bottom_step_kpa: 5.0
+action_c_optimizer_thrust_step_n: 0.25
+# Only a PAIR-MISMATCH ceiling can reopen automatically. Other guards latch
+# the hard ceiling until optimizer reset. All guards still stop the pulse.
+# Require completed recoil/regrip, no recovery/backward retained motion,
+# roll/rate within the recovery limits, and <=12 deg extension mismatch.
+# Safe pulses must be consecutive at the current ceiling. The next trial is
+# one pulse at the newly released ceiling; never jump straight back to 6 N.
+action_c_thrust_reprobe_safe_pulses: 3
+action_c_thrust_reprobe_step_n: 0.25
+action_c_thrust_reprobe_max_mismatch_rad: 0.20943951023931956  # 12 deg
+action_c_optimizer_initial_burst_pulses: 1
+action_c_optimizer_min_burst_pulses: 1
+action_c_optimizer_max_burst_pulses: 5
+# J = wx*sum(pulse_ON_to_regrip_dx) - wt*peak_roll^2
+#     - ww*peak_roll_rate^2 - wT*integral(sum_i(T_i^2))dt
+#     - wR*I_recovery - wa*peak_front_extension_mismatch^2
+#     - wf*N_failed_pulses
+# PREPARE/recovery drift is deliberately excluded from progress. Safe recoil
+# and confirmed regrip earn measured signed progress even below the stroke
+# goal; pressure timeouts/guards never earn positive progress.
+# SI units are used: m, rad, rad/s, N^2 s. The recovery penalty below is
+# deliberately equivalent to losing 30 mm of retained progress.
+action_c_objective_progress_weight: 1.0
+action_c_objective_tilt_weight: 0.10
+action_c_objective_rate_weight: 0.001
+action_c_objective_thrust_energy_weight: 0.0001
+action_c_objective_recovery_weight: 0.030  # one recovery costs 30 mm progress
+action_c_objective_angle_mismatch_weight: 0.10
+action_c_objective_failed_pulse_weight: 0.005  # one failed pulse costs 5 mm
+# Action C posture optimization and recovery use Spinal roll/roll-rate only.
+# Bottom pressure intentionally changes pitch, so pitch must not request or
+# prolong shared attitude recovery. Relative pulse-tilt guards remain active.
+action_c_posture_soft_limit_rad: 0.13962634015954636       # 8 deg
+action_c_posture_recovery_trigger_rad: 0.13962634015954636 # 8 deg
+# Above 8 deg, ordinary recovery requires worsening |roll| AND outward gyro.
+# Stable/improving offsets below the hard limit can continue (either sign).
+action_c_roll_trend_window_sec: 0.5
+action_c_roll_trend_growth_rad: 0.017453292519943295  # >=1 deg growth over window
+action_c_roll_trend_rate_rad_s: 0.017453292519943295  # >=1 deg/s outward
+action_c_posture_hard_roll_rad: 0.2617993877991494  # 15 deg regardless of trend
+action_c_bottom_post_pulse_drop_kpa: 3.0  # 30 ->27 after OFF; reset at next PREPARE
+action_c_bottom_sync_enabled: true
+action_c_bottom_wait_kpa: 5.0  # SETTLE/PREPARE until arms and roll are ready
+# Count residual roll only at PREPARE/SETTLE, after measured arm/bottom
+# pressures and roll rate have settled continuously for this interval.
+# No pulse/recoil/inflation history is carried into the 0.3-s confirmation.
+# Sync: wait low -> measured-rate precharge -> peak target at thrust peak ->
+# minus 3 kPa at OFF/regrip -> wait low. Reference mode retains fixed bottom.
+# Recovery commands 0 kPa in parallel; normal resume does NOT wait for zero.
+action_c_posture_settle_sec: 0.5
+action_c_bottom_deflation_tolerance_kpa: 5.0  # recovery: target 0 +/-5 kPa only
+# Recovery/normal phase boundaries only; raw safety checks remain unchanged.
+# Acquire at normal +/-2 kPa (released fronts +/-5), retain within +/-5.
+# Larger deviations up to +/-8 are tolerated for <=0.10 s, never on acquisition.
+action_c_pressure_hold_tolerance_kpa: 5.0
+action_c_pressure_dropout_sec: 0.10
+action_c_pressure_max_deviation_kpa: 8.0
+# Active C correction target; a settled 3--8 deg rebound after normal regrasp may
+# resume locomotion without another correction. Confirmation time is shared
+# with correction_trigger_confirm_sec above, not applied to the rate guard.
+# Progress-timeout waiting instead requires +/-3 deg, <=0.05 rad/s for 1 s.
+action_c_posture_resume_rad: 0.05235987755982989           # 3 deg (continuous C success)
+action_c_posture_rate_trigger_rad_s: 0.8
+action_c_tilt_growth_alpha: 0.5
+action_c_max_posture_recoveries: 5
 # The front pair ramps slowly until the minimum measurable lift is reached.
 action_b_front_duration_sec: 20.0
 # Front-pair thrust rise rate used only in ACTION_B_FRONT_REACH.

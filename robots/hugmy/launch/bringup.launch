@@ -10,10 +10,19 @@
   <arg name="headless" default="True" />
   <arg name="spawn_human" default="False"/>
   <arg name="human_arm_center_z" default="0.05"/>
+  <!-- MuJoCo-only common vertical offset for robot and grasp cylinder. -->
+  <arg name="mujoco_initial_height_offset" default="0.10"/>
   <arg name="start_pressure_controller" default="False"/>
   <arg name="start_attitude_allocator" default="False"/>
   <arg name="quad_bi_controller" default="False"/>
   <arg name="inchworm_action_c" default="False"/>
+  <arg name="recovery_predictive_enabled" default="true"/>
+  <arg name="recovery_predictive_shadow" default="true"/>
+  <arg name="action_c_reference_pulse_mode" default="false"/>
+  <arg name="action_c_reference_single_pulse" default="false"/>
+  <arg name="action_c_pulse_search_enabled" default="false"/>
+  <arg name="action_c_reference_thrust_n" default="3.0"/>
+  <arg name="inchworm_action_d" default="False"/>
   <arg name="enable_pneumatic_plugin" default="True"/>
   <arg name="worldtype" default="$(find aerial_robot_simulation)/gazebo_model/world/empty.world"/>
   <arg name="launch_gazebo" default="True" />
@@ -30,6 +39,9 @@
   <arg name="spawn_z" default="1.0"/>
   <arg name="spawn_yaw" default="0.0"/>
   <arg name="robot_id" default="" />
+  <arg name="flight_controller_port" default="/dev/flight_controller" />
+  <arg name="start_spinal_bridge" default="true" />
+  <arg name="start_mocap" default="true" />
   <arg name="robot_ns" value="quadrotor$(arg robot_id)" />
   <arg name="config_dir" default="$(find hugmy)/config" />
   <arg name="mujoco" default="False" />
@@ -74,6 +86,9 @@
            if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco'))"/>
     <param name="simulation/pneumatic/human_arm_center_z" value="$(arg human_arm_center_z)"
            if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco'))"/>
+    <param name="simulation/pneumatic/initial_height_offset"
+           value="$(arg mujoco_initial_height_offset)"
+           if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco'))"/>
     <param name="simulation/pneumatic/gym_step_mode" value="$(arg gym_step_mode)"
            if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco'))"/>
     <param name="simulation/pneumatic/gym_step_duration" value="$(arg gym_step_duration)"
@@ -113,6 +128,9 @@
     <arg name="real_machine" value="$(arg real_machine)" />
     <arg name="simulation" value="$(arg simulation)" />
     <arg name="robot_ns" value="$(arg robot_ns)" />
+    <arg name="flight_controller_port" value="$(arg flight_controller_port)" />
+    <arg name="start_spinal_bridge" value="$(arg start_spinal_bridge)" />
+    <arg name="start_mocap" value="$(arg start_mocap)" />
   </include >
   <!-- sensors.launch.xml loads the generic mocap defaults after Simulation.yaml.
        Restore the simulation startup grace so delayed first ground-truth data
@@ -162,6 +180,13 @@
            if="$(eval arg('simulation') and arg('start_attitude_allocator'))">
     <arg name="robot_ns" value="$(arg robot_ns)"/>
     <arg name="inchworm_action_c" value="$(arg inchworm_action_c)"/>
+    <arg name="recovery_predictive_enabled" value="$(arg recovery_predictive_enabled)"/>
+    <arg name="recovery_predictive_shadow" value="$(arg recovery_predictive_shadow)"/>
+    <arg name="action_c_reference_pulse_mode" value="$(arg action_c_reference_pulse_mode)"/>
+    <arg name="action_c_reference_single_pulse" value="$(arg action_c_reference_single_pulse)"/>
+    <arg name="action_c_pulse_search_enabled" value="$(arg action_c_pulse_search_enabled)"/>
+    <arg name="action_c_reference_thrust_n" value="$(arg action_c_reference_thrust_n)"/>
+    <arg name="inchworm_action_d" value="$(arg inchworm_action_d)"/>
   </include>
 
 </launch>

@@ -10,20 +10,17 @@ optimization:
   command_distance_m: 0.002
   result_directory: /tmp/hugmy_inchworm_optimization
 
-  # Nine variables keep the first optimization problem data-efficient.  The
+  # Six variables keep the first optimization problem data-efficient. The
   # bounds are deliberately inside the pneumatic and rotor safety limits.
   parameters:
     base_pressure_kpa:       {min: 24.0, max: 40.0}
     front_release_kpa:       {min: 0.0,  max: 12.0}
     transfer_pressure_kpa:   {min: 12.0, max: 24.0}
-    rear_unload_kpa:         {min: 0.0,  max: 12.0}
-    pull_pressure_kpa:       {min: 0.0,  max: 12.0}
     reach_max_thrust_n:      {min: 2.0,  max: 6.0}
-    rear_lift_thrust_n:      {min: 1.0,  max: 5.0}
     reach_duration_sec:      {min: 4.0,  max: 10.0}
-    # Relative extension from the grasp pose: 3--15 deg. Unlike an absolute
+    # Relative extension from the grasp pose: 30--80 deg. Unlike an absolute
     # bend target, this remains meaningful when the forearm radius changes.
-    reach_straightening_rad: {min: 0.0523599, max: 0.2617994}
+    reach_straightening_rad: {min: 0.5235988, max: 1.3962634}
 
   # The first trial is a conservative, cycle-completing reference. Remaining
   # initial trials use the Latin-hypercube design before GP/EI takes over.
@@ -31,12 +28,9 @@ optimization:
     base_pressure_kpa: 30.0
     front_release_kpa: 0.0
     transfer_pressure_kpa: 20.0
-    rear_unload_kpa: 8.0
-    pull_pressure_kpa: 5.0
     reach_max_thrust_n: 6.0
-    rear_lift_thrust_n: 3.0
     reach_duration_sec: 10.0
-    reach_straightening_rad: 0.0523599
+    reach_straightening_rad: 1.0471976
 
   # A candidate is evaluated in several nearby physical domains and their
   # rewards are averaged. arm_radius is converted to the box half-width and

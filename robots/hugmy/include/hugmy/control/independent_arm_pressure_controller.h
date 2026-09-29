@@ -5,6 +5,7 @@
 #include <ros/ros.h>
 #include <spinal/NeuronAdcStates.h>
 #include <spinal/PneumaticCommand.h>
+#include <spinal/Pressure.h>
 #include <std_msgs/Float32.h>
 #include <std_msgs/Float32MultiArray.h>
 #include <std_srvs/SetBool.h>
@@ -22,6 +23,8 @@ private:
   void targetCallback(const std_msgs::Float32MultiArray::ConstPtr& msg);
   void bottomPressureCallback(const std_msgs::Float32::ConstPtr& msg);
   void rootBottomPressureCallback(const std_msgs::Float32::ConstPtr& msg);
+  void bottomPressureSensorCallback(const spinal::Pressure::ConstPtr& msg);
+  void rootBottomPressureSensorCallback(const spinal::Pressure::ConstPtr& msg);
   void bottomTargetCallback(const std_msgs::Float32::ConstPtr& msg);
   bool enableCallback(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res);
   void update(const ros::TimerEvent& event);
@@ -32,6 +35,7 @@ private:
   ros::NodeHandle nh_, pnh_;
   ros::Subscriber adc_sub_, root_adc_sub_, target_sub_;
   ros::Subscriber bottom_pressure_sub_, root_bottom_pressure_sub_, bottom_target_sub_;
+  ros::Subscriber bottom_pressure_sensor_sub_, root_bottom_pressure_sensor_sub_;
   ros::Publisher command_pub_, root_command_pub_, pressure_pub_, error_pub_;
   ros::Publisher bottom_pressure_pub_, bottom_error_pub_;
   ros::ServiceServer enable_server_;

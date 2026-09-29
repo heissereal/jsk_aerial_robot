@@ -32,6 +32,7 @@ add_message_files(
   Imu.msg
   NeuronAdc.msg
   NeuronAdcStates.msg
+  Pressure.msg
   Barometer.msg
   Gps.msg
   GpsFull.msg
