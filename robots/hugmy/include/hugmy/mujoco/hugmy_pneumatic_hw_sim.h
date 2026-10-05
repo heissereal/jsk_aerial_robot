@@ -21,6 +21,7 @@
 #include <visualization_msgs/MarkerArray.h>
 
 #include <hugmy/model/pressure_thrust_bend_model.h>
+#include <hugmy/mujoco/grip_friction.h>
 
 namespace hugmy
 {
@@ -51,7 +52,7 @@ private:
   void updatePressure(const spinal::PneumaticCommand& command, bool fresh, double dt);
   void applyBagSprings(const std::array<double, ARM_COUNT>& thrust);
   void applyBottomInflatable();
-  void applyGripForces(const ros::Time& time);
+  void applyGripForces(const ros::Time& time, double dt);
   void publishGripMarkers(
       const ros::Time& time,
       const std::array<std::array<double, 3>, ARM_COUNT>& points,
@@ -126,6 +127,7 @@ private:
   double bottom_exhaust_rate_kpa_s_ = 80.0;
   double maximum_pressure_kpa_ = 60.0;
   double initial_pressure_kpa_ = 0.0;
+  double initial_bottom_pressure_kpa_ = 0.0;
   double leak_rate_per_s_ = 0.0;
   double bag_stiffness_nm_rad_ = 1.0;
   double structural_stiffness_nm_rad_ = 0.01;
@@ -145,12 +147,15 @@ private:
   double human_arm_pitch_rad_ = 0.0;
   double human_arm_yaw_rad_ = 0.0;
   double grip_range_m_ = 0.035;
+  double perching_initial_clearance_m_ = 0.0;
   double grip_stiffness_n_m_ = 180.0;
   double grip_damping_ns_m_ = 2.0;
   double grip_force_per_kpa_n_ = 0.08;
   double grip_min_pressure_kpa_ = 1.5;
   double grip_friction_coefficient_ = 1.2;
   double grip_tangent_damping_ns_m_ = 4.0;
+  double grip_tangent_stiffness_n_m_ = 180.0;
+  std::array<GripFriction, ARM_COUNT> grip_friction_{};
   double grip_marker_scale_m_n_ = 0.025;
   double grip_marker_rate_hz_ = 30.0;
   std::array<double, ARM_COUNT> grip_axis_coordinate_m_{};

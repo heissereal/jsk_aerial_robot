@@ -1384,13 +1384,14 @@ void AttitudeController::pwmConversion()
   {
     target_thrust_[i] = roll_pitch_term_[i] + (1 + base_thrust_decreasing_rate) * base_thrust_term_[i] + (1 + yaw_decreasing_rate) * yaw_term_[i];
 
-    // A fixed rotor must never reverse in normal flight.  Bidirectional ESCs
-    // are retained for bench/gait experiments, but reverse PWM is reachable
-    // only through the PwmTest branch above.  Clamp here, after the attitude
-    // mixer, so a large roll/pitch/yaw correction cannot produce negative
-    // thrust even when every base-thrust command was positive.
-    if(gimbal_dof_ == 0 && target_thrust_[i] < 0.0f)
-      target_thrust_[i] = 0.0f;
+    // A fixed rotor must never reverse in normal flight.  While armed, keep
+    // at least min_thrust_ on every fixed rotor so bidirectional ESCs retain
+    // the conventional low-speed arming idle.  The disarmed path returns
+    // earlier from pwmConversion() and therefore still sends neutral/stop.
+    // Reverse PWM remains reachable only through the PwmTest branch above.
+    if(gimbal_dof_ == 0)
+      target_thrust_[i] = std::max(
+        std::max(0.0f, min_thrust_), target_thrust_[i]);
 
     /* for ros */
     thrust_msg_.thrust[i] = target_thrust_[i];

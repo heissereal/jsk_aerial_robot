@@ -1,5 +1,5 @@
 motor_info: # TODO: update
-        min_pwm: 0.5 # 1200 [ms]
+        min_pwm: 0.5 # bidirectional command range: 0.5--1.0, neutral at 0.75
         max_pwm: 0.975 # 1950 [ms]
         min_thrust: 0.2 #  [N]
         force_landing_thrust: 1.1 #[N]

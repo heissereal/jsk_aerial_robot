@@ -276,9 +276,22 @@ bool UnderActuatedLQIController::runTakeoffPreTension()
   if (takeoff_pre_tension_start_.isZero())
     {
       takeoff_pre_tension_start_ = now;
-      ROS_INFO("Takeoff pre-tension started: %.2f N per rotor",
-               takeoff_pre_tension_thrust_);
+      ROS_INFO("Takeoff pre-tension started: %.2f -> %.2f N per rotor over %.2f s",
+               std::max(0.0, min_thrust_), takeoff_pre_tension_thrust_,
+               takeoff_pre_tension_thrust_ramp_duration_);
     }
+
+  const double thrust_ramp_ratio = takeoff_pre_tension_thrust_ramp_duration_ <= 0.0 ? 1.0 :
+      std::max(0.0, std::min(1.0,
+          (now - takeoff_pre_tension_start_).toSec() /
+          takeoff_pre_tension_thrust_ramp_duration_));
+  // Smoothstep avoids a thrust-rate step at both ends of the pre-tension ramp.
+  const double smooth_thrust_ramp_ratio =
+      thrust_ramp_ratio * thrust_ramp_ratio * (3.0 - 2.0 * thrust_ramp_ratio);
+  const double idle_thrust = std::max(0.0, min_thrust_);
+  const double pre_tension_command =
+      idle_thrust + smooth_thrust_ramp_ratio *
+      (takeoff_pre_tension_thrust_ - idle_thrust);
 
   const auto normals = robot_model_->getRotorsNormalFromCog<Eigen::Vector3d>();
   const auto origins = robot_model_->getRotorsOriginFromCog<Eigen::Vector3d>();
@@ -322,6 +335,10 @@ bool UnderActuatedLQIController::runTakeoffPreTension()
   r_pub_.publish(packVec3Array(origins));
   n_pub_.publish(packVec3Array(normals));
 
+  // Do not finish the phase while thrust is still rising: geometry may happen
+  // to satisfy the thresholds briefly before the compliant arms are loaded.
+  geometry_ready = geometry_ready && thrust_ramp_ratio >= 1.0;
+
   if (geometry_ready)
     {
       if (takeoff_pre_tension_stable_start_.isZero())
@@ -353,13 +370,14 @@ bool UnderActuatedLQIController::runTakeoffPreTension()
 
   for (auto& controller : pid_controllers_) controller.reset();
   std::fill(target_base_thrust_.begin(), target_base_thrust_.end(),
-            static_cast<float>(takeoff_pre_tension_thrust_));
+            static_cast<float>(pre_tension_command));
   // Hold the current attitude so Spinal does not intentionally tilt the body
   // while the compliant arms are being straightened.
   target_roll_ = rpy_.x();
   target_pitch_ = rpy_.y();
   candidate_yaw_term_ = 0.0;
-  ROS_INFO_THROTTLE(0.5, "Takeoff pre-tension: min n.z=%.3f/%.3f, spread=%.3f/%.3f, rate=%.3f/%.3f rad/s",
+  ROS_INFO_THROTTLE(0.5, "Takeoff pre-tension: thrust=%.2f/%.2f N, min n.z=%.3f/%.3f, spread=%.3f/%.3f, rate=%.3f/%.3f rad/s",
+                    pre_tension_command, takeoff_pre_tension_thrust_,
                     minimum_normal_z, takeoff_pre_tension_min_normal_z_,
                     normal_z_spread, takeoff_pre_tension_max_normal_z_spread_,
                     maximum_normal_rate, takeoff_pre_tension_max_normal_rate_);
@@ -609,6 +627,7 @@ void UnderActuatedLQIController::rosParamInit()
   ros::NodeHandle pre_tension_nh(control_nh, "takeoff_pre_tension");
   pre_tension_nh.param("enabled", takeoff_pre_tension_enabled_, false);
   pre_tension_nh.param("thrust", takeoff_pre_tension_thrust_, 3.0);
+  pre_tension_nh.param("thrust_ramp_duration", takeoff_pre_tension_thrust_ramp_duration_, 0.0);
   pre_tension_nh.param("min_rotor_normal_z", takeoff_pre_tension_min_normal_z_, 0.8);
   pre_tension_nh.param("max_rotor_normal_z_spread", takeoff_pre_tension_max_normal_z_spread_, 0.1);
   pre_tension_nh.param("max_rotor_normal_rate", takeoff_pre_tension_max_normal_rate_, 0.3);

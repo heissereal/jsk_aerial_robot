@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline reference-pulse wiring and production gyro-observer regressions."""
+"""Offline production acceleration-angle/gyro-rate regressions."""
 import pathlib
 import subprocess
 import tempfile
@@ -8,42 +8,11 @@ import xml.etree.ElementTree as ET
 
 def main():
     root = pathlib.Path(__file__).resolve().parents[1]
-    source = (root / 'src/control/attitude_pressure_controller.cpp').read_text()
-    config = (root / 'config/attitude_pressure_controller.yaml').read_text()
-    for setting in ('action_c_reference_pulse_mode: false',
-                    'action_c_reference_single_pulse: false',
-                    'action_c_pulse_search_enabled: false',
-                    'action_c_pressure_pull_enabled: true',
-                    'action_c_reference_thrust_n: 3.0',
-                    'action_c_front_pulse_pressure_kpa: 5.0',
-                    'action_c_reference_off_sec: 1.0'):
-        assert setting in config, setting
-    for filename in ('bringup.launch', 'attitude_pressure_controller.launch'):
-        launch = ET.parse(root / 'launch' / filename).getroot()
-        args = {x.attrib['name']: x.attrib.get('default') for x in launch.findall('arg')}
-        assert args['action_c_reference_pulse_mode'] == 'false'
-        assert args['action_c_reference_single_pulse'] == 'false'
-        assert args['action_c_pulse_search_enabled'] == 'false'
-        assert args['action_c_reference_thrust_n'] == '3.0'
-        assert '$(arg action_c_reference_thrust_n)' in (root / 'launch' / filename).read_text()
-    # Integration contracts: reference mode must not silently chase 90 deg,
-    # trim the paired waveform, optimize its amplitude, or retry after a guard.
-    assert 'if (!action_c_front_release_enabled_ && !action_c_reference_pulse_mode_ && action_c_front_angle_rad_[arm] <' in source
-    assert 'if (action_c_reference_pulse_mode_) pulse_roll_trim_n = 0.0;' in source
-    assert 'if (action_c_reference_pulse_mode_) angle_thrust_reduction_n[arm] = 0.0;' in source
-    assert '(!action_c_reference_pulse_mode_ || pressure_pull_mode) && both_extended' in source
-    assert 'extension_guard || pulse_timeout)' in source
-    assert 'action_c_pressure_pull_active_ = pressure_pull_mode && !extension_guard;' in source
-    assert 'updateActionCPressurePull(now);' in source
-    assert 'action_c_individual_extension_enabled_ = false;' in source
-    assert 'action_c_online_pressure_adaptation_enabled_ = false;' in source
-    assert '(action_c_reference_single_pulse_ || action_c_pulse_overextended_))' in source
-    assert '(!action_c_pulse_search_enabled_ || action_c_reference_single_pulse_))) return;' in source
-    assert '? action_c_reference_thrust_n_ : action_c_min_thrust_n_' in source
-    assert '(action_c_reference_single_pulse_ || action_c_pulse_overextended_ ||' in source
-    assert '!action_c_pulse_recoil_complete_ || !pressureReached(inchworm_pressure_))' in source
-    assert 'elapsed >= action_c_reference_off_sec_ && pressureReached(inchworm_pressure_)' in source
-    assert '? std::max(inchworm_anchor_timeout_sec_,' in source
+    source = (root / 'src/control/hybrid_locomotion.cpp').read_text()
+    assert 'hugmy::relativeBendRate(' in source
+    assert 'const double acceleration_bend=measuredArmBendAngle(arm);' in source
+    assert 's.bend[j]=acceleration_bend;' in source
+    assert 'observer.update(rate,neuron_stamp_[arm].toSec())' not in source
     code = r'''
 #include <hugmy/control/pulse_bend_observer.h>
 #include <cassert>
@@ -89,7 +58,7 @@ int main() {
   assert(o.valid && std::abs(o.bend-1.01)<1e-12);
   // The observer has NO acceleration input: a 2g transient cannot be
   // interpreted as an instantaneous geometric bend change in this path.
-  std::puts("PASS: reference wiring, relative gyro sign/body cancellation, sample faults and integration");
+  std::puts("PASS: relative gyro sign/body cancellation, sample faults and integration");
 }
 '''
     with tempfile.TemporaryDirectory(prefix='hugmy_reference_') as directory:

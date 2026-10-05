@@ -1,7 +1,11 @@
 # Action C: timed-pulse search and current roll recovery
 
-**Archived experimental mode, not the current default.** Normal Action C now
-uses [the restored optimizer baseline](action_c_optimizer_baseline.md).
+> Historical implementation, preserved in commit `0a2db4956`. Its execution
+> path and launch switches have been removed. The text below is archival, not
+> current startup guidance; use [predictive locomotion](hybrid_locomotion.md).
+
+**Archived experimental mode.** At that time, normal Action C used
+[the restored optimizer baseline](action_c_optimizer_baseline.md).
 The sequence and launch examples below describe explicit timed-mode experiments;
 pressure pull and amplitude search are disabled by default. Do not use these
 examples to reproduce the supplied successful optimizer diff.

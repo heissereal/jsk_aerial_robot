@@ -1,5 +1,9 @@
 # Action C: pressure-aware powered flexion (2026-09-29)
 
+> Historical implementation, preserved in commit `0a2db4956`. Its execution
+> path and settings have been removed. The text below is archival, not current
+> startup guidance; use [predictive locomotion](hybrid_locomotion.md).
+
 Normal C enables `action_c_propulsion_enabled: true`. Set it false to restore
 the previous tapered fixed-ratio powered pull and coordination timing (also
 restore the timeout to 1.5 s for the previous complete configuration). Experimental

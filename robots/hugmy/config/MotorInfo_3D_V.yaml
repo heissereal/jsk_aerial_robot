@@ -7,9 +7,12 @@ motor_info:
   # This ESC/motor combination has the opposite polarity from the previous
   # MotorInfo_3D model: commands below neutral generate positive thrust.
   positive_thrust_below_neutral: true
-  # Normal flight allocation is positive-only. Reverse thrust remains
-  # available exclusively through the direct PwmTest path.
-  min_thrust: 0.0
+  # Keep every rotor turning slowly after arming, as in the conventional ESC
+  # implementation. 0.2 N mapped to PWM 1499 on the real ESC and could not
+  # sustain rotation, so use the first practical idle point above stiction.
+  # Normal flight remains positive-only; reverse thrust is available
+  # exclusively through the direct PwmTest path.
+  min_thrust: 0.5
   force_landing_thrust: 1.0
 
   # The stored coefficients describe F(PWM), so the controller uses the

@@ -18,6 +18,12 @@ assert 'measuredRecoveryModel()' in branch
 assert 'roll_recovery_response_[correction_axis_[0] > 0.0 ? 0 : 1]' in branch
 assert '(now - state_start_).toSec() >= prepare_timeout_' in branch
 assert 'state_start_ =' not in branch # progress must not restart the overall deadline
+pressure_handoff = branch[branch.index('if (!continuous_roll_recovery_.pressureHandoffReady())'):
+                          branch.index('// The pair sign is fixed by the verified',
+                                       branch.index('if (!continuous_roll_recovery_.pressureHandoffReady())'))]
+assert 'continuous_roll_recovery_.speed_braking ||' not in pressure_handoff
+assert 'continuous_roll_recovery_.predicted_braking ||' not in pressure_handoff
+assert 'std::abs(signed_error) <= correction_slowdown_angle_' not in pressure_handoff
 
 code = r'''
 #include <hugmy/control/continuous_roll_recovery.h>
@@ -29,6 +35,14 @@ int main() {
   RollRecoveryConfig cfg; RollRecoveryModel m; RollRecoveryResponse response;
   m.valid=true; m.moment=.2; m.lever=.1;
   ContinuousRollRecovery c;c.reset(25*deg,0.);
+  // Braking flags can assert far from level and must never initiate pneumatic
+  // regrasp. Only a completed recovery or an explicit abort/timeout may do so.
+  assert(!c.pressureHandoffReady());
+  c.speed_braking=c.predicted_braking=true;assert(!c.pressureHandoffReady());
+  c.speed_braking=c.predicted_braking=false;
+  c.finished=true;assert(c.pressureHandoffReady());c.finished=false;
+  c.timed_out=true;assert(c.pressureHandoffReady());c.timed_out=false;
+  c.fault=true;assert(c.pressureHandoffReady());c.fault=false;
   double last=0;
   for(int i=1;i<=100;++i) {
     double v=c.update(25*deg,0.,i*.02,.02,m,cfg,response);
@@ -59,10 +73,11 @@ int main() {
   for(int i=1;i<=50;++i)steady.update(.5,0.,i*.02,.02,m,cfg,response);
   assert(std::abs(steady.boost-.3)<1e-8); // exactly ONE 0.3-N/s cap, not two boosts
   last=c.thrust;
-  c.update(6*deg,.2,5.92,.02,m,cfg,response);
+  c.update(6.1*deg,.2,5.92,.02,m,cfg,response);
   assert(c.thrust<last && c.boost>0.); // prediction must retain contact-support I
-  c.update(4.9*deg,0.,5.94,.02,m,cfg,response);assert(c.finished);
-  c.update(20*deg,0.,5.96,.02,m,cfg,response);assert(c.finished); // no restart
+  for(int i=0;i<30;++i)c.update(4.9*deg,0.,5.94+i*.02,.02,m,cfg,response);
+  assert(c.finished);
+  c.update(20*deg,0.,6.56,.02,m,cfg,response);assert(c.finished); // no restart
   // Wrong-sign and tiny levers cannot invert into a maximum thrust command.
   for(double lever: {-1.,0.,.001}) {
     ContinuousRollRecovery a;a.reset(.5,0.);m.lever=lever;
@@ -107,10 +122,14 @@ int main() {
     if(kind==3)t=.30;
     if(kind==4)t=-.01;
     a.update(e,w,t,.02,m,cfg,response);
-    assert(a.thrust==0. && (kind==0 ? a.finished : a.fault));
+    assert(a.thrust==0. && (kind==0 ? !a.finished && !a.fault : a.fault));
   }
   ContinuousRollRecovery timeout;timeout.reset(.5,0.);
-  for(int i=1;i<=501;++i)timeout.update(.5,0.,i*.02,.02,m,cfg,response);
+  for(int i=1;i<=500;++i)timeout.update(.5,0.,i*.02,.02,m,cfg,response);
+  const double timeout_entry_thrust=timeout.thrust;
+  double first_timeout=timeout.update(.5,0.,10.02,.02,m,cfg,response);
+  assert(timeout.timed_out && !timeout.fault && first_timeout<timeout_entry_thrust && first_timeout>0.);
+  for(int i=502;i<=600 && !timeout.fault;++i)timeout.update(.5,0.,i*.02,.02,m,cfg,response);
   assert(timeout.fault && timeout.timed_out && timeout.thrust==0.);
   // c3 (2026-09-29): 15.5 -> 32 -> 26 deg is real recent improvement,
   // even though the initial/best-ever error has not been beaten in 10 s.
@@ -124,7 +143,7 @@ int main() {
   assert(!returning.moving && returning.best_error<=15.5*deg);
   assert(returning.last_progress>12.9 && returning.recent_progress>cfg.progress_angle);
   // A subsequent true plateau still times out (window flush + 10 s).
-  for(int i=651;i<=1250;++i)returning.update(22.4*deg,0.,i*.02,.02,m,cfg,response);
+  for(int i=651;i<=1300 && !returning.fault;++i)returning.update(22.4*deg,0.,i*.02,.02,m,cfg,response);
   assert(returning.fault && returning.timed_out && returning.thrust==0.);
   // Neither worsening posture nor sub-threshold IMU jitter renew progress.
   for(bool worsening:{false,true}) {
@@ -145,13 +164,20 @@ int main() {
   retained.thrust=2.1;retained.boost=1.5;retained.moving=true;
   RollRecoveryConfig three=cfg;three.stop=3*deg;
   m.moment=.01;m.lever=.05;
+  // A 1-deg measurement margin is hysteresis, not an early cut: 3.6 deg
+  // must keep correcting until the true 3-deg target is reached.
+  ContinuousRollRecovery margin;margin.reset(3.6*deg,0.);
+  margin.thrust=1.5;margin.boost=.8;margin.moving=true;
+  margin.update(3.6*deg,0.,.02,.02,m,three,response);
+  assert(margin.target_rate>0. && margin.boost>.79 && !margin.finished);
   retained.update(9*deg,.2,.02,.02,m,three,response);
   assert(retained.speed_braking && !retained.predicted_braking && retained.boost>1.49);
   assert(retained.thrust>1.9 && retained.thrust<2.1);
   retained.update(8*deg,.4,.04,.02,m,three,response);
   assert(retained.predicted_braking && retained.boost>1.48 && retained.target_thrust==0.);
   retained.update(8*deg,0.,.06,.02,m,three,response);assert(retained.boost>1.47);
-  retained.update(2.9*deg,0.,.08,.02,m,three,response);assert(retained.finished && retained.boost==0.);
+  for(int i=0;i<30;++i)retained.update(2.9*deg,0.,.08+i*.02,.02,m,three,response);
+  assert(retained.finished && retained.boost==0.);
   // Repeated geometry changes after motion confirmation cannot modulate FF.
   ContinuousRollRecovery held_model;held_model.reset(.5,0.);
   m.moment=.02;m.lever=.05;
@@ -202,6 +228,17 @@ int main() {
   ContinuousRollRecovery twitch;twitch.reset(.5,0.);twitch.thrust=1.;
   twitch.update(.5,.12,.02,.02,m,cfg,response);
   twitch.update(.499,0.,.04,.02,m,cfg,response);assert(!twitch.moving);
+  // Braking may reduce thrust below the detection threshold after a genuine
+  // candidate starts; gyro direction + actual error reduction must still
+  // complete the confirmation instead of resetting it.
+  ContinuousRollRecovery braking_candidate;braking_candidate.reset(8*deg,0.);
+  braking_candidate.thrust=.7;
+  braking_candidate.update(7.8*deg,.08,.02,.02,m,cfg,response);
+  for(int i=2;i<=11;++i) {
+    braking_candidate.thrust=.1;
+    braking_candidate.update((7.8-.1*i)*deg,.08,i*.02,.02,m,cfg,response);
+  }
+  assert(braking_candidate.moving);
   puts("PASS: model FF, signed rate PI, overspeed priority despite saturated FF/I, rundown prediction, 4N/slew limits, faults and learning gates");
 }
 '''

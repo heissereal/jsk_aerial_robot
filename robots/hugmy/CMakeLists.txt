@@ -171,9 +171,19 @@ catkin_install_python(PROGRAMS
   script/run_hugmy_real_stride.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
-add_library(hugmy_attitude_pressure_controller src/control/attitude_pressure_controller.cpp)
+add_library(hugmy_attitude_pressure_controller
+  src/control/attitude_pressure_controller.cpp
+  src/control/hybrid_locomotion.cpp)
 add_dependencies(hugmy_attitude_pressure_controller ${catkin_EXPORTED_TARGETS})
 target_link_libraries(hugmy_attitude_pressure_controller ${catkin_LIBRARIES})
+# The bounded predictive search runs in the control thread. An unoptimized
+# Debug build exhausted its 12-ms budget before pressure/timing candidates.
+# Keep debug symbols, but optimize the locomotion/recovery control units.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  set_source_files_properties(src/control/hybrid_locomotion.cpp
+    src/control/attitude_pressure_controller.cpp
+    PROPERTIES COMPILE_FLAGS "-O2")
+endif()
 
 add_executable(attitude_pressure_controller_node src/nodes/attitude_pressure_controller_node.cpp)
 add_dependencies(attitude_pressure_controller_node ${catkin_EXPORTED_TARGETS})

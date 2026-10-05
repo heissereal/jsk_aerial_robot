@@ -97,6 +97,7 @@ namespace aerial_robot_control
     bool takeoff_pre_tension_enabled_ = false;
     bool takeoff_pre_tension_complete_ = false;
     double takeoff_pre_tension_thrust_ = 3.0;
+    double takeoff_pre_tension_thrust_ramp_duration_ = 0.0;
     double takeoff_pre_tension_min_normal_z_ = 0.8;
     double takeoff_pre_tension_max_normal_z_spread_ = 0.1;
     double takeoff_pre_tension_max_normal_rate_ = 0.3;

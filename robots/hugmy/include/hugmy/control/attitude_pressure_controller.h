@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <string>
 #include <ros/ros.h>
 #include <geometry_msgs/Vector3Stamped.h>
 #include <geometry_msgs/PoseStamped.h>
@@ -18,16 +19,16 @@
 #include <std_msgs/UInt8.h>
 #include <std_srvs/SetBool.h>
 #include <hugmy/model/pressure_thrust_bend_model.h>
-#include <hugmy/control/action_c_feedback.h>
-#include <hugmy/control/action_c_coordination.h>
-#include <hugmy/control/action_c_propulsion.h>
+#include <hugmy/control/hybrid_locomotion_search.h>
+#include <hugmy/control/hybrid_measurement.h>
+#include <hugmy/control/hybrid_single_pass.h>
+#include <hugmy/control/arm_bend_limits.h>
 #include <hugmy/control/posture_recovery_gate.h>
 #include <hugmy/control/pressure_ready_gate.h>
 #include <hugmy/control/rear_release_gate.h>
 #include <hugmy/control/roll_trend_gate.h>
 #include <hugmy/control/continuous_roll_recovery.h>
 #include <hugmy/control/recovery_predictive_control.h>
-#include <hugmy/control/bottom_pulse_timing.h>
 #include <hugmy/control/pulse_bend_observer.h>
 
 class AttitudePressureController
@@ -101,21 +102,22 @@ private:
   void requestActionCPostureRecovery(const ros::Time& now,
                                      const char* reason);
   bool resumeActionCAfterRecovery(const ros::Time& now);
-  void initializeActionCOptimizer();
-  void beginActionCOptimizerTrial(const ros::Time& now);
-  void finishActionCOptimizerTrial(bool recovery_required,
-                                   const char* reason);
-  void selectNextActionCCandidate();
   bool actionCRearReleased(const ros::Time& now);
-  void updateActionCPressurePull(const ros::Time& now);
-  bool finishActionCPropulsionTrial(bool recovery_required, double retained_dx);
-  void observeActionCPropulsion(const ros::Time& now);
+  bool hybridLocomotionActive() const;
+  void startHybridLocomotion(const ros::Time& now);
+  void beginHybridRegrip(const ros::Time& now, bool prediction_limited);
+  void beginHybridTerminalSettle(const ros::Time& now, const char* reason);
+  void updateHybridLocomotion(const ros::Time& now, double dt);
+  void finishHybridLocomotion(const ros::Time& now, bool completed, bool safe);
+  void pauseHybridLocomotion(const ros::Time& now);
+  bool hybridResumeAllowed(const ros::Time& now);
+  void finishHybridRecovery(const ros::Time& now);
+  void observeHybridThrust(const ros::Time& now, const PressureArray& thrust);
+  hugmy::hybrid::Force hybridRotorForce(size_t arm, double bend, double roll_error, double pitch) const;
   void updateInchworm(const ros::Time& now, double dt, bool pressure_valid,
                       bool neurons_fresh);
   bool pressureReached(const PressureArray& target) const;
   bool actionCPressureReady(const PressureArray& target, const ros::Time& now);
-  double actionCBottomTarget() const;
-  double actionCBottomPeakLead() const;
   double inchwormTravel() const;
 
   static Vector3 cross(const Vector3& lhs, const Vector3& rhs);
@@ -134,7 +136,6 @@ private:
   ros::Publisher arm_relative_angle_pub_, arm_target_relative_angle_pub_;
   ros::Publisher arm_shape_error_pub_, arm_shape_active_pub_;
   ros::Publisher arm_bend_angle_deg_pub_;
-  ros::Publisher action_c_pulse_bend_pub_;
   ros::Publisher desired_moment_pub_, achieved_moment_pub_;
   ros::Publisher correction_thrust_pub_, root_correction_thrust_pub_;
   ros::Publisher pwm_test_pub_, root_pwm_test_pub_;
@@ -231,7 +232,7 @@ private:
     ACTION_B_FRONT_REGRIP = 14,
     ACTION_C_PREPARE = 15,
     ACTION_C_HORIZONTAL_PULL = 16,
-    ACTION_C_EVALUATE = 17,
+    // State id 17 is reserved for old bag compatibility.
     ACTION_C_REGRIP = 18,
     ROCK_FRONT_UNLOAD = 19,
     ROCK_REAR_INFLATE = 20,
@@ -246,8 +247,11 @@ private:
   };
   uint8_t state_ = GRASP;
   bool correction_roll_only_;
+  // The real vehicle uses the empirically verified fixed Spinal motor pairs.
+  // MuJoCo's applied bidirectional-thrust axis has the opposite roll sign.
+  bool correction_pair_reverse_spinal_mapping_ = false;
   bool action_c_continuous_recovery_enabled_ = true;
-  double action_c_recovery_no_progress_timeout_sec_ = 10.0;
+  double action_c_recovery_no_progress_timeout_sec_ = 30.0;
   bool continuous_recovery_blocked_ = false;
   bool continuous_recovery_started_ = false;
   bool continuous_recovery_waiting_for_settle_ = false;
@@ -261,13 +265,13 @@ private:
   double recovery_pressure_down_rate_ = 0.5;
   hugmy::RollRecoveryModel measuredRecoveryModel() const;
   double recoveryRotorLever(size_t arm, double bend) const;
+  void selectContinuousRecoveryPair(double roll_error);
   double correction_trigger_angle_, correction_stop_angle_;
   double correction_trigger_confirm_sec_;
   hugmy::PostureRecoveryGate correction_entry_gate_, action_c_recovery_gate_;
   hugmy::PostureRecoveryGate action_c_resume_gate_;
   hugmy::PostureRecoveryGate action_c_boundary_settle_gate_;
   double action_c_posture_settle_sec_ = 0.5;
-  bool action_c_boundary_ready_ = false;
   double correction_max_angular_rate_, correction_thrust_duration_;
   double prepare_timeout_, prepare_stable_duration_, recover_timeout_, cooldown_duration_;
   double pressure_tolerance_kpa_, arm_angle_tolerance_, arm_gyro_tolerance_;
@@ -429,230 +433,85 @@ private:
   bool action_b_pulse_on_ = false;
   bool action_b_pressure_limited_by_feedback_ = false;
   bool action_b_lift_target_adapted_ = false;
-  double action_c_min_thrust_n_, action_c_max_thrust_n_;
-  double action_c_thrust_step_n_, action_c_target_angle_rad_;
-  double action_c_angle_tolerance_rad_, action_c_pressure_gain_kpa_rad_;
-  double action_c_pulse_duration_sec_;
-  double action_c_thrust_ramp_n_s_, action_c_thrust_down_rate_n_s_;
+  double action_c_max_thrust_n_;
   double action_c_extension_target_rad_, action_c_max_extension_rad_;
   double action_c_max_extension_mismatch_rad_;
   double action_c_min_safe_angle_rad_, action_c_extension_rate_limit_rad_s_;
-  double action_c_prepare_min_bend_rad_, action_c_hard_min_bend_rad_;
+  double action_c_hard_min_bend_rad_;
   double action_c_start_extension_margin_rad_;
-  bool action_c_pulse_roll_handoff_enabled_;
-  double action_c_pulse_roll_handoff_lookahead_sec_, action_c_pulse_roll_handoff_margin_rad_;
-  double action_c_rebend_target_rad_, action_c_rebend_pressure_boost_kpa_;
-  double action_c_front_pulse_pressure_kpa_;
-  bool action_c_front_release_enabled_ = true;
-  double action_c_front_release_tolerance_kpa_ = 5.0;
   double action_c_bottom_deflation_tolerance_kpa_ = 5.0;
-  double action_c_bottom_post_pulse_drop_kpa_ = 3.0;
-  bool action_c_bottom_post_pulse_ = false;
-  bool action_c_bottom_sync_enabled_ = true;
-  double action_c_bottom_wait_kpa_ = 5.0;
-  hugmy::BottomPulseTiming action_c_bottom_timing_;
   hugmy::RollTrendGate action_c_roll_trend_;
   double action_c_posture_hard_roll_rad_ = 15.0 * M_PI / 180.0;
   hugmy::PressureReadyGate action_c_pressure_ready_gate_;
   double action_c_pressure_hold_tolerance_kpa_ = 5.0;
   double action_c_pressure_dropout_sec_ = 0.10;
   double action_c_pressure_max_deviation_kpa_ = 8.0;
-  double action_c_recovery_timeout_sec_, action_c_recovery_settle_sec_;
-  double action_c_max_reverse_travel_m_;
-  double action_c_max_body_tilt_change_rad_;
-  double action_c_pulse_pressure_gain_kpa_rad_;
-  double action_c_pulse_pressure_rate_kpa_s_;
-  double action_c_pulse_angle_deadband_rad_;
-  double action_c_max_pressure_kpa_, action_c_success_confirm_sec_;
-  double action_c_max_error_before_thrust_increase_rad_;
-  double action_c_regrip_min_retained_ratio_;
-  double action_c_gradient_min_pressure_delta_kpa_;
-  double action_c_gradient_min_angle_delta_rad_;
-  double action_c_model_update_alpha_;
-  double action_c_max_feedforward_pressure_step_kpa_;
-  double action_c_angle_thrust_kp_n_rad_;
-  double action_c_angle_thrust_kd_n_rad_s_;
-  double action_c_angle_thrust_max_trim_n_;
-  double action_c_extension_sync_kp_n_rad_;
-  double action_c_extension_sync_deadband_rad_;
-  double action_c_extension_prediction_sec_;
-  bool action_c_individual_extension_enabled_ = false;
-  bool action_c_reference_pulse_mode_ = false;
-  bool action_c_reference_single_pulse_ = false;
-  bool action_c_pulse_search_enabled_ = false;
-  double action_c_pulse_search_step_n_ = 0.5;
-  double action_c_pulse_search_progress_m_ = 0.002;
-  double action_c_reference_off_sec_ = 1.0;
-  double action_c_reference_thrust_n_ = 3.0;
-  bool action_c_pressure_pull_enabled_ = false;
-  bool action_c_pressure_pull_active_ = false;
-  bool action_c_propulsion_enabled_ = true;
-  hugmy::ActionCPropulsion action_c_propulsion_;
-  double action_c_propulsion_heading_rad_ = 0.0;
-  double action_c_pressure_pull_ratio_ = 0.35;
-  double action_c_pressure_pull_max_n_ = 1.5;
-  double action_c_pressure_pull_timeout_sec_ = 5.0;
-  double action_c_powered_regrip_timeout_sec_ = 3.0;
-  double action_c_flexion_lookahead_sec_ = 0.08;
+  hugmy::hybrid::Config hybrid_config_;
+  hugmy::hybrid::SinglePassConfig hybrid_single_config_;
+  hugmy::hybrid::SinglePass hybrid_single_;
+  std::array<hugmy::hybrid::BendCoordinateRate,2> hybrid_sim_rate_;
+  bool hybrid_hold_bottom_=false;
+  hugmy::hybrid::Planner hybrid_planner_;
+  hugmy::hybrid::Search hybrid_search_;
+  hugmy::hybrid::Result hybrid_result_;
+  hugmy::hybrid::PositionWindow hybrid_position_window_, hybrid_settled_window_;
+  hugmy::hybrid::PositionWindow hybrid_endpoint_mocap_window_;
+  hugmy::hybrid::PositionWindow hybrid_endpoint_pitch_window_;
+  hugmy::hybrid::PositionWindow hybrid_bottom_window_;
+  hugmy::hybrid::BodyRateFilter hybrid_body_rate_filter_;
+  hugmy::hybrid::BottomAssist hybrid_bottom_assist_;
+  hugmy::hybrid::PressureGuard hybrid_pressure_guard_;
+  hugmy::hybrid::ProbeBudget hybrid_probe_budget_;
+  Vector3 hybrid_contact_position_{{0.,0.,-.07}};
+  PressureArray hybrid_regrip_thrust_{},hybrid_regrip_pressure_{};
+  PressureArray hybrid_grasp_pressure_{};
+  bool hybrid_retain_grasp_pressure_=false,hybrid_hold_pressure_=false;
+  double hybrid_regrip_bottom_=0.;
+  double hybrid_regrip_x_=0.,hybrid_settling_loss_=0.;
+  hugmy::PressureReadyGate hybrid_pressure_ready_gate_;
+  bool hybrid_start_mean_valid_ = false, hybrid_end_mean_valid_ = false;
+  bool hybrid_preinflate_measured_ = false;
+  bool hybrid_terminal_settle_ = false;
+  bool hybrid_terminal_retry_ = false;
+  std::string hybrid_terminal_reason_;
+  bool hybrid_bottom_changed_ = false;
+  double hybrid_end_mean_x_ = 0.;
+  hugmy::hybrid::Pair hybrid_start_bend_{};
+  ros::Publisher hybrid_diagnostic_pub_;
+  double hybrid_task_start_ = -1., hybrid_trial_start_ = -1., hybrid_run_start_ = -1.;
+  double hybrid_ready_since_ = -1., hybrid_run_x_ = 0., hybrid_trial_x_ = 0.;
+  double hybrid_last_x_ = 0., hybrid_last_stamp_ = -1., hybrid_speed_ = 0.;
+  double hybrid_pitch_start_ = 0., hybrid_recovery_start_ = -1., hybrid_pre_recovery_dx_ = 0.;
+  double hybrid_recovery_x_ = 0.;
+  double hybrid_effort_stamp_ = -1.;
+  PressureArray hybrid_sent_thrust_{};
+  bool hybrid_trial_active_ = false;
+  bool hybrid_candidate_selected_ = false;
+  bool hybrid_prediction_limited_ = false;
+  int hybrid_phase_ = 0;
   double action_c_rear_release_max_kpa_ = 8.0;
   double action_c_rear_release_hold_kpa_ = 10.0;
   double action_c_rear_release_hard_kpa_ = 12.0;
   double action_c_rear_release_grace_sec_ = 0.10;
   hugmy::RearReleaseGate action_c_rear_release_gate_;
-  double action_c_rear_release_timeout_sec_ = 3.0;
   double action_c_abort_reverse_travel_m_ = 0.03;
-  PressureArray action_c_pressure_pull_ceiling_n_{};
   ros::Time measured_pressure_stamp_;
   ros::Time measured_bottom_pressure_stamp_;
   PressureArray neuron_acc_norm_{};
-  std::array<hugmy::PulseBendObserver, ARM_COUNT> action_c_pulse_observer_;
-  double action_c_extension_trajectory_sec_;
-  double action_c_individual_kp_n_rad_;
-  double action_c_individual_kd_n_rad_s_;
-  double action_c_individual_assist_max_n_;
-  double action_c_sync_brake_band_rad_;
-  double action_c_arm_learning_step_n_;
-  PressureArray action_c_arm_thrust_offset_n_{{0.0, 0.0, 0.0, 0.0}};
-  PressureArray action_c_pulse_arm_ceiling_n_{{0.0, 0.0, 0.0, 0.0}};
-  PressureArray action_c_pulse_arm_nominal_n_{{0.0, 0.0, 0.0, 0.0}};
-  PressureArray action_c_pulse_peak_thrust_n_{{0.0, 0.0, 0.0, 0.0}};
-  PressureArray action_c_pulse_terminal_extension_rad_{{0.0, 0.0, 0.0, 0.0}};
-  bool action_c_arm_calibration_changed_ = false;
-  bool action_c_coordination_enabled_ = true;
-  hugmy::ActionCCoordination action_c_coordination_;
-  PressureArray action_c_coordination_rebend_target_{};
-  bool action_c_efficiency_objective_enabled_ = true;
-  double action_c_efficiency_thrust_weight_ = 0.0001;
-  double action_c_efficiency_recovery_time_weight_ = 0.001;
-  double action_c_efficiency_shortfall_weight_ = 0.010;
-  double action_c_optimizer_target_progress_m_ = 0.0;
-  double action_c_optimizer_elapsed_sec_ = 0.0;
-  double action_c_optimizer_recovery_sec_ = 0.0;
-  double action_c_optimizer_recovery_start_x_m_ = 0.0;
-  double action_c_optimizer_last_clock_sec_ = -1.0;
-  bool action_c_optimizer_clock_valid_ = true;
-  double action_c_angle_rate_filter_alpha_;
-  bool action_c_online_pressure_adaptation_enabled_ = false;
-  double action_c_pulse_roll_kp_n_rad_;
-  double action_c_pulse_roll_kd_n_rad_s_;
-  double action_c_pulse_roll_max_trim_n_;
-  double action_c_roll_target_rad_, action_c_pre_roll_deadband_rad_;
-  double action_c_roll_recorrect_threshold_rad_;
   double action_c_pre_roll_rate_tolerance_rad_s_;
-  double action_c_pre_roll_kp_n_rad_;
-  double action_c_pre_roll_min_thrust_n_, action_c_pre_roll_max_thrust_n_;
-  double action_c_pre_roll_thrust_ramp_n_s_;
-  double action_c_pre_roll_settle_sec_;
-  double action_c_pre_roll_pressure_drop_kpa_;
-  double action_c_pre_roll_min_pressure_kpa_;
   double action_c_prepare_timeout_sec_;
-  bool action_c_auto_roll_correction_enabled_ = false;
-  bool action_c_adaptive_burst_enabled_ = true;
-  bool action_c_optimize_bottom_enabled_ = true;
-  double action_c_bottom_initial_kpa_, action_c_bottom_min_kpa_;
-  double action_c_bottom_max_kpa_, action_c_bottom_step_kpa_;
-  double action_c_adaptive_thrust_step_n_;
-  bool action_c_optimizer_reset_on_command_ = false;
-  int action_c_thrust_reprobe_safe_pulses_ = 3;
-  double action_c_thrust_reprobe_step_n_ = 0.25;
-  double action_c_thrust_reprobe_max_mismatch_rad_;
-  double action_c_objective_progress_weight_;
-  double action_c_objective_tilt_weight_;
-  double action_c_objective_rate_weight_;
-  double action_c_objective_thrust_energy_weight_;
-  double action_c_objective_recovery_weight_;
-  double action_c_objective_angle_mismatch_weight_;
-  double action_c_objective_failed_pulse_weight_;
-  int action_c_optimizer_initial_burst_pulses_;
-  int action_c_optimizer_min_burst_pulses_;
-  int action_c_optimizer_max_burst_pulses_;
-  double action_c_posture_soft_limit_rad_;
   double action_c_posture_recovery_trigger_rad_;
   double action_c_posture_resume_rad_;
   double action_c_posture_rate_trigger_rad_s_;
-  double action_c_tilt_growth_alpha_;
+  double action_c_emergency_stop_roll_rad_ = M_PI / 2.0;
   int action_c_max_posture_recoveries_;
-  PressureArray action_c_pressure_bias_kpa_{{0.0, 0.0, 0.0, 0.0}};
-  PressureArray action_c_pressure_bend_sign_{{1.0, 1.0, 1.0, 1.0}};
-  // Locally identified bend sensitivities during the current C action.
-  PressureArray action_c_dtheta_dpressure_{{0.02, 0.02, 0.02, 0.02}};
-  PressureArray action_c_dtheta_dthrust_{{0.0, 0.0, 0.0, 0.0}};
-  PressureArray action_c_previous_pressure_kpa_{{0.0, 0.0, 0.0, 0.0}};
-  PressureArray action_c_previous_bend_angle_rad_{{0.0, 0.0, 0.0, 0.0}};
-  PressureArray action_c_last_pulse_pressure_kpa_{{0.0, 0.0, 0.0, 0.0}};
-  PressureArray action_c_last_pulse_bend_angle_rad_{{0.0, 0.0, 0.0, 0.0}};
-  double action_c_thrust_n_ = 5.0, action_c_pulse_angle_rad_ = 0.0;
-  PressureArray action_c_front_angle_rad_{{0.0, 0.0, 0.0, 0.0}};
-  PressureArray action_c_front_pressure_{{30.0, 30.0, 30.0, 30.0}};
-  PressureArray action_c_pulse_start_angle_rad_{{0.0, 0.0, 0.0, 0.0}};
-  PressureArray action_c_pulse_min_angle_rad_{{0.0, 0.0, 0.0, 0.0}};
-  PressureArray action_c_rate_previous_angle_rad_{{0.0, 0.0, 0.0, 0.0}};
-  PressureArray action_c_filtered_bend_rate_rad_s_{{0.0, 0.0, 0.0, 0.0}};
-  std::array<ros::Time, ARM_COUNT> action_c_previous_neuron_stamp_{};
-  double action_c_command_thrust_n_ = 0.0;
-  double action_c_pulse_start_travel_m_ = 0.0;
-  double action_c_pulse_start_roll_ = 0.0, action_c_pulse_start_pitch_ = 0.0;
-  double action_c_pre_roll_thrust_n_ = 0.0;
-  int action_c_pre_roll_pair_sign_ = 0;
-  ros::Time action_c_pulse_start_, action_c_pressure_feedback_time_;
-  ros::Time action_c_rate_time_, action_c_recovery_ready_start_;
-  ros::Time action_c_pre_roll_ready_start_;
-  bool action_c_posture_ready_latched_ = false;
-  int action_c_angle_retry_ = 0, action_c_max_angle_retries_ = 2;
-  bool action_c_pulse_started_ = false;
-  bool action_c_pressure_gradient_initialized_ = false;
-  bool action_c_last_pulse_valid_ = false;
-  bool action_c_pulse_had_extension_ = false;
-  bool action_c_pulse_overextended_ = false;
-  bool action_c_pulse_recoil_complete_ = false;
-  bool action_c_optimizer_cycle_accounted_ = false;
-  double action_c_last_pulse_thrust_n_ = 0.0;
-  bool action_c_success_ = false;
-  double action_c_bottom_hold_kpa_ = 15.0;
-  double action_c_cycle_start_tilt_rad_ = 0.0;
-  double action_c_cycle_peak_tilt_rad_ = 0.0;
-  double action_c_cycle_peak_rate_rad_s_ = 0.0;
-  double action_c_estimated_tilt_growth_rad_ = 0.0;
-  double action_c_last_retained_progress_m_ = 0.0;
+  // Goal and resume state shared by predictive locomotion and roll recovery.
   double action_c_absolute_target_x_m_ = 0.0;
   double action_c_direction_sign_x_ = 1.0;
-  double action_c_optimizer_direction_sign_x_ = 0.0;
   Vector2 action_c_resume_direction_{{1.0, 0.0}};
-  int action_c_burst_pulse_count_ = 0;
   int action_c_posture_recovery_count_ = 0;
   bool action_c_resume_pending_ = false;
   bool action_c_preserve_adaptation_on_start_ = false;
-  bool action_c_optimizer_initialized_ = false;
-  bool action_c_optimizer_trial_active_ = false;
-  bool action_c_optimizer_recovery_pending_ = false;
-  bool action_c_optimizer_sweep_improved_ = false;
-  int action_c_optimizer_trial_index_ = 0;
-  int action_c_optimizer_direction_index_ = 0;
-  int action_c_optimizer_burst_pulses_ = 3;
-  int action_c_optimizer_completed_pulses_ = 0;
-  int action_c_optimizer_successful_pulses_ = 0;
-  int action_c_optimizer_valid_pulses_ = 0;
-  int action_c_optimizer_tracking_pulses_ = 0;
-  int action_c_optimizer_failed_pulses_ = 0;
-  int action_c_optimizer_best_burst_pulses_ = 3;
-  double action_c_optimizer_trial_start_x_m_ = 0.0;
-  double action_c_optimizer_retained_progress_m_ = 0.0;
-  double action_c_optimizer_peak_tilt_rad_ = 0.0;
-  double action_c_optimizer_peak_rate_rad_s_ = 0.0;
-  double action_c_optimizer_peak_extension_mismatch_rad_ = 0.0;
-  double action_c_optimizer_thrust_energy_n2s_ = 0.0;
-  double action_c_optimizer_safe_thrust_max_n_ = 0.0;
-  bool action_c_optimizer_trial_had_extension_guard_ = false;
-  unsigned int action_c_optimizer_trial_guard_reasons_ = 0;
-  hugmy::ActionCThrustSafety action_c_thrust_safety_;
-  bool action_c_optimizer_reprobe_pending_ = false;
-  bool action_c_optimizer_trial_required_recovery_ = false;
-  double action_c_optimizer_best_score_ =
-      -std::numeric_limits<double>::infinity();
-  double action_c_optimizer_best_thrust_n_ = 0.0;
-  double action_c_optimizer_best_bottom_kpa_ = 0.0;
-  double action_c_optimizer_thrust_step_n_ = 0.0;
-  double action_c_optimizer_bottom_step_kpa_ = 0.0;
   double action_d_target_angle_rad_;
   double action_d_soft_min_angle_rad_, action_d_soft_max_angle_rad_;
   double action_d_hard_min_angle_rad_, action_d_hard_max_angle_rad_;

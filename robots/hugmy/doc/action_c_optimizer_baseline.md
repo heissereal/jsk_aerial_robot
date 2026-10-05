@@ -1,5 +1,9 @@
 # Action C: restored optimizer baseline (2026-09-28)
 
+> Historical implementation, preserved in commit `0a2db4956`. Its execution
+> path and settings have been removed. The text below is archival, not current
+> startup guidance; use [predictive locomotion](hybrid_locomotion.md).
+
 This is the normal Action C configuration again. It restores the semantics
 identified by the user's supplied `+63/-14` excerpt, not a byte-for-byte
 checkout: the attachment is a partial diff, not a full historical snapshot.

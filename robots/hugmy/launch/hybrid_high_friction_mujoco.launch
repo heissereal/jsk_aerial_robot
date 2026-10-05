@@ -1,0 +1,49 @@
+<launch>
+  <!-- Simulation fixture only. Use a separate ROS master from hardware.
+       No motion command is sent automatically. This is a test fixture, not
+       a claim that repeated forward locomotion has passed validation. -->
+  <arg name="headless" default="false"/>
+  <arg name="cylinder_radius" default="0.075"/>
+  <arg name="cylinder_pitch" default="0.0"/>
+  <arg name="grip_friction" default="4.5"/>
+  <arg name="surface_friction" default="4.0"/>
+  <arg name="tangential_stiffness" default="1200.0"/>
+  <arg name="lift_pressure_gain" default="20.0"/> <!-- legacy; early lift is zero, adverse slope may use bounded prefill -->
+  <!-- Validated high-friction profile (2026-10-01). Keep hardware defaults
+       separate until the same residual rear pressure is tested physically. -->
+  <arg name="pressure_limit" default="30.0"/>
+  <arg name="rear_pressure" default="5.0"/>
+  <arg name="lift_seconds" default="10.0"/>
+  <arg name="lift_rate" default="1.0"/>
+  <arg name="pull_min_sec" default="1.5"/>
+  <arg name="probe_extension_rad" default="0.13962634015954636"/>
+  <include file="$(find hugmy)/launch/bringup.launch">
+    <arg name="simulation" value="true"/>
+    <arg name="real_machine" value="false"/>
+    <arg name="mujoco" value="true"/>
+    <arg name="headless" value="$(arg headless)"/>
+    <arg name="fixed_arms" value="false"/>
+    <arg name="spawn_human" value="true"/>
+    <arg name="start_pressure_controller" value="true"/>
+    <arg name="start_attitude_allocator" value="true"/>
+    <arg name="inchworm_action_c" value="true"/>
+    <arg name="mujoco_initial_arm_pressure" value="30.0"/>
+    <arg name="mujoco_initial_bottom_pressure" value="0.0"/>
+    <arg name="mujoco_cylinder_radius" value="$(arg cylinder_radius)"/>
+    <arg name="mujoco_cylinder_pitch" value="$(arg cylinder_pitch)"/>
+    <arg name="mujoco_grip_friction" value="$(arg grip_friction)"/>
+    <arg name="mujoco_surface_friction" value="$(arg surface_friction)"/>
+    <arg name="mujoco_tangential_stiffness" value="$(arg tangential_stiffness)"/>
+    <!-- These must be passed through before the controller is constructed.
+         Setting private params after this include races node initialization. -->
+    <arg name="hybrid_rear_low_kpa" value="$(arg rear_pressure)"/>
+    <arg name="hybrid_locomotion_retain_grasp_pressure" value="true"/>
+    <arg name="hybrid_locomotion_regrip_timeout_sec" value="45.0"/>
+    <arg name="hybrid_lift_pressure_gain_kpa_s_rad" value="$(arg lift_pressure_gain)"/>
+    <arg name="hybrid_lift_probe_sec" value="$(arg lift_seconds)"/>
+    <arg name="hybrid_lift_search_rate_n_s" value="$(arg lift_rate)"/>
+    <arg name="hybrid_pull_min_sec" value="$(arg pull_min_sec)"/>
+    <arg name="hybrid_probe_extension_rad" value="$(arg probe_extension_rad)"/>
+    <arg name="maximum_pressure_kpa" value="$(arg pressure_limit)"/>
+  </include>
+</launch>

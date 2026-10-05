@@ -15,6 +15,9 @@ def main():
     config = (root / 'config/attitude_pressure_controller.yaml').read_text()
     assert 'correction_roll_only: true' in config
     assert 'pnh_.param("correction_roll_only", correction_roll_only_, true)' in source
+    assert ('correction_pair_reverse_spinal_mapping_\n'
+            '      ? roll_error < 0.0 : roll_error >= 0.0') in source
+    assert source.count('correction_pair_reverse_spinal_mapping_') >= 4
 
     def function(name, result):
         start = source.index('AttitudePressureController::' + name + '(')
@@ -33,7 +36,7 @@ def main():
         ('allocatePressure', 'AttitudePressureController::PressureArray'),
     ])
     start = source.index('const bool roll_only_recovery =')
-    end = source.index('if (action_c_optimizer_trial_active_', start)
+    end = source.index('const double recovery_stop_angle =', start)
     metrics = source[start:end]
     # Both PREPARE and THRUST_CORRECTION project the gyro onto the axis
     # derived from the masked desired moment. Their stop gates use the same
@@ -57,7 +60,8 @@ public:
   using Vector3=std::array<double,3>;
   using PressureArray=std::array<double,4>;
   static constexpr size_t ARM_COUNT=4;
-  bool correction_roll_only_=true, action_c_resume_pending_=false;
+  bool correction_roll_only_=true, correction_pair_reverse_spinal_mapping_=false;
+  bool action_c_resume_pending_=false;
   bool gravity_compensation_=false;
   bool action_c_continuous_recovery_enabled_=false, inchworm_action_c_enabled_=false;
   bool inchworm_action_d_enabled_=false, fixed_arm_test_enabled_=false;
@@ -117,6 +121,15 @@ int main() {
   c.roll_=-.2;
   thrust=c.allocateCorrectionThrustFromAngles(c.desiredThrustMoment(),{});
   assert(thrust[0]>0. && thrust[0]==thrust[1] && thrust[2]==0. && thrust[3]==0.);
+  // MuJoCo's applied bidirectional-thrust axis has the opposite response.
+  // Reverse only its pair mapping; the real-hardware default above remains.
+  c.roll_=.2;c.correction_pair_reverse_spinal_mapping_=true;
+  thrust=c.allocateCorrectionThrustFromAngles(c.desiredThrustMoment(),{});
+  assert(thrust[0]>0. && thrust[0]==thrust[1] && thrust[2]==0. && thrust[3]==0.);
+  c.roll_=-.2;
+  thrust=c.allocateCorrectionThrustFromAngles(c.desiredThrustMoment(),{});
+  assert(thrust[0]==0. && thrust[1]==0. && thrust[2]>0. && thrust[2]==thrust[3]);
+  c.correction_pair_reverse_spinal_mapping_=false;
   // Gravity compensation must not reintroduce a pitch command on reallocation.
   c.gravity_compensation_=true;
   assert(c.desiredThrustMoment()[1]==0.);

@@ -2,8 +2,9 @@
 
 This adds a finite-scenario, receding-horizon controller **only to continuous
 Action C roll recovery**. It is not SAC, not a new movement gait, and not a
-certified robust MPC. Forward pulses, their optimizer, firmware and motor
-calibration are unchanged. The default is **shadow mode**: predictions are
+certified robust MPC. This document covers shared recovery, not the current
+[predictive locomotion path](hybrid_locomotion.md). Firmware and motor
+calibration are unchanged. Recovery's default is **shadow mode**: predictions are
 logged, but the existing recovery controller still commands the actuators.
 
 ## Control and model

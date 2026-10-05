@@ -11,9 +11,15 @@ def main():
     src = (root/'src/control/attitude_pressure_controller.cpp').read_text()
     enter = src[src.index('void AttitudePressureController::enterState('):]
     enter = enter[:enter.index('if (state_ == PULL)')]
-    assert 'state_ == ACTION_C_HORIZONTAL_PULL && state == ACTION_C_EVALUATE' in enter
-    assert 'action_c_pressure_pull_active_' in enter
     assert enter.index('action_c_rear_release_gate_.reset();') < enter.index('state_ = state;')
+    adapter = (root/'src/control/hybrid_locomotion.cpp').read_text()
+    assert 'input.rear_released=actionCRearReleased(now)' in adapter
+    assert 'hybrid rear release lost' not in adapter  # intentional periodic grasp is not a fault
+    single=(root/'include/hugmy/control/hybrid_single_pass.h').read_text()
+    assert 'release_seen=release_seen || in.rear_released' in single
+    assert 'if(!posture_brake)' in single
+    assert 'pressure_target[j]=0.' in single
+    assert 'in.rear_grasped' in single
     replay = ''
     if len(sys.argv)>1:
         import rosbag

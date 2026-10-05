@@ -1,5 +1,9 @@
 # Action C: coordinated residual feedback and online efficiency search
 
+> Historical implementation, preserved in commit `0a2db4956`. Its execution
+> path and settings have been removed. The text below is archival, not current
+> startup guidance; use [predictive locomotion](hybrid_locomotion.md).
+
 This extends the restored C pulse; it does not replace it with a new gait,
 RL policy or a strict arm-angle trajectory. It uses the existing measured
 relative bend (straight = 0, flexion positive) and Spinal posture signals.

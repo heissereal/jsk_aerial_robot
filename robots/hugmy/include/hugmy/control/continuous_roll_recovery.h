@@ -26,13 +26,15 @@ struct RollRecoveryConfig {
   double rate_kp = 4.0, rate_ki = 3.0; // N/(rad/s), N/rad
   double integral_rate = 0.30; // N/s; the ONE integrator's slew ceiling
   double stop = 0.08726646, horizon = 0.20;
+  double settle_rate = 0.05, settle_sec = 0.15;
+  double stop_margin = 0.0174533; // 1 deg measurement/contact tolerance
   double limit = 4.0, rise = 1.5, fall = 6.0;
   double fallback_thrust = 0.5, min_lever = 0.015;
   double start_rate = 0.05, detect_thrust = 0.5;
   double confirm_sec = 0.15, confirm_angle = 0.0174533;
   double progress_angle = 0.00872665, stall_sec = 0.50;
   double progress_window = 1.0; // compare averaged ends of the recent window
-  double abort_sec = 10.0, max_rate = 0.8;
+  double abort_sec = 10.0, max_rate = 0.8; // controller overrides this with the configured 30-s timeout
   double response_delay = 0.20, response_window = 0.40;
   double stable_pressure = 1.0, stable_bend = 0.035;
   double min_gain = 0.02, max_gain = 0.25; // local (rad/s)/N, not physical inertia
@@ -65,6 +67,7 @@ struct ContinuousRollRecovery {
   double braking_horizon = 0.0;
   double best_error = 0.0, last_progress = 0.0, last_update = 0.0;
   double candidate_start = -1.0, candidate_error = 0.0;
+  double stop_band_since = -1.0;
   double stable_since = -1.0, last_learning = -1.0;
   bool moving = false, finished = false, fault = false, stalled = false;
   bool integrating = false, model_valid = false, learned_response = false;
@@ -78,15 +81,21 @@ struct ContinuousRollRecovery {
   struct ErrorSample { double time, error; };
   std::deque<ErrorSample> progress_history;
   double recent_progress = 0.0;
+  // Pneumatic regrasp changes the arm bend and therefore the recovery lever.
+  // Speed/prediction braking is only a rotor-thrust decision: it may occur far
+  // from the attitude target and must not authorize a return to grasp pressure.
+  // Keep the selected pair released until recovery has actually completed or
+  // the controller is deliberately handing an abort/timeout to the grasp state.
+  bool pressureHandoffReady() const { return finished || timed_out || fault; }
   void reset(double error, double now) {
-    *this = ContinuousRollRecovery(); best_error = error;
+    *this = ContinuousRollRecovery(); best_error = std::abs(error);
     last_progress = last_update = now;
     progress_history.push_back({now, error});
   }
   void updateProgress(double error, double now, const RollRecoveryConfig& c) {
     // Keep best_error for diagnostics only: returning from a worse posture
     // is progress even before the initial/best-ever error is reached again.
-    best_error = std::min(best_error, error);
+    best_error = std::min(best_error, std::abs(error));
     if (!progress_history.empty() && progress_history.back().time == now)
       progress_history.back().error = error;
     else progress_history.push_back({now, error});
@@ -166,22 +175,68 @@ struct ContinuousRollRecovery {
     dt = std::min(0.1, dt); last_update = now;
     filtered_rate = rate_initialized ? filtered_rate + dt / (0.08 + dt) * (omega - filtered_rate) : omega;
     rate_initialized = true;
-    if (finished || error <= c.stop) {
-      finished = true; boost = 0.0; return thrust = std::max(0.0, thrust - c.fall * dt);
+    if (finished) {
+      boost = 0.0;
+      return thrust = std::max(0.0, thrust - c.fall * dt);
     }
+    // Entering the angle band is not enough: c14 reached +/-3 deg with
+    // roughly 0.2 rad/s still present, immediately changed to RECOVER, and
+    // coasted through to the opposite side while the pneumatic grasp was
+    // rebuilding.  Brake to zero and require a short low-rate dwell before
+    // declaring success.  A crossed target outside the band is deliberately
+    // not success; the caller may reselect the opposite correcting pair.
+    // Enter the capture state only after reaching the actual +/-stop target.
+    // The old stop+margin entry cut thrust at about 3.6--4 deg, erased the
+    // integral, and repeatedly rebounded to 6--12 deg.  The margin is now
+    // hysteresis after entry, not an early stopping threshold.
+    if (std::abs(error) <= c.stop ||
+        (stop_band_since >= 0.0 && std::abs(error) <= c.stop + c.stop_margin)) {
+      updateProgress(std::abs(error), now, c);
+      target_rate = target_thrust = 0.0;
+      speed_braking = predicted_braking = true;
+      thrust = std::max(0.0, thrust - c.fall * dt);
+      if (std::abs(filtered_rate) <= c.settle_rate) {
+        if (stop_band_since < 0.0) stop_band_since = now;
+        if (now - stop_band_since >= c.settle_sec) {
+          finished = true;
+          boost = 0.0;
+        }
+      } else stop_band_since = -1.0;
+      return thrust;
+    }
+    stop_band_since = -1.0;
     updateProgress(error, now, c);
     if (!moving) {
-      if (thrust >= c.detect_thrust && filtered_rate >= c.start_rate) {
-        if (candidate_start < 0.0) { candidate_start = now; candidate_error = error; }
+      // Once thrust has started a plausible body response, allow the
+      // confirmation window to finish while predictive braking ramps thrust
+      // down. Requiring thrust>=detect_thrust on every sample reset the
+      // candidate exactly when a fast, genuine correction began braking.
+      if (candidate_start < 0.0 && thrust >= c.detect_thrust &&
+          filtered_rate >= c.start_rate) {
+        candidate_start = now; candidate_error = error;
+      }
+      if (candidate_start >= 0.0 && filtered_rate >= 0.0 &&
+          error <= candidate_error + c.confirm_angle) {
         if (now - candidate_start >= c.confirm_sec && candidate_error - error >= c.confirm_angle) {
           moving = true; hold = thrust; // breakaway diagnostic, never latched as command
-          last_progress = now; best_error = error;
+          last_progress = now; best_error = std::abs(error);
         }
       } else candidate_start = -1.0;
     }
     stalled = now - last_progress >= c.stall_sec && filtered_rate < c.start_rate;
-    if (now - last_progress >= c.abort_sec) {
-      timed_out = true; fault = true; boost = 0.0; return thrust = 0.0;
+    if (timed_out || now - last_progress >= c.abort_sec) {
+      // A no-progress timeout is a controlled handoff to pneumatic grasp, not
+      // an emergency motor cut.  An instantaneous 2--4 N -> 0 N transition
+      // released the loaded arm and its rebound increased roll.  The caller
+      // starts regrasp as soon as timed_out becomes true; keep this state alive
+      // while the normal fall-rate removes thrust, then report the timeout.
+      timed_out = true;
+      target_rate = target_thrust = 0.0;
+      speed_braking = predicted_braking = true;
+      boost = 0.0;
+      thrust = std::max(0.0, thrust - c.fall * dt);
+      if (thrust <= 1.0e-6) fault = true;
+      return thrust;
     }
     // Include the time needed to actually remove the current command.
     // A fixed 0.2-s prediction missed up to 4/6=0.67 s of thrust rundown.

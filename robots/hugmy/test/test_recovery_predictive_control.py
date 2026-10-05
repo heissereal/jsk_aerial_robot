@@ -71,7 +71,8 @@ int main() {
   assert(actual.fault && actual.thrust==0.);
   actual.reset(.4,0.);assert(actual.update(.4,0.,.02,.02,model,bounds,response,100.)<=.030001);
   actual.reset(.4,0.);actual.thrust=1.;
-  actual.update(.01,0.,.02,.02,model,bounds,response,4.);assert(actual.finished);
+  for(int i=1;i<=12;++i)actual.update(.01,0.,i*.02,.02,model,bounds,response,4.);
+  assert(actual.finished && actual.thrust==0.);
   // Shadow calculations cannot alter baseline FF/PI state or actuator output.
   ContinuousRollRecovery base,shadow;base.reset(.4,0.);shadow.reset(.4,0.);
   RollRecoveryResponse rb,rs;RecoveryPredictiveControl passive;

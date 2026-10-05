@@ -1,5 +1,9 @@
 # 2026-09-28 Action C c7 / c8 / c9: recovery analysis
 
+> Historical bag analysis and implementation notes from commit `0a2db4956`.
+> Current locomotion uses [predictive locomotion](hybrid_locomotion.md);
+> shared posture recovery is retained separately.
+
 Sources: `walk_inchworm_c_7_2026-09-28-20-49-47.bag`,
 `walk_inchworm_c_8_2026-09-28-20-51-59.bag`,
 `walk_inchworm_c_9_2026-09-28-20-54-46.bag` under

@@ -8,20 +8,16 @@ import tempfile
 def main():
     root = pathlib.Path(__file__).resolve().parents[1]
     src = (root / 'src/control/attitude_pressure_controller.cpp').read_text()
-    prepare = src[src.index('case ACTION_C_PREPARE:'):src.index('case ACTION_C_HORIZONTAL_PULL:')]
-    on = src[src.index('case ACTION_C_HORIZONTAL_PULL:'):src.index('case ACTION_C_EVALUATE:')]
-    pull = src[src.index('void AttitudePressureController::updateActionCPressurePull('):
-               src.index('double AttitudePressureController::actionCBottomTarget()')]
-    assert 'actionCStartBendReady(' in prepare
-    assert 'action_c_min_safe_angle_rad_' not in prepare
-    assert on.index('actionCStartBendReady(') < on.index('action_c_pulse_started_ = true;')
-    for code in (on, pull):
-        assert 'actionCPulseBendFloor(' in code
-        assert 'action_c_pulse_start_angle_rad_[arm]' in code
-        for guard in ('OVER_EXTENSION', 'LOW_BEND', 'EXTENSION_RATE', 'PAIR_MISMATCH'):
-            assert 'ACTION_C_' + guard in code
+    adapter = (root / 'src/control/hybrid_locomotion.cpp').read_text()
+    assert 'actionCPulseBendFloor(s.start_bend[j]' in adapter
+    assert 'hybrid_start_bend_=s.bend' in adapter
+    assert 'Planner::valid(safety_state,safety_config,pressure_pending)' in adapter
+    assert 'hybrid_single_.phase==SinglePass::VentFront' in adapter
+    assert 'hybrid_single_.phase==SinglePass::StopForLift' in adapter
+    assert 'safety_state.floor.fill(std::max(hybrid_config_.bend_min,action_c_hard_min_bend_rad_))' in adapter
+    assert 'hybrid_start_bend_=s.bend' in adapter
     code = r'''
-#include <hugmy/control/action_c_feedback.h>
+#include <hugmy/control/arm_bend_limits.h>
 #include <cassert>
 #include <cmath>
 int main() {

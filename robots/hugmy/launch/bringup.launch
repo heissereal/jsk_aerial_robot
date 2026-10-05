@@ -5,6 +5,7 @@
   <arg name="sim" default="False" />
   <arg name="real_machine" default="$(arg rm)" />
   <arg name="simulation" default="$(arg sim)" />
+  <arg name="mujoco" default="False" />
   <arg name="estimate_mode"  default= "0" />
   <arg name="sim_estimate_mode"  default= "2" />
   <arg name="headless" default="True" />
@@ -16,12 +17,32 @@
   <arg name="start_attitude_allocator" default="False"/>
   <arg name="quad_bi_controller" default="False"/>
   <arg name="inchworm_action_c" default="False"/>
+  <arg name="hybrid_locomotion_outer_enabled" default="true"/>
+  <arg name="hybrid_locomotion_initial_bottom_kpa" default="30.0"/>
+  <arg name="hybrid_rear_release_sec" default="2.0"/>
+  <arg name="hybrid_rear_grasp_sec" default="1.0"/>
+  <arg name="hybrid_rear_low_kpa" default="0.0"/>
+  <arg name="hybrid_rear_vent_lead_margin_sec" default="0.10"/>
+  <arg name="hybrid_rear_vent_start_margin_rad" default="0.08726646259971647"/>
+  <arg name="hybrid_locomotion_initial_m" default="1.0"/>
+  <arg name="hybrid_locomotion_retain_grasp_pressure" default="false"/>
+  <arg name="hybrid_locomotion_regrip_timeout_sec" default="20.0"/>
+  <arg name="hybrid_lift_pressure_gain_kpa_s_rad" default="20.0"/>
+  <arg name="hybrid_lift_probe_sec" default="10.0"/>
+  <arg name="hybrid_lift_search_rate_n_s" default="0.7"/>
+  <arg name="hybrid_reused_lift_rise_n_s" default="8.0"/>
+  <arg name="hybrid_reused_lift_brake_margin_rad" default="0.06981317007977318"/>
+  <arg name="hybrid_pull_min_sec" default="0.5"/>
+  <arg name="hybrid_probe_extension_rad" default="0.13962634015954636"/>
+  <arg name="hybrid_lift_identification_bend_rad" default="0.3490658503988659"/>
+  <arg name="hybrid_lift_identification_tolerance_rad" default="0.017453292519943295"/>
+  <arg name="hybrid_lift_identification_extension_limit_rad" default="1.3962634015954636"/>
+  <arg name="hybrid_slip_probe_max_pressure_kpa" default="40.0"/>
+  <!-- Arm pressure may reach 40 kPa during the horizontal slip test.  The
+       bottom inflatable has its own independent 30-kPa limit. -->
+  <arg name="maximum_pressure_kpa" default="40.0"/>
   <arg name="recovery_predictive_enabled" default="true"/>
   <arg name="recovery_predictive_shadow" default="true"/>
-  <arg name="action_c_reference_pulse_mode" default="false"/>
-  <arg name="action_c_reference_single_pulse" default="false"/>
-  <arg name="action_c_pulse_search_enabled" default="false"/>
-  <arg name="action_c_reference_thrust_n" default="3.0"/>
   <arg name="inchworm_action_d" default="False"/>
   <arg name="enable_pneumatic_plugin" default="True"/>
   <arg name="worldtype" default="$(find aerial_robot_simulation)/gazebo_model/world/empty.world"/>
@@ -44,8 +65,16 @@
   <arg name="start_mocap" default="true" />
   <arg name="robot_ns" value="quadrotor$(arg robot_id)" />
   <arg name="config_dir" default="$(find hugmy)/config" />
-  <arg name="mujoco" default="False" />
   <arg name="mujoco_model" default="$(find hugmy)/mujoco/hugmy2/robot.xml" />
+  <!-- Optional precharged fixture setup, simulation only; empty keeps YAML. -->
+  <arg name="mujoco_initial_arm_pressure" default="" />
+  <arg name="mujoco_initial_bottom_pressure" default="" />
+  <!-- Optional contact-fixture overrides; empty leaves the baseline unchanged. -->
+  <arg name="mujoco_cylinder_radius" default="" />
+  <arg name="mujoco_cylinder_pitch" default="" />
+  <arg name="mujoco_grip_friction" default="" />
+  <arg name="mujoco_surface_friction" default="" />
+  <arg name="mujoco_tangential_stiffness" default="" />
   <arg name="gym_step_mode" default="false" />
   <arg name="gym_step_duration" default="0.1" />
   <arg name="gym_physics_timestep" default="0.0" />
@@ -84,6 +113,22 @@
               if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco') and arg('enable_pneumatic_plugin') and not arg('fixed_arms'))"/>
     <param name="simulation/pneumatic/spawn_human" value="$(arg spawn_human)"
            if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco'))"/>
+    <param name="simulation/pneumatic/initial_pressure" value="$(arg mujoco_initial_arm_pressure)" type="double"
+           if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco') and arg('mujoco_initial_arm_pressure') != '')"/>
+    <param name="simulation/pneumatic/initial_bottom_pressure" value="$(arg mujoco_initial_bottom_pressure)" type="double"
+           if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco') and arg('mujoco_initial_bottom_pressure') != '')"/>
+    <group if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco'))">
+      <param name="simulation/pneumatic/human_arm_radius" value="$(arg mujoco_cylinder_radius)" type="double"
+             if="$(eval arg('mujoco_cylinder_radius') != '')"/>
+      <param name="simulation/pneumatic/human_arm_pitch" value="$(arg mujoco_cylinder_pitch)" type="double"
+             if="$(eval arg('mujoco_cylinder_pitch') != '')"/>
+      <param name="simulation/pneumatic/grip_friction_coefficient" value="$(arg mujoco_grip_friction)" type="double"
+             if="$(eval arg('mujoco_grip_friction') != '')"/>
+      <param name="simulation/pneumatic/human_arm_sliding_friction" value="$(arg mujoco_surface_friction)" type="double"
+             if="$(eval arg('mujoco_surface_friction') != '')"/>
+      <param name="simulation/pneumatic/grip_tangential_stiffness" value="$(arg mujoco_tangential_stiffness)" type="double"
+             if="$(eval arg('mujoco_tangential_stiffness') != '')"/>
+    </group>
     <param name="simulation/pneumatic/human_arm_center_z" value="$(arg human_arm_center_z)"
            if="$(eval arg('simulation') and not arg('real_machine') and arg('mujoco'))"/>
     <param name="simulation/pneumatic/initial_height_offset"
@@ -180,12 +225,32 @@
            if="$(eval arg('simulation') and arg('start_attitude_allocator'))">
     <arg name="robot_ns" value="$(arg robot_ns)"/>
     <arg name="inchworm_action_c" value="$(arg inchworm_action_c)"/>
+    <arg name="hybrid_locomotion_outer_enabled" value="$(arg hybrid_locomotion_outer_enabled)"/>
+    <arg name="hybrid_locomotion_initial_bottom_kpa" value="$(arg hybrid_locomotion_initial_bottom_kpa)"/>
+    <arg name="hybrid_rear_release_sec" value="$(arg hybrid_rear_release_sec)"/>
+    <arg name="hybrid_rear_grasp_sec" value="$(arg hybrid_rear_grasp_sec)"/>
+    <arg name="hybrid_rear_low_kpa" value="$(arg hybrid_rear_low_kpa)"/>
+    <arg name="hybrid_rear_vent_lead_margin_sec" value="$(arg hybrid_rear_vent_lead_margin_sec)"/>
+    <arg name="hybrid_rear_vent_start_margin_rad" value="$(arg hybrid_rear_vent_start_margin_rad)"/>
+    <arg name="hybrid_locomotion_initial_m" value="$(arg hybrid_locomotion_initial_m)"/>
+    <arg name="hybrid_locomotion_retain_grasp_pressure" value="$(arg hybrid_locomotion_retain_grasp_pressure)"/>
+    <arg name="hybrid_locomotion_regrip_timeout_sec" value="$(arg hybrid_locomotion_regrip_timeout_sec)"/>
+    <arg name="hybrid_lift_pressure_gain_kpa_s_rad" value="$(arg hybrid_lift_pressure_gain_kpa_s_rad)"/>
+    <arg name="hybrid_lift_probe_sec" value="$(arg hybrid_lift_probe_sec)"/>
+    <arg name="hybrid_lift_search_rate_n_s" value="$(arg hybrid_lift_search_rate_n_s)"/>
+    <arg name="hybrid_reused_lift_rise_n_s" value="$(arg hybrid_reused_lift_rise_n_s)"/>
+    <arg name="hybrid_reused_lift_brake_margin_rad" value="$(arg hybrid_reused_lift_brake_margin_rad)"/>
+    <arg name="hybrid_pull_min_sec" value="$(arg hybrid_pull_min_sec)"/>
+    <arg name="hybrid_probe_extension_rad" value="$(arg hybrid_probe_extension_rad)"/>
+    <arg name="hybrid_lift_identification_bend_rad" value="$(arg hybrid_lift_identification_bend_rad)"/>
+    <arg name="hybrid_lift_identification_tolerance_rad" value="$(arg hybrid_lift_identification_tolerance_rad)"/>
+    <arg name="hybrid_lift_identification_extension_limit_rad" value="$(arg hybrid_lift_identification_extension_limit_rad)"/>
+    <arg name="hybrid_slip_probe_max_pressure_kpa" value="$(arg hybrid_slip_probe_max_pressure_kpa)"/>
+    <arg name="maximum_pressure_kpa" value="$(arg maximum_pressure_kpa)"/>
+    <arg name="correction_pair_reverse_spinal_mapping"
+         value="false"/>
     <arg name="recovery_predictive_enabled" value="$(arg recovery_predictive_enabled)"/>
     <arg name="recovery_predictive_shadow" value="$(arg recovery_predictive_shadow)"/>
-    <arg name="action_c_reference_pulse_mode" value="$(arg action_c_reference_pulse_mode)"/>
-    <arg name="action_c_reference_single_pulse" value="$(arg action_c_reference_single_pulse)"/>
-    <arg name="action_c_pulse_search_enabled" value="$(arg action_c_pulse_search_enabled)"/>
-    <arg name="action_c_reference_thrust_n" value="$(arg action_c_reference_thrust_n)"/>
     <arg name="inchworm_action_d" value="$(arg inchworm_action_d)"/>
   </include>
 

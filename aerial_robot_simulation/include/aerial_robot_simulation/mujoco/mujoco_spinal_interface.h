@@ -37,6 +37,7 @@ namespace hardware_interface
   private:
     /* attitude estimator */
     bool on_ground_;
+    bool physical_imu_on_ground_{false};
 
     int motor_num_;
     std::vector<double> force_;

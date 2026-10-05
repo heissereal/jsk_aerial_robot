@@ -1,5 +1,4 @@
 #include <hugmy/control/attitude_pressure_controller.h>
-#include <hugmy/control/action_c_feedback.h>
 
 #include <algorithm>
 #include <cmath>
@@ -54,52 +53,9 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   pnh_.param("allocation_pressure_epsilon_kpa", allocation_pressure_epsilon_kpa_, 0.25);
   pnh_.param("allocation_bias_weight", allocation_bias_weight_, 0.01);
   pnh_.param("state_machine_enabled", state_machine_enabled_, true);
-  pnh_.param("action_c_reference_pulse_mode", action_c_reference_pulse_mode_, false);
-  pnh_.param("action_c_reference_single_pulse", action_c_reference_single_pulse_, false);
-  pnh_.param("action_c_pulse_search_enabled", action_c_pulse_search_enabled_, false);
-  pnh_.param("action_c_pulse_search_step_n", action_c_pulse_search_step_n_, 0.5);
-  pnh_.param("action_c_pulse_search_progress_m", action_c_pulse_search_progress_m_, 0.002);
-  action_c_pulse_search_step_n_ = std::max(0.0, std::min(0.5, action_c_pulse_search_step_n_));
-  action_c_pulse_search_progress_m_ = std::max(0.0005, action_c_pulse_search_progress_m_);
-  pnh_.param("action_c_reference_off_sec", action_c_reference_off_sec_, 1.0);
-  pnh_.param("action_c_reference_thrust_n", action_c_reference_thrust_n_, 3.0);
-  action_c_reference_off_sec_ = std::max(0.1, action_c_reference_off_sec_);
-  pnh_.param("action_c_pressure_pull_enabled", action_c_pressure_pull_enabled_, true);
-  pnh_.param("action_c_propulsion_enabled", action_c_propulsion_enabled_, true);
-  pnh_.param("action_c_pressure_pull_ratio", action_c_pressure_pull_ratio_, 0.35);
-  pnh_.param("action_c_pressure_pull_max_n", action_c_pressure_pull_max_n_, 1.5);
-  pnh_.param("action_c_pressure_pull_timeout_sec", action_c_pressure_pull_timeout_sec_, 5.0);
-  pnh_.param("action_c_powered_regrip_timeout_sec", action_c_powered_regrip_timeout_sec_, 3.0);
-  pnh_.param("action_c_flexion_lookahead_sec", action_c_flexion_lookahead_sec_, 0.08);
-  if (!std::isfinite(action_c_pressure_pull_timeout_sec_) ||
-      !std::isfinite(action_c_powered_regrip_timeout_sec_) || !std::isfinite(action_c_flexion_lookahead_sec_))
-    throw std::invalid_argument("Nonfinite Action C powered-pull timing");
-  pnh_.param("action_c_rear_release_max_kpa", action_c_rear_release_max_kpa_, 8.0);
-  pnh_.param("action_c_rear_release_hold_kpa", action_c_rear_release_hold_kpa_, 10.0);
-  pnh_.param("action_c_rear_release_hard_kpa", action_c_rear_release_hard_kpa_, 12.0);
-  pnh_.param("action_c_rear_release_grace_sec", action_c_rear_release_grace_sec_, 0.10);
-  if (!std::isfinite(action_c_rear_release_max_kpa_) ||
-      !std::isfinite(action_c_rear_release_hold_kpa_) ||
-      !std::isfinite(action_c_rear_release_hard_kpa_) ||
-      !std::isfinite(action_c_rear_release_grace_sec_) ||
-      action_c_rear_release_max_kpa_ < 0.0 || action_c_rear_release_max_kpa_ > 10.0 ||
-      action_c_rear_release_hold_kpa_ < action_c_rear_release_max_kpa_ ||
-      action_c_rear_release_hard_kpa_ < action_c_rear_release_hold_kpa_ ||
-      action_c_rear_release_hard_kpa_ > 12.0 ||
-      action_c_rear_release_grace_sec_ < 0.0 || action_c_rear_release_grace_sec_ > 0.3)
-    throw std::invalid_argument("Invalid Action C rear release hysteresis limits");
-  pnh_.param("action_c_rear_release_timeout_sec", action_c_rear_release_timeout_sec_, 3.0);
-  pnh_.param("action_c_abort_reverse_travel_m", action_c_abort_reverse_travel_m_, 0.03);
-  // Bound the new powered phase independently of the main pulse amplitude.
-  action_c_pressure_pull_ratio_ = std::max(0.0, std::min(0.5, action_c_pressure_pull_ratio_));
-  action_c_pressure_pull_max_n_ = std::max(0.0, std::min(1.5, action_c_pressure_pull_max_n_));
-  action_c_pressure_pull_timeout_sec_ = std::max(0.1, std::min(6.0, action_c_pressure_pull_timeout_sec_));
-  action_c_powered_regrip_timeout_sec_ = std::max(0.2, std::min(5.0, action_c_powered_regrip_timeout_sec_));
-  action_c_flexion_lookahead_sec_ = std::max(0.02, std::min(0.15, action_c_flexion_lookahead_sec_));
-  action_c_rear_release_max_kpa_ = std::max(0.0, std::min(10.0, action_c_rear_release_max_kpa_));
-  action_c_rear_release_timeout_sec_ = std::max(0.1, std::min(5.0, action_c_rear_release_timeout_sec_));
-  action_c_abort_reverse_travel_m_ = std::max(0.005, std::min(0.03, action_c_abort_reverse_travel_m_));
   pnh_.param("correction_roll_only", correction_roll_only_, true);
+  pnh_.param("correction_pair_reverse_spinal_mapping",
+             correction_pair_reverse_spinal_mapping_, false);
   pnh_.param("action_c_continuous_recovery_enabled",
              action_c_continuous_recovery_enabled_, true);
   // These settings affect continuous Action-C posture recovery ONLY.
@@ -113,6 +69,12 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   recovery_param("recovery_target_rate_rad_s", roll_recovery_config_.max_target_rate, 0.02, 0.3);
   recovery_param("recovery_rate_kp_n_s_rad", roll_recovery_config_.rate_kp, 0.1, 10.0);
   recovery_param("recovery_rate_ki_n_rad", roll_recovery_config_.rate_ki, 0.0, 10.0);
+  recovery_param("recovery_integral_slew_n_s", roll_recovery_config_.integral_rate, 0.05, 1.0);
+  recovery_param("recovery_thrust_rise_n_s", roll_recovery_config_.rise, 0.2, 4.0);
+  recovery_param("recovery_thrust_fall_n_s", roll_recovery_config_.fall, 0.5, 8.0);
+  recovery_param("recovery_settle_rate_rad_s", roll_recovery_config_.settle_rate, 0.02, 0.3);
+  recovery_param("recovery_settle_sec", roll_recovery_config_.settle_sec, 0.04, 0.5);
+  recovery_param("recovery_stop_margin_rad", roll_recovery_config_.stop_margin, 0.0, 0.05236);
   recovery_param("recovery_model_min_lever_m", roll_recovery_config_.min_lever, 0.005, 0.1);
   recovery_param("recovery_model_fallback_thrust_n", roll_recovery_config_.fallback_thrust, 0.0, 1.0);
   recovery_param("recovery_response_delay_sec", roll_recovery_config_.response_delay, 0.0, 1.0);
@@ -135,7 +97,7 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   recovery_param("recovery_release_pressure_kpa", recovery_release_pressure_kpa_, 0.0, 30.0);
   recovery_param("recovery_pressure_down_rate_kpa_s", recovery_pressure_down_rate_, 0.0, 2.0);
   pnh_.param("action_c_recovery_no_progress_timeout_sec",
-             action_c_recovery_no_progress_timeout_sec_, 10.0);
+             action_c_recovery_no_progress_timeout_sec_, 30.0);
   action_c_recovery_no_progress_timeout_sec_ = std::max(1.0,
       action_c_recovery_no_progress_timeout_sec_);
   ROS_INFO("Posture recovery axes: %s",
@@ -351,188 +313,6 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
              rocking_front_lower_rate_n_s_, 0.25);
   pnh_.param("rocking_land_settle_sec", rocking_land_settle_sec_, 0.4);
   pnh_.param("rocking_max_tilt_rad", rocking_max_tilt_rad_, 30.0 * M_PI / 180.0);
-  pnh_.param("action_c_min_thrust_n", action_c_min_thrust_n_, 3.0);
-  pnh_.param("action_c_max_thrust_n", action_c_max_thrust_n_, 5.0);
-  pnh_.param("action_c_thrust_step_n", action_c_thrust_step_n_, 0.5);
-  pnh_.param("action_c_target_angle_rad", action_c_target_angle_rad_, M_PI / 2.0);
-  pnh_.param("action_c_angle_tolerance_rad", action_c_angle_tolerance_rad_, 15.0 * M_PI / 180.0);
-  pnh_.param("action_c_pressure_gain_kpa_rad", action_c_pressure_gain_kpa_rad_, 8.0);
-  pnh_.param("action_c_pulse_duration_sec", action_c_pulse_duration_sec_, 0.60);
-  pnh_.param("action_c_thrust_ramp_n_s", action_c_thrust_ramp_n_s_, 8.0);
-  pnh_.param("action_c_thrust_down_rate_n_s",
-             action_c_thrust_down_rate_n_s_, 30.0);
-  pnh_.param("action_c_extension_target_rad",
-             action_c_extension_target_rad_, 8.0 * M_PI / 180.0);
-  pnh_.param("action_c_max_extension_rad",
-             action_c_max_extension_rad_, 20.0 * M_PI / 180.0);
-  pnh_.param("action_c_max_extension_mismatch_rad",
-             action_c_max_extension_mismatch_rad_, 15.0 * M_PI / 180.0);
-  pnh_.param("action_c_min_safe_angle_rad",
-             action_c_min_safe_angle_rad_, 55.0 * M_PI / 180.0);
-  pnh_.param("action_c_prepare_min_bend_rad",
-             action_c_prepare_min_bend_rad_, 40.0 * M_PI / 180.0);
-  pnh_.param("action_c_hard_min_bend_rad",
-             action_c_hard_min_bend_rad_, 30.0 * M_PI / 180.0);
-  pnh_.param("action_c_start_extension_margin_rad",
-             action_c_start_extension_margin_rad_, 2.0 * M_PI / 180.0);
-  pnh_.param("action_c_pulse_roll_handoff_enabled", action_c_pulse_roll_handoff_enabled_, true);
-  pnh_.param("action_c_pulse_roll_handoff_lookahead_sec", action_c_pulse_roll_handoff_lookahead_sec_, 0.10);
-  pnh_.param("action_c_pulse_roll_handoff_margin_rad", action_c_pulse_roll_handoff_margin_rad_, 2.0 * M_PI / 180.0);
-  pnh_.param("action_c_extension_rate_limit_rad_s",
-             action_c_extension_rate_limit_rad_s_, 180.0 * M_PI / 180.0);
-  pnh_.param("action_c_rebend_target_rad",
-             action_c_rebend_target_rad_, 6.0 * M_PI / 180.0);
-  pnh_.param("action_c_rebend_pressure_boost_kpa",
-             action_c_rebend_pressure_boost_kpa_, 5.0);
-  pnh_.param("action_c_front_pulse_pressure_kpa",
-             action_c_front_pulse_pressure_kpa_, 5.0);
-  pnh_.param("action_c_recovery_timeout_sec",
-             action_c_recovery_timeout_sec_, 1.5);
-  pnh_.param("action_c_recovery_settle_sec",
-             action_c_recovery_settle_sec_, 0.10);
-  pnh_.param("action_c_max_reverse_travel_m",
-             action_c_max_reverse_travel_m_, 0.005);
-  pnh_.param("action_c_max_body_tilt_change_rad",
-             action_c_max_body_tilt_change_rad_, 10.0 * M_PI / 180.0);
-  pnh_.param("action_c_pulse_pressure_gain_kpa_rad",
-             action_c_pulse_pressure_gain_kpa_rad_, 8.0);
-  pnh_.param("action_c_pulse_pressure_rate_kpa_s",
-             action_c_pulse_pressure_rate_kpa_s_, 10.0);
-  pnh_.param("action_c_pulse_angle_deadband_rad",
-             action_c_pulse_angle_deadband_rad_, 3.0 * M_PI / 180.0);
-  pnh_.param("action_c_max_pressure_kpa", action_c_max_pressure_kpa_, 50.0);
-  pnh_.param("action_c_success_confirm_sec", action_c_success_confirm_sec_, 0.15);
-  pnh_.param("action_c_max_angle_retries", action_c_max_angle_retries_, 2);
-  pnh_.param("action_c_max_error_before_thrust_increase_rad",
-             action_c_max_error_before_thrust_increase_rad_, M_PI / 4.0);
-  pnh_.param("action_c_regrip_min_retained_ratio",
-             action_c_regrip_min_retained_ratio_, 0.75);
-  pnh_.param("action_c_gradient_min_pressure_delta_kpa",
-             action_c_gradient_min_pressure_delta_kpa_, 1.0);
-  pnh_.param("action_c_gradient_min_angle_delta_rad",
-             action_c_gradient_min_angle_delta_rad_, 2.0 * M_PI / 180.0);
-  pnh_.param("action_c_model_update_alpha", action_c_model_update_alpha_, 0.25);
-  pnh_.param("action_c_max_feedforward_pressure_step_kpa",
-             action_c_max_feedforward_pressure_step_kpa_, 10.0);
-  pnh_.param("action_c_angle_thrust_kp_n_rad",
-             action_c_angle_thrust_kp_n_rad_, 2.0);
-  pnh_.param("action_c_angle_thrust_kd_n_rad_s",
-             action_c_angle_thrust_kd_n_rad_s_, 0.08);
-  pnh_.param("action_c_angle_thrust_max_trim_n",
-             action_c_angle_thrust_max_trim_n_, 2.0);
-  pnh_.param("action_c_extension_sync_kp_n_rad",
-             action_c_extension_sync_kp_n_rad_, 0.0);
-  pnh_.param("action_c_extension_sync_deadband_rad",
-             action_c_extension_sync_deadband_rad_, 2.0 * M_PI / 180.0);
-  pnh_.param("action_c_extension_prediction_sec",
-             action_c_extension_prediction_sec_, 0.04);
-  pnh_.param("action_c_individual_extension_enabled",
-             action_c_individual_extension_enabled_, false);
-  pnh_.param("action_c_extension_trajectory_sec", action_c_extension_trajectory_sec_, 0.45);
-  pnh_.param("action_c_individual_kp_n_rad", action_c_individual_kp_n_rad_, 6.0);
-  pnh_.param("action_c_individual_kd_n_rad_s", action_c_individual_kd_n_rad_s_, 0.12);
-  pnh_.param("action_c_individual_assist_max_n", action_c_individual_assist_max_n_, 0.25);
-  pnh_.param("action_c_sync_brake_band_rad", action_c_sync_brake_band_rad_, 4.0 * M_PI / 180.0);
-  pnh_.param("action_c_arm_learning_step_n", action_c_arm_learning_step_n_, 0.25);
-  pnh_.param("action_c_angle_rate_filter_alpha",
-             action_c_angle_rate_filter_alpha_, 0.25);
-  pnh_.param("action_c_online_pressure_adaptation_enabled",
-             action_c_online_pressure_adaptation_enabled_, false);
-  pnh_.param("action_c_pulse_roll_kp_n_rad",
-             action_c_pulse_roll_kp_n_rad_, 1.5);
-  pnh_.param("action_c_pulse_roll_kd_n_rad_s",
-             action_c_pulse_roll_kd_n_rad_s_, 0.05);
-  pnh_.param("action_c_pulse_roll_max_trim_n",
-             action_c_pulse_roll_max_trim_n_, 0.3);
-  pnh_.param("action_c_roll_target_rad", action_c_roll_target_rad_, 0.0);
-  pnh_.param("action_c_pre_roll_deadband_rad",
-             action_c_pre_roll_deadband_rad_, 2.0 * M_PI / 180.0);
-  pnh_.param("action_c_roll_recorrect_threshold_rad",
-             action_c_roll_recorrect_threshold_rad_,
-             10.0 * M_PI / 180.0);
-  pnh_.param("action_c_pre_roll_rate_tolerance_rad_s",
-             action_c_pre_roll_rate_tolerance_rad_s_, 10.0 * M_PI / 180.0);
-  pnh_.param("action_c_pre_roll_kp_n_rad",
-             action_c_pre_roll_kp_n_rad_, 8.0);
-  pnh_.param("action_c_pre_roll_min_thrust_n",
-             action_c_pre_roll_min_thrust_n_, 1.0);
-  pnh_.param("action_c_pre_roll_max_thrust_n",
-             action_c_pre_roll_max_thrust_n_, 2.5);
-  pnh_.param("action_c_pre_roll_thrust_ramp_n_s",
-             action_c_pre_roll_thrust_ramp_n_s_, 6.0);
-  pnh_.param("action_c_pre_roll_settle_sec",
-             action_c_pre_roll_settle_sec_, 0.10);
-  pnh_.param("action_c_pre_roll_pressure_drop_kpa",
-             action_c_pre_roll_pressure_drop_kpa_, 40.0);
-  pnh_.param("action_c_pre_roll_min_pressure_kpa",
-             action_c_pre_roll_min_pressure_kpa_, 0.0);
-  pnh_.param("action_c_prepare_timeout_sec",
-             action_c_prepare_timeout_sec_, 20.0);
-  pnh_.param("action_c_auto_roll_correction_enabled",
-             action_c_auto_roll_correction_enabled_, false);
-  pnh_.param("action_c_adaptive_burst_enabled",
-             action_c_adaptive_burst_enabled_, true);
-  pnh_.param("action_c_optimizer_enabled",
-             action_c_adaptive_burst_enabled_,
-             action_c_adaptive_burst_enabled_);
-  pnh_.param("action_c_optimizer_reset_on_command",
-             action_c_optimizer_reset_on_command_, false);
-  pnh_.param("action_c_thrust_reprobe_safe_pulses",
-             action_c_thrust_reprobe_safe_pulses_, 3);
-  pnh_.param("action_c_thrust_reprobe_step_n",
-             action_c_thrust_reprobe_step_n_, 0.25);
-  pnh_.param("action_c_thrust_reprobe_max_mismatch_rad",
-             action_c_thrust_reprobe_max_mismatch_rad_, 12.0 * M_PI / 180.0);
-  pnh_.param("action_c_optimize_bottom_enabled",
-             action_c_optimize_bottom_enabled_, true);
-  pnh_.param("action_c_bottom_initial_kpa",
-             action_c_bottom_initial_kpa_, 30.0);
-  pnh_.param("action_c_bottom_min_kpa",
-             action_c_bottom_min_kpa_, 20.0);
-  pnh_.param("action_c_bottom_max_kpa",
-             action_c_bottom_max_kpa_, 30.0);
-  pnh_.param("action_c_bottom_step_kpa",
-             action_c_bottom_step_kpa_, 5.0);
-  pnh_.param("action_c_adaptive_thrust_step_n",
-             action_c_adaptive_thrust_step_n_, 0.25);
-  pnh_.param("action_c_optimizer_thrust_step_n",
-             action_c_adaptive_thrust_step_n_,
-             action_c_adaptive_thrust_step_n_);
-  pnh_.param("action_c_objective_progress_weight",
-             action_c_objective_progress_weight_, 1.0);
-  pnh_.param("action_c_objective_tilt_weight",
-             action_c_objective_tilt_weight_, 0.10);
-  pnh_.param("action_c_objective_rate_weight",
-             action_c_objective_rate_weight_, 0.001);
-  pnh_.param("action_c_objective_thrust_energy_weight",
-             action_c_objective_thrust_energy_weight_, 0.0001);
-  pnh_.param("action_c_objective_recovery_weight",
-             action_c_objective_recovery_weight_, 0.030);
-  pnh_.param("action_c_objective_angle_mismatch_weight",
-             action_c_objective_angle_mismatch_weight_, 0.10);
-  pnh_.param("action_c_objective_failed_pulse_weight",
-             action_c_objective_failed_pulse_weight_, 0.005);
-  pnh_.param("action_c_optimizer_initial_burst_pulses",
-             action_c_optimizer_initial_burst_pulses_, 1);
-  pnh_.param("action_c_optimizer_min_burst_pulses",
-             action_c_optimizer_min_burst_pulses_, 1);
-  pnh_.param("action_c_optimizer_max_burst_pulses",
-             action_c_optimizer_max_burst_pulses_, 5);
-  pnh_.param("action_c_posture_soft_limit_rad",
-             action_c_posture_soft_limit_rad_, 8.0 * M_PI / 180.0);
-  pnh_.param("action_c_posture_recovery_trigger_rad",
-             action_c_posture_recovery_trigger_rad_,
-             8.0 * M_PI / 180.0);
-  pnh_.param("action_c_posture_resume_rad",
-             action_c_posture_resume_rad_, 3.0 * M_PI / 180.0);
-  pnh_.param("action_c_posture_settle_sec", action_c_posture_settle_sec_, 0.5);
-  action_c_posture_settle_sec_ = std::max(0.0, action_c_posture_settle_sec_);
-  pnh_.param("action_c_posture_rate_trigger_rad_s",
-             action_c_posture_rate_trigger_rad_s_, 0.8);
-  pnh_.param("action_c_tilt_growth_alpha",
-             action_c_tilt_growth_alpha_, 0.5);
-  pnh_.param("action_c_max_posture_recoveries",
-             action_c_max_posture_recoveries_, 5);
   pnh_.param("action_d_target_angle_rad", action_d_target_angle_rad_, M_PI / 2.0);
   pnh_.param("action_d_soft_min_angle_rad", action_d_soft_min_angle_rad_,
              75.0 * M_PI / 180.0);
@@ -719,250 +499,105 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   rocking_front_min_advance_m_ = std::max(0.0, rocking_front_min_advance_m_);
   rocking_front_angle_tolerance_rad_ = std::max(
       0.0, rocking_front_angle_tolerance_rad_);
-  action_c_min_thrust_n_ = std::max(0.0, std::min(
-      pwm_test_max_thrust_n_, action_c_min_thrust_n_));
-  action_c_max_thrust_n_ = std::max(action_c_min_thrust_n_, std::min(
-      pwm_test_max_thrust_n_, action_c_max_thrust_n_));
-  action_c_thrust_step_n_ = std::max(0.0, action_c_thrust_step_n_);
-  action_c_thrust_ramp_n_s_ = std::max(0.0, action_c_thrust_ramp_n_s_);
-  action_c_thrust_down_rate_n_s_ = std::max(
-      action_c_thrust_ramp_n_s_, action_c_thrust_down_rate_n_s_);
+  // Predictive Action C constraints and shared roll-recovery settings.
+  pnh_.param("action_c_rear_release_max_kpa", action_c_rear_release_max_kpa_, 8.0);
+  pnh_.param("action_c_rear_release_hold_kpa", action_c_rear_release_hold_kpa_, 10.0);
+  pnh_.param("action_c_rear_release_hard_kpa", action_c_rear_release_hard_kpa_, 12.0);
+  pnh_.param("action_c_rear_release_grace_sec", action_c_rear_release_grace_sec_, 0.10);
+  pnh_.param("action_c_abort_reverse_travel_m", action_c_abort_reverse_travel_m_, 0.03);
+  pnh_.param("action_c_max_thrust_n", action_c_max_thrust_n_, 6.0);
+  pnh_.param("action_c_extension_target_rad",
+             action_c_extension_target_rad_, 8.0 * M_PI / 180.0);
+  pnh_.param("action_c_max_extension_rad",
+             action_c_max_extension_rad_, 20.0 * M_PI / 180.0);
+  pnh_.param("action_c_max_extension_mismatch_rad",
+             action_c_max_extension_mismatch_rad_, 15.0 * M_PI / 180.0);
+  pnh_.param("action_c_min_safe_angle_rad",
+             action_c_min_safe_angle_rad_, 55.0 * M_PI / 180.0);
+  pnh_.param("action_c_hard_min_bend_rad",
+             action_c_hard_min_bend_rad_, 30.0 * M_PI / 180.0);
+  pnh_.param("action_c_start_extension_margin_rad",
+             action_c_start_extension_margin_rad_, 2.0 * M_PI / 180.0);
+  pnh_.param("action_c_extension_rate_limit_rad_s",
+             action_c_extension_rate_limit_rad_s_, 180.0 * M_PI / 180.0);
+  pnh_.param("action_c_pre_roll_rate_tolerance_rad_s",
+             action_c_pre_roll_rate_tolerance_rad_s_, 10.0 * M_PI / 180.0);
+  pnh_.param("action_c_prepare_timeout_sec",
+             action_c_prepare_timeout_sec_, 20.0);
+  pnh_.param("action_c_posture_recovery_trigger_rad",
+             action_c_posture_recovery_trigger_rad_,
+             8.0 * M_PI / 180.0);
+  pnh_.param("action_c_posture_resume_rad",
+             action_c_posture_resume_rad_, 3.0 * M_PI / 180.0);
+  pnh_.param("action_c_posture_settle_sec", action_c_posture_settle_sec_, 0.5);
+  pnh_.param("action_c_posture_rate_trigger_rad_s",
+             action_c_posture_rate_trigger_rad_s_, 0.8);
+  pnh_.param("action_c_emergency_stop_roll_rad",
+             action_c_emergency_stop_roll_rad_, M_PI / 2.0);
+  pnh_.param("action_c_max_posture_recoveries",
+             action_c_max_posture_recoveries_, 5);
+  pnh_.param("action_c_bottom_deflation_tolerance_kpa", action_c_bottom_deflation_tolerance_kpa_, 5.0);
+  pnh_.param("action_c_roll_trend_window_sec", action_c_roll_trend_.window_sec, 0.5);
+  pnh_.param("action_c_roll_trend_growth_rad", action_c_roll_trend_.growth_rad, M_PI / 180.0);
+  pnh_.param("action_c_roll_trend_rate_rad_s", action_c_roll_trend_.outward_rate_rad_s, M_PI / 180.0);
+  pnh_.param("action_c_posture_hard_roll_rad", action_c_posture_hard_roll_rad_, 15.0 * M_PI / 180.0);
+  pnh_.param("action_c_pressure_hold_tolerance_kpa", action_c_pressure_hold_tolerance_kpa_, 5.0);
+  pnh_.param("action_c_pressure_dropout_sec", action_c_pressure_dropout_sec_, 0.10);
+  pnh_.param("action_c_pressure_max_deviation_kpa", action_c_pressure_max_deviation_kpa_, 8.0);
+  action_c_rear_release_max_kpa_ = std::max(0.0, std::min(10.0, action_c_rear_release_max_kpa_));
+  action_c_abort_reverse_travel_m_ = std::max(0.005, std::min(0.03, action_c_abort_reverse_travel_m_));
+  action_c_posture_settle_sec_ = std::max(0.0, action_c_posture_settle_sec_);
   action_c_extension_target_rad_ = std::max(0.0,
       action_c_extension_target_rad_);
   action_c_max_extension_rad_ = std::max(action_c_extension_target_rad_,
       action_c_max_extension_rad_);
   action_c_max_extension_mismatch_rad_ = std::max(0.0,
       action_c_max_extension_mismatch_rad_);
-  action_c_min_safe_angle_rad_ = std::max(0.0, std::min(
-      action_c_target_angle_rad_, action_c_min_safe_angle_rad_));
-  if (!std::isfinite(action_c_prepare_min_bend_rad_) ||
-      !std::isfinite(action_c_hard_min_bend_rad_) ||
-      !std::isfinite(action_c_start_extension_margin_rad_) ||
-      action_c_prepare_min_bend_rad_ < 0.0 || action_c_prepare_min_bend_rad_ > M_PI ||
-      action_c_hard_min_bend_rad_ < 0.0 ||
-      action_c_hard_min_bend_rad_ > action_c_min_safe_angle_rad_ ||
-      action_c_start_extension_margin_rad_ <= 0.0 ||
-      action_c_hard_min_bend_rad_ + action_c_extension_target_rad_ +
-          action_c_start_extension_margin_rad_ > M_PI)
-    throw std::invalid_argument("Invalid Action C preparation/pulse bend limits");
-  if (!std::isfinite(action_c_pulse_roll_handoff_lookahead_sec_) ||
-      action_c_pulse_roll_handoff_lookahead_sec_ < 0.0 ||
-      action_c_pulse_roll_handoff_lookahead_sec_ > 0.25 ||
-      !std::isfinite(action_c_pulse_roll_handoff_margin_rad_) ||
-      action_c_pulse_roll_handoff_margin_rad_ < 0.0 ||
-      action_c_pulse_roll_handoff_margin_rad_ > 5.0 * M_PI / 180.0)
-    throw std::invalid_argument("Invalid Action C pulse roll handoff prediction limits");
   action_c_extension_rate_limit_rad_s_ = std::max(0.0,
       action_c_extension_rate_limit_rad_s_);
-  action_c_rebend_target_rad_ = std::max(0.0,
-      action_c_rebend_target_rad_);
-  action_c_rebend_pressure_boost_kpa_ = std::max(0.0,
-      action_c_rebend_pressure_boost_kpa_);
-  action_c_front_pulse_pressure_kpa_ = std::max(0.0, std::min(
-      std::min(maximum_pressure_kpa_, action_c_max_pressure_kpa_),
-      action_c_front_pulse_pressure_kpa_));
-  action_c_recovery_timeout_sec_ = std::max(0.1,
-      action_c_recovery_timeout_sec_);
-  action_c_recovery_settle_sec_ = std::max(0.0,
-      action_c_recovery_settle_sec_);
-  action_c_max_reverse_travel_m_ = std::max(0.0,
-      action_c_max_reverse_travel_m_);
-  action_c_max_body_tilt_change_rad_ = std::max(0.0,
-      action_c_max_body_tilt_change_rad_);
-  action_c_angle_thrust_kp_n_rad_ = std::max(0.0,
-      action_c_angle_thrust_kp_n_rad_);
-  action_c_angle_thrust_kd_n_rad_s_ = std::max(0.0,
-      action_c_angle_thrust_kd_n_rad_s_);
-  action_c_angle_thrust_max_trim_n_ = std::max(0.0,
-      action_c_angle_thrust_max_trim_n_);
-  action_c_extension_sync_kp_n_rad_ = std::max(0.0,
-      action_c_extension_sync_kp_n_rad_);
-  action_c_extension_sync_deadband_rad_ = std::max(0.0,
-      action_c_extension_sync_deadband_rad_);
-  action_c_extension_prediction_sec_ = std::max(0.0, std::min(
-      0.08, action_c_extension_prediction_sec_));
-  action_c_extension_trajectory_sec_ = std::max(0.05, std::min(
-      action_c_pulse_duration_sec_, action_c_extension_trajectory_sec_));
-  action_c_individual_kp_n_rad_ = std::max(0.0, action_c_individual_kp_n_rad_);
-  action_c_individual_kd_n_rad_s_ = std::max(0.0, action_c_individual_kd_n_rad_s_);
-  action_c_individual_assist_max_n_ = std::max(0.0, std::min(0.5, action_c_individual_assist_max_n_));
-  action_c_sync_brake_band_rad_ = std::max(0.01, action_c_sync_brake_band_rad_);
-  action_c_arm_learning_step_n_ = std::max(0.0, std::min(0.25, action_c_arm_learning_step_n_));
-  action_c_angle_rate_filter_alpha_ = std::max(0.0, std::min(
-      1.0, action_c_angle_rate_filter_alpha_));
-  pnh_.param("action_c_coordination_enabled", action_c_coordination_enabled_, true);
-  pnh_.param("action_c_coordination_assist_max_n", action_c_coordination_.max_assist, 0.3);
-  pnh_.param("action_c_coordination_lag_kp_n_rad", action_c_coordination_.lag_kp, 6.0);
-  action_c_coordination_.lag_kp = std::max(0.0, std::min(10.0, action_c_coordination_.lag_kp));
-  pnh_.param("action_c_coordination_pressure_lead_max_sec", action_c_coordination_.max_lead, 0.12);
-  pnh_.param("action_c_coordination_learning_trials", action_c_coordination_.learning_rounds, 3);
-  action_c_coordination_.max_assist = std::max(0.0, std::min(0.3, action_c_coordination_.max_assist));
-  action_c_coordination_.max_lead = std::max(0.0, std::min(0.12, action_c_coordination_.max_lead));
-  action_c_coordination_.learning_rounds = std::max(0, std::min(5, action_c_coordination_.learning_rounds));
-  pnh_.param("action_c_efficiency_objective_enabled", action_c_efficiency_objective_enabled_, true);
-  pnh_.param("action_c_front_release_enabled", action_c_front_release_enabled_, true);
-  pnh_.param("action_c_front_release_tolerance_kpa", action_c_front_release_tolerance_kpa_, 5.0);
-  pnh_.param("action_c_bottom_deflation_tolerance_kpa", action_c_bottom_deflation_tolerance_kpa_, 5.0);
-  pnh_.param("action_c_bottom_post_pulse_drop_kpa", action_c_bottom_post_pulse_drop_kpa_, 3.0);
-  pnh_.param("action_c_bottom_sync_enabled", action_c_bottom_sync_enabled_, true);
-  pnh_.param("action_c_bottom_wait_kpa", action_c_bottom_wait_kpa_, 5.0);
-  action_c_bottom_wait_kpa_ = std::max(0.0, std::min(30.0, action_c_bottom_wait_kpa_));
-  // Reference comparisons retain their explicit, fixed bottom waveform.
-  if (action_c_reference_pulse_mode_) action_c_bottom_sync_enabled_ = false;
-  action_c_bottom_post_pulse_drop_kpa_ = std::max(0.0, std::min(5.0, action_c_bottom_post_pulse_drop_kpa_));
-  pnh_.param("action_c_roll_trend_window_sec", action_c_roll_trend_.window_sec, 0.5);
-  pnh_.param("action_c_roll_trend_growth_rad", action_c_roll_trend_.growth_rad, M_PI / 180.0);
-  pnh_.param("action_c_roll_trend_rate_rad_s", action_c_roll_trend_.outward_rate_rad_s, M_PI / 180.0);
-  pnh_.param("action_c_posture_hard_roll_rad", action_c_posture_hard_roll_rad_, 15.0 * M_PI / 180.0);
   action_c_roll_trend_.window_sec = std::max(0.2, std::min(1.0, action_c_roll_trend_.window_sec));
   action_c_roll_trend_.growth_rad = std::max(0.1 * M_PI / 180.0, action_c_roll_trend_.growth_rad);
   action_c_roll_trend_.outward_rate_rad_s = std::max(0.0, action_c_roll_trend_.outward_rate_rad_s);
   action_c_posture_hard_roll_rad_ = std::max(action_c_posture_recovery_trigger_rad_,
       std::min(15.0 * M_PI / 180.0, action_c_posture_hard_roll_rad_));
-  pnh_.param("action_c_pressure_hold_tolerance_kpa", action_c_pressure_hold_tolerance_kpa_, 5.0);
-  pnh_.param("action_c_pressure_dropout_sec", action_c_pressure_dropout_sec_, 0.10);
-  pnh_.param("action_c_pressure_max_deviation_kpa", action_c_pressure_max_deviation_kpa_, 8.0);
   action_c_pressure_hold_tolerance_kpa_ = std::max(0.0, std::min(5.0, action_c_pressure_hold_tolerance_kpa_));
   action_c_pressure_dropout_sec_ = std::max(0.0, std::min(0.10, action_c_pressure_dropout_sec_));
   action_c_pressure_max_deviation_kpa_ = std::max(action_c_pressure_hold_tolerance_kpa_,
       std::min(8.0, action_c_pressure_max_deviation_kpa_));
-  action_c_front_release_tolerance_kpa_ = std::max(0.0, std::min(5.0, action_c_front_release_tolerance_kpa_));
   action_c_bottom_deflation_tolerance_kpa_ = std::max(0.0, std::min(5.0, action_c_bottom_deflation_tolerance_kpa_));
-  pnh_.param("action_c_efficiency_shortfall_weight", action_c_efficiency_shortfall_weight_, 0.010);
-  action_c_efficiency_shortfall_weight_ = std::max(0.0, action_c_efficiency_shortfall_weight_);
-  pnh_.param("action_c_efficiency_thrust_weight", action_c_efficiency_thrust_weight_, 0.0001);
-  pnh_.param("action_c_efficiency_recovery_time_weight", action_c_efficiency_recovery_time_weight_, 0.001);
-  action_c_efficiency_thrust_weight_ = std::max(0.0, action_c_efficiency_thrust_weight_);
-  action_c_efficiency_recovery_time_weight_ = std::max(0.0, action_c_efficiency_recovery_time_weight_);
-  if (action_c_front_release_enabled_ && !action_c_reference_pulse_mode_ &&
-      action_c_online_pressure_adaptation_enabled_)
-    {
-      action_c_online_pressure_adaptation_enabled_ = false;
-      ROS_WARN("Action C front release owns pulse pressure; disabling conflicting online pressure-sign adaptation");
-    }
-  if (action_c_coordination_enabled_ &&
-      (action_c_reference_pulse_mode_ || action_c_individual_extension_enabled_ ||
-       action_c_online_pressure_adaptation_enabled_ || !action_c_adaptive_burst_enabled_))
-    {
-      action_c_coordination_enabled_ = false;
-      ROS_WARN("Action C residual coordination disabled: experimental controller or non-trial mode owns the actuators");
-    }
-  if (action_c_propulsion_enabled_ &&
-      (action_c_reference_pulse_mode_ || action_c_individual_extension_enabled_ ||
-       action_c_online_pressure_adaptation_enabled_ || !action_c_adaptive_burst_enabled_ ||
-       !action_c_pressure_pull_enabled_))
-    {
-      action_c_propulsion_enabled_ = false;
-      ROS_WARN("Action C propulsion adaptation disabled: requires normal C powered pull with exclusive trial ownership");
-    }
-  if (inchworm_action_c_enabled_)
-    ROS_INFO("Action C online coordination=%d: pair assist <= %.2f N, pressure lead <= %.3f s, learning <= %d valid trials/task; efficiency objective=%d",
-             action_c_coordination_enabled_, action_c_coordination_.max_assist,
-             action_c_coordination_.max_lead, action_c_coordination_.learning_rounds,
-             action_c_efficiency_objective_enabled_);
-  if (action_c_reference_pulse_mode_)
-    {
-      // Preserve the proven posture supervisor, but freeze gait exploration.
-      action_c_individual_extension_enabled_ = false;
-      action_c_online_pressure_adaptation_enabled_ = false;
-      action_c_auto_roll_correction_enabled_ = false;
-      action_c_reference_thrust_n_ = std::max(action_c_min_thrust_n_, std::min(
-          action_c_max_thrust_n_, std::isfinite(action_c_reference_thrust_n_)
-              ? action_c_reference_thrust_n_ : action_c_min_thrust_n_));
-      ROS_WARN("Action C timed pulse: initial %.2f N per front arm, base ON %.2f s / OFF >= %.2f s, equal pair/no angle trim; single=%d search=%d",
-               action_c_reference_thrust_n_, action_c_pulse_duration_sec_,
-               action_c_reference_off_sec_, action_c_reference_single_pulse_,
-               action_c_pulse_search_enabled_ && !action_c_reference_single_pulse_);
-    }
-  else if (inchworm_action_c_enabled_)
-    ROS_WARN("Action C optimizer: front release=%d (0 kPa when enabled); rear exhaust at pulse ON / regrip at OFF; J-based [thrust,bottom,burst] search=%d, bottom search=%d, online pressure adaptation=%d, individual assist=%d",
-             action_c_front_release_enabled_,
-             action_c_adaptive_burst_enabled_, action_c_optimize_bottom_enabled_,
-             action_c_online_pressure_adaptation_enabled_, action_c_individual_extension_enabled_);
-  action_c_pulse_roll_kp_n_rad_ = std::max(0.0,
-      action_c_pulse_roll_kp_n_rad_);
-  action_c_pulse_roll_kd_n_rad_s_ = std::max(0.0,
-      action_c_pulse_roll_kd_n_rad_s_);
-  action_c_pulse_roll_max_trim_n_ = std::max(0.0,
-      action_c_pulse_roll_max_trim_n_);
-  action_c_pre_roll_deadband_rad_ = std::max(0.0,
-      action_c_pre_roll_deadband_rad_);
-  action_c_roll_recorrect_threshold_rad_ = std::max(
-      action_c_pre_roll_deadband_rad_,
-      action_c_roll_recorrect_threshold_rad_);
   action_c_pre_roll_rate_tolerance_rad_s_ = std::max(0.0,
       action_c_pre_roll_rate_tolerance_rad_s_);
-  action_c_pre_roll_kp_n_rad_ = std::max(0.0,
-      action_c_pre_roll_kp_n_rad_);
-  action_c_pre_roll_min_thrust_n_ = std::max(0.0, std::min(
-      pwm_test_max_thrust_n_, action_c_pre_roll_min_thrust_n_));
-  action_c_pre_roll_max_thrust_n_ = std::max(
-      action_c_pre_roll_min_thrust_n_, std::min(
-          pwm_test_max_thrust_n_, action_c_pre_roll_max_thrust_n_));
-  action_c_pre_roll_thrust_ramp_n_s_ = std::max(0.0,
-      action_c_pre_roll_thrust_ramp_n_s_);
-  action_c_pre_roll_settle_sec_ = std::max(0.0,
-      action_c_pre_roll_settle_sec_);
-  action_c_pre_roll_pressure_drop_kpa_ = std::max(0.0,
-      action_c_pre_roll_pressure_drop_kpa_);
-  action_c_pre_roll_min_pressure_kpa_ = std::max(0.0, std::min(
-      pressure_safety_limit_kpa_, action_c_pre_roll_min_pressure_kpa_));
   action_c_prepare_timeout_sec_ = std::max(1.0,
       action_c_prepare_timeout_sec_);
-  action_c_bottom_min_kpa_ = std::max(0.0, std::min(
-      pressure_safety_limit_kpa_, action_c_bottom_min_kpa_));
-  action_c_bottom_max_kpa_ = std::max(action_c_bottom_min_kpa_, std::min(
-      pressure_safety_limit_kpa_, action_c_bottom_max_kpa_));
-  action_c_bottom_initial_kpa_ = std::max(action_c_bottom_min_kpa_, std::min(
-      action_c_bottom_max_kpa_, action_c_bottom_initial_kpa_));
-  action_c_bottom_step_kpa_ = std::max(0.0,
-      action_c_bottom_step_kpa_);
-  action_c_adaptive_thrust_step_n_ = std::max(0.0,
-      action_c_adaptive_thrust_step_n_);
-  action_c_thrust_reprobe_safe_pulses_ = std::max(1,
-      action_c_thrust_reprobe_safe_pulses_);
-  action_c_thrust_reprobe_step_n_ = std::max(0.0, std::min(
-      0.25, action_c_thrust_reprobe_step_n_));
-  action_c_thrust_reprobe_max_mismatch_rad_ = std::max(0.0, std::min(
-      0.8 * action_c_max_extension_mismatch_rad_,
-      action_c_thrust_reprobe_max_mismatch_rad_));
-  action_c_objective_progress_weight_ = std::max(0.0,
-      action_c_objective_progress_weight_);
-  action_c_objective_tilt_weight_ = std::max(0.0,
-      action_c_objective_tilt_weight_);
-  action_c_objective_rate_weight_ = std::max(0.0,
-      action_c_objective_rate_weight_);
-  action_c_objective_thrust_energy_weight_ = std::max(0.0,
-      action_c_objective_thrust_energy_weight_);
-  action_c_objective_recovery_weight_ = std::max(0.0,
-      action_c_objective_recovery_weight_);
-  action_c_objective_angle_mismatch_weight_ = std::max(0.0,
-      action_c_objective_angle_mismatch_weight_);
-  action_c_objective_failed_pulse_weight_ = std::max(0.0,
-      action_c_objective_failed_pulse_weight_);
-  action_c_optimizer_min_burst_pulses_ = std::max(1,
-      action_c_optimizer_min_burst_pulses_);
-  action_c_optimizer_max_burst_pulses_ = std::max(
-      action_c_optimizer_min_burst_pulses_,
-      action_c_optimizer_max_burst_pulses_);
-  action_c_optimizer_initial_burst_pulses_ = std::max(
-      action_c_optimizer_min_burst_pulses_, std::min(
-          action_c_optimizer_max_burst_pulses_,
-          action_c_optimizer_initial_burst_pulses_));
-  action_c_posture_soft_limit_rad_ = std::max(0.0,
-      action_c_posture_soft_limit_rad_);
-  action_c_posture_recovery_trigger_rad_ = std::max(
-      action_c_posture_soft_limit_rad_,
-      action_c_posture_recovery_trigger_rad_);
   action_c_posture_resume_rad_ = std::max(0.0, std::min(
       action_c_posture_recovery_trigger_rad_,
       action_c_posture_resume_rad_));
   action_c_posture_rate_trigger_rad_s_ = std::max(0.0,
       action_c_posture_rate_trigger_rad_s_);
-  action_c_tilt_growth_alpha_ = std::max(0.0, std::min(
-      1.0, action_c_tilt_growth_alpha_));
+  action_c_emergency_stop_roll_rad_ = std::max(
+      action_c_posture_hard_roll_rad_, std::min(M_PI,
+          action_c_emergency_stop_roll_rad_));
   action_c_max_posture_recoveries_ = std::max(1,
       action_c_max_posture_recoveries_);
+
+  if (inchworm_action_c_enabled_)
+    {
+      for (double value : {action_c_max_thrust_n_, action_c_extension_target_rad_,
+          action_c_max_extension_rad_, action_c_min_safe_angle_rad_, action_c_hard_min_bend_rad_,
+          action_c_start_extension_margin_rad_, action_c_posture_recovery_trigger_rad_,
+          action_c_posture_resume_rad_, action_c_rear_release_max_kpa_,
+          action_c_rear_release_hold_kpa_, action_c_rear_release_hard_kpa_,
+          action_c_rear_release_grace_sec_, action_c_abort_reverse_travel_m_})
+        if (!std::isfinite(value) || value < 0.0)
+          throw std::invalid_argument("Invalid Action C constraint");
+      if (action_c_hard_min_bend_rad_ > action_c_min_safe_angle_rad_ ||
+          action_c_start_extension_margin_rad_ <= 0.0 ||
+          action_c_rear_release_max_kpa_ > action_c_rear_release_hold_kpa_ ||
+          action_c_rear_release_hold_kpa_ > action_c_rear_release_hard_kpa_ ||
+          action_c_rear_release_hard_kpa_ > 12.0 || action_c_rear_release_grace_sec_ > 0.3 ||
+          action_c_posture_resume_rad_ > action_c_posture_recovery_trigger_rad_)
+        throw std::invalid_argument("Inconsistent Action C limits");
+    }
   action_d_target_angle_rad_ = std::max(0.0, std::min(
       M_PI, action_d_target_angle_rad_));
   action_d_soft_min_angle_rad_ = std::max(0.0, std::min(
@@ -1020,6 +655,8 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       0.0, action_d_posture_thrust_down_rate_n_s_);
 
   loadFixedVector(pnh_, "contact_position_main_body_m", contact_position_);
+  hybrid_contact_position_=contact_position_;
+  loadFixedVector(pnh_, "hybrid_contact_position_main_body_m", hybrid_contact_position_);
   loadFixedVector(pnh_, "center_of_mass_main_body_m", center_of_mass_);
   std::vector<double> bases;
   if (pnh_.getParam("arm_base_positions_main_body_m", bases))
@@ -1085,8 +722,6 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       "arm_shape_active", 1);
   arm_bend_angle_deg_pub_ = pnh_.advertise<std_msgs::Float32MultiArray>(
       "arm_bend_angle_deg", 1);
-  action_c_pulse_bend_pub_ = pnh_.advertise<std_msgs::Float32MultiArray>(
-      "action_c_pulse_bend_angle_deg", 1);
   desired_moment_pub_ = pnh_.advertise<geometry_msgs::Vector3Stamped>("desired_moment", 1);
   achieved_moment_pub_ = pnh_.advertise<geometry_msgs::Vector3Stamped>("predicted_moment", 1);
   correction_thrust_pub_ = nh_.advertise<spinal::PerchingThrustCommand>(
@@ -1103,6 +738,152 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
     root_flight_config_pub_ = nh_.advertise<spinal::FlightConfigCmd>(
         "/flight_config_cmd", 1);
   state_pub_ = pnh_.advertise<std_msgs::UInt8>("state", 1, true);
+  pnh_.param("hybrid_locomotion_outer_enabled", hybrid_search_.enabled, true);
+  pnh_.param("hybrid_locomotion_initial_bottom_kpa", hybrid_search_.initial.bottom, 30.0);
+  hybrid_single_config_.bottom_kpa=hybrid_search_.initial.bottom;
+  pnh_.param("hybrid_slip_probe_sec",hybrid_single_config_.slip_seconds,8.0);
+  pnh_.param("hybrid_lift_probe_sec",hybrid_single_config_.lift_seconds,10.0);
+  pnh_.param("hybrid_front_vent_timeout_sec",hybrid_single_config_.vent_seconds,30.0);
+  pnh_.param("hybrid_front_vent_tolerance_kpa",hybrid_single_config_.vent_tolerance,5.0);
+  pnh_.param("hybrid_lift_tilt_target_rad",hybrid_single_config_.tilt_target,3.*M_PI/180.);
+  pnh_.param("hybrid_pull_sec",hybrid_single_config_.pull_seconds,4.0);
+  pnh_.param("hybrid_pull_min_sec",hybrid_single_config_.pull_min_seconds,.5);
+  pnh_.param("hybrid_front_catch_tolerance_rad",
+      hybrid_single_config_.front_catch_tolerance,4.*M_PI/180.);
+  pnh_.param("hybrid_pull_progress_threshold_m",
+      hybrid_single_config_.pull_progress_threshold,.002);
+  pnh_.param("hybrid_pull_adaptation_step_n",
+      hybrid_single_config_.pull_adaptation_step,.5);
+  pnh_.param("hybrid_pull_adaptation_max_n",
+      hybrid_single_config_.pull_adaptation_max,6.0);
+  pnh_.param("hybrid_slip_seed_pull_max_n",
+      hybrid_single_config_.slip_seed_pull_max,3.0);
+  pnh_.param("hybrid_goal_scale_min",
+      hybrid_single_config_.goal_scale_min,.25);
+  pnh_.param("hybrid_goal_extension_min_scale",
+      hybrid_single_config_.goal_extension_min_scale,.55);
+  pnh_.param("hybrid_goal_pull_taper_fraction",
+      hybrid_single_config_.goal_pull_taper_fraction,.15);
+  pnh_.param("hybrid_front_catch_stall_confirm_sec",
+      hybrid_single_config_.catch_stall_confirm,.5);
+  pnh_.param("hybrid_front_catch_stall_rate_rad_s",
+      hybrid_single_config_.catch_stall_rate,.06);
+  pnh_.param("hybrid_front_catch_safe_margin_rad",
+      hybrid_single_config_.catch_safe_margin,M_PI/180.);
+  pnh_.param("hybrid_front_catch_pressure_tolerance_kpa",
+      hybrid_single_config_.catch_pressure_tolerance,3.0);
+  pnh_.param("hybrid_front_catch_roll_rate_rad_s",
+      hybrid_single_config_.catch_roll_rate,.08);
+  pnh_.param("hybrid_front_catch_roll_prediction_tolerance_rad",
+      hybrid_single_config_.catch_roll_prediction_tolerance,M_PI/180.);
+  pnh_.param("hybrid_front_regrip_timeout_sec",hybrid_single_config_.front_wait_seconds,8.0);
+  pnh_.param("hybrid_rear_release_sec",hybrid_single_config_.rear_low_seconds,2.0);
+  pnh_.param("hybrid_rear_grasp_sec",hybrid_single_config_.rear_grasp_seconds,1.0);
+  pnh_.param("hybrid_rear_low_kpa",hybrid_single_config_.rear_low_kpa,0.0);
+  pnh_.param("hybrid_rear_vent_lead_margin_sec",
+      hybrid_single_config_.rear_vent_lead_margin,.10);
+  pnh_.param("hybrid_rear_vent_start_margin_rad",
+      hybrid_single_config_.rear_vent_start_margin,5.*M_PI/180.);
+  pnh_.param("hybrid_probe_extension_rad",hybrid_single_config_.extension_rad,8.*M_PI/180.);
+  pnh_.param("hybrid_lift_identification_bend_rad",
+      hybrid_single_config_.identification_bend,20.*M_PI/180.);
+  pnh_.param("hybrid_lift_identification_tolerance_rad",
+      hybrid_single_config_.identification_tolerance,M_PI/180.);
+  pnh_.param("hybrid_lift_identification_confirm_sec",
+      hybrid_single_config_.identification_confirm,.06);
+  pnh_.param("hybrid_lift_identification_extension_limit_rad",
+      hybrid_single_config_.identification_extension_limit,80.*M_PI/180.);
+  pnh_.param("hybrid_lift_identification_sync_deadband_rad",
+      hybrid_single_config_.identification_sync_deadband,3.*M_PI/180.);
+  pnh_.param("hybrid_lift_identification_sync_gain_n_rad",
+      hybrid_single_config_.identification_sync_gain,10.);
+  pnh_.param("hybrid_lift_identification_tracking_start_rad",
+      hybrid_single_config_.identification_tracking_start,8.*M_PI/180.);
+  pnh_.param("hybrid_lift_identification_angle_kp_n_rad",
+      hybrid_single_config_.identification_angle_kp,4.);
+  pnh_.param("hybrid_lift_identification_rate_kd_n_s_rad",
+      hybrid_single_config_.identification_rate_kd,.8);
+  pnh_.param("hybrid_lift_identification_tracking_rise_n_s",
+      hybrid_single_config_.identification_tracking_rise,4.);
+  pnh_.param("hybrid_lift_identification_thrust_brake_horizon_sec",
+      hybrid_single_config_.identification_thrust_brake_horizon,.08);
+  pnh_.param("hybrid_lift_identification_bend_rate_limit_rad_s",
+      hybrid_single_config_.identification_bend_rate_limit,6.);
+  pnh_.param("hybrid_lift_identification_return_bend_rate_limit_rad_s",
+      hybrid_single_config_.identification_return_bend_rate_limit,8.);
+  pnh_.param("hybrid_lift_identification_return_pressure_slew_kpa_s",
+      hybrid_single_config_.identification_return_pressure_slew,30.);
+  pnh_.param("hybrid_slip_probe_max_thrust_n",hybrid_single_config_.slip_thrust_max,5.0);
+  pnh_.param("hybrid_slip_probe_max_pressure_kpa",
+      hybrid_single_config_.slip_pressure_max,40.0);
+  pnh_.param("hybrid_lift_search_rate_n_s",hybrid_single_config_.lift_rise,.7);
+  pnh_.param("hybrid_reused_lift_rise_n_s",
+      hybrid_single_config_.reused_lift_rise,8.0);
+  pnh_.param("hybrid_reused_lift_brake_margin_rad",
+      hybrid_single_config_.reused_lift_brake_margin,4.*M_PI/180.);
+  pnh_.param("hybrid_reused_lift_hold_pressure_max_kpa",
+      hybrid_single_config_.reused_lift_hold_pressure_max,10.);
+  pnh_.param("hybrid_lift_pressure_gain_kpa_s_rad",hybrid_single_config_.lift_pressure_gain,20.);
+  pnh_.param("hybrid_lift_overlap_pitch_start_rad",
+      hybrid_single_config_.lift_overlap_pitch_start,5.*M_PI/180.);
+  pnh_.param("hybrid_lift_overlap_pressure_start_ratio",
+      hybrid_single_config_.lift_overlap_pressure_start_ratio,.55);
+  pnh_.param("hybrid_lift_overlap_handoff_ratio",
+      hybrid_single_config_.lift_overlap_handoff_ratio,.60);
+  pnh_.param("hybrid_lift_overlap_min_reach_ratio",
+      hybrid_single_config_.lift_overlap_min_reach_ratio,.50);
+  pnh_.param("hybrid_lift_overlap_prefill_kpa",
+      hybrid_single_config_.lift_overlap_prefill_kpa,3.);
+  pnh_.param("hybrid_lift_overlap_min_measured_kpa",
+      hybrid_single_config_.lift_overlap_min_measured_kpa,2.);
+  pnh_.param("hybrid_lift_overlap_max_prediction_sec",
+      hybrid_single_config_.lift_overlap_max_prediction_sec,.60);
+  pnh_.param("hybrid_lift_overlap_max_prediction_lead_ratio",
+      hybrid_single_config_.lift_overlap_max_prediction_lead_ratio,.12);
+  pnh_.param("hybrid_lift_overlap_min_up_scale",
+      hybrid_single_config_.lift_overlap_min_up_scale,.65);
+  pnh_.param("hybrid_lift_approach_rate_n_s",hybrid_single_config_.approach_rise,2.);
+  pnh_.param("hybrid_lift_onset_margin_n",hybrid_single_config_.onset_margin_n,.6);
+  pnh_.param("hybrid_lift_onset_angle_rad",hybrid_single_config_.onset_angle,M_PI/180.);
+  pnh_.param("hybrid_lift_onset_rate_rad_s",hybrid_single_config_.onset_rate,.02);
+  pnh_.param("hybrid_lift_onset_confirm_sec",hybrid_single_config_.onset_confirm,.10);
+  pnh_.param("hybrid_lift_extension_rate_rad_s",hybrid_single_config_.extension_rate,.20);
+  pnh_.param("hybrid_locomotion_initial_m", hybrid_search_.initial.minimum_ratio, 1.0);
+  hybrid_search_.current=hybrid_search_.initial;
+  pnh_.param("hybrid_locomotion_horizon_sec", hybrid_config_.horizon, 2.0);
+  pnh_.param("hybrid_locomotion_budget_ms", hybrid_config_.budget_ms, 12.0);
+  pnh_.param("hybrid_locomotion_target_speed_m_s", hybrid_config_.target_speed, .005);
+  pnh_.param("hybrid_locomotion_sliding_rear_pressure_kpa", hybrid_config_.sliding_rear_pressure, 0.);
+  pnh_.param("hybrid_locomotion_retain_grasp_pressure", hybrid_retain_grasp_pressure_, false);
+  hybrid_grasp_pressure_.fill(base_pressure_kpa_);
+  pnh_.param("hybrid_locomotion_search_initial_thrust_n", hybrid_config_.search_initial_thrust, 1.0);
+  pnh_.param("hybrid_locomotion_search_thrust_step_n", hybrid_config_.search_thrust_step, .5);
+  pnh_.param("hybrid_locomotion_search_interval_sec", hybrid_config_.search_interval, .5);
+  pnh_.param("hybrid_locomotion_stroke_m", hybrid_config_.stroke, .02);
+  pnh_.param("hybrid_locomotion_run_max_sec", hybrid_config_.run_max, 3.0);
+  pnh_.param("hybrid_locomotion_task_timeout_sec", hybrid_config_.task_timeout, 180.0);
+  pnh_.param("hybrid_locomotion_regrip_timeout_sec", hybrid_config_.regrip_timeout, 20.0);
+  pnh_.param("hybrid_locomotion_extension_limit_rad", hybrid_config_.extension_limit, 20.*M_PI/180.);
+  pnh_.param("hybrid_locomotion_up_force_max_n", hybrid_config_.up_force_max, 6.0);
+  hybrid_config_.up_force_max=std::min(hybrid_config_.up_force_max, .6*mass_kg_*9.81);
+  hybrid_config_.thrust_max=std::min(6., action_c_max_thrust_n_);
+  hybrid_config_.thrust_max=std::min(hybrid_config_.thrust_max,
+      use_pwm_test_for_correction_ ? pwm_test_max_thrust_n_ : correction_max_thrust_n_);
+  hybrid_config_.pressure_max=std::min(50., maximum_pressure_kpa_);
+  hybrid_config_.pressure_measurement_margin=action_c_pressure_max_deviation_kpa_;
+  hybrid_config_.roll_limit=std::min(hybrid_config_.roll_limit, action_c_posture_hard_roll_rad_);
+  hybrid_config_.roll_rate_limit=std::min(hybrid_config_.roll_rate_limit, action_c_posture_rate_trigger_rad_s_);
+  hybrid_config_.extension_limit=std::min(hybrid_config_.extension_limit, action_c_max_extension_rad_);
+  hybrid_config_.bend_rate_limit=std::min(hybrid_config_.bend_rate_limit, action_c_extension_rate_limit_rad_s_);
+  hybrid_config_.mismatch_limit=std::min(hybrid_config_.mismatch_limit, action_c_max_extension_mismatch_rad_);
+  if (inchworm_action_c_enabled_ && (!hybrid_single_config_.valid() || !hybrid_config_.valid() ||
+      !std::isfinite(hybrid_search_.initial.bottom) || hybrid_search_.initial.bottom<0. || hybrid_search_.initial.bottom>30. ||
+      !std::isfinite(hybrid_search_.initial.minimum_ratio) || hybrid_search_.initial.minimum_ratio<0. || hybrid_search_.initial.minimum_ratio>1.))
+    throw std::runtime_error("Invalid hybrid locomotion configuration (fail closed)");
+  if (inchworm_action_c_enabled_ && (inchworm_action_d_enabled_ || rocking_gait_enabled_ || inchworm_action_b_enabled_))
+    throw std::runtime_error("Action C cannot be combined with D/B/rocking modes");
+  hybrid_planner_.reset(hybrid_config_);
+  hybrid_diagnostic_pub_=pnh_.advertise<std_msgs::Float32MultiArray>("hybrid_locomotion", 1);
   enable_server_ = pnh_.advertiseService("enable",
       &AttitudePressureController::enableCallback, this);
   pressure_enable_client_ = nh_.serviceClient<std_srvs::SetBool>(
@@ -1249,8 +1030,6 @@ void AttitudePressureController::bottomPressureCallback(
     {
       bottom_pressure_kpa_ = msg->data;
       measured_bottom_pressure_stamp_ = ros::Time::now();
-      action_c_bottom_timing_.observe(msg->data, measured_bottom_pressure_stamp_.toSec(),
-                                     action_c_bottom_hold_kpa_);
     }
 }
 
@@ -1306,6 +1085,12 @@ void AttitudePressureController::updateMocap(
     }
   mocap_stamp_ = ros::Time::now();
   mocap_received_ = true;
+  // Keep a position window alive while Action C temporarily hands actuator
+  // ownership to posture recovery. This provides a quiet, deflated endpoint
+  // for an interrupted trial instead of sampling while the bottom is full.
+  if (hybrid_trial_active_ || action_c_resume_pending_)
+    hybrid_endpoint_mocap_window_.add(
+        mocap_stamp_.toSec(), mocap_position_[0]);
 }
 
 // --------------------------------------------------------------------------
@@ -1396,6 +1181,9 @@ bool AttitudePressureController::enableCallback(std_srvs::SetBool::Request& req,
     }
 
   last_pressure_.fill(base_pressure_kpa_);
+  hybrid_hold_pressure_=false;
+  hybrid_hold_bottom_=false;
+  hybrid_grasp_pressure_.fill(base_pressure_kpa_);
   continuous_recovery_blocked_ = false;
   continuous_recovery_started_ = false;
   continuous_recovery_waiting_for_settle_ = false;
@@ -1472,21 +1260,10 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
   const double dt = std::max(0.0, std::min(0.1, (event.current_real - event.last_real).toSec()));
   const double maximum_step = pressure_rate_limit_kpa_s_ * dt;
 
-  // Use the full ROS-time interval (not the slew limiter's clipped dt).
-  // The trial remains active during shared recovery, so its time is charged.
-  if (action_c_optimizer_trial_active_)
-    {
-      const double clock_step = now.toSec() - action_c_optimizer_last_clock_sec_;
-      if (!std::isfinite(clock_step) || clock_step < 0)
-        action_c_optimizer_clock_valid_ = false;
-      else
-        {
-          action_c_optimizer_elapsed_sec_ += clock_step;
-          if (action_c_optimizer_recovery_pending_)
-            action_c_optimizer_recovery_sec_ += clock_step;
-        }
-      action_c_optimizer_last_clock_sec_ = now.toSec();
-    }
+  if (hybridLocomotionActive() && hybrid_trial_active_ &&
+      (now.toSec()<hybrid_task_start_ || now.toSec()-hybrid_task_start_>hybrid_config_.task_timeout)) {
+    stopInchwormToGrasp(now,"hybrid total deadline includes shared recovery");return;
+  }
 
   if (state_machine_enabled_ && enabled_)
     {
@@ -1555,7 +1332,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
           action_c_pressure_ready_gate_.reset();
           action_c_rear_release_gate_.reset();
           action_c_roll_trend_.reset();
-          action_c_boundary_ready_ = false;
+
           publishCorrectionThrust(zero_thrust);
           if (!inchworm_active_ && state_ != GRASP && state_ != RECOVER)
             {
@@ -1584,7 +1361,6 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               state_ != ACTION_B_REGRASP &&
               state_ != ACTION_C_PREPARE &&
               state_ != ACTION_C_HORIZONTAL_PULL &&
-              state_ != ACTION_C_EVALUATE &&
               state_ != ACTION_C_REGRIP &&
               state_ != ACTION_D_PREPARE &&
               state_ != ACTION_D_RAMP &&
@@ -1651,30 +1427,20 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
       const double angular_rate = roll_only_recovery
           ? std::abs(recovery_roll_rate)
           : std::hypot(body_angular_velocity_[0], body_angular_velocity_[1]);
-      if (action_c_optimizer_trial_active_ &&
-          action_c_optimizer_recovery_pending_)
-        {
-          // Complete the candidate with the actual post-recovery state. The
-          // separate recovery indicator penalizes invoking this controller,
-          // while these terms also retain its peak posture and thrust cost.
-          action_c_optimizer_peak_tilt_rad_ = std::max(
-              action_c_optimizer_peak_tilt_rad_, attitude_error);
-          action_c_optimizer_peak_rate_rad_s_ = std::max(
-              action_c_optimizer_peak_rate_rad_s_, angular_rate);
-          double recovery_thrust_squared = 0.0;
-          const PressureArray& active_recovery_thrust =
-              state_ == THRUST_CORRECTION
-                  ? correction_thrust_ : prepare_shape_thrust_;
-          for (double thrust : active_recovery_thrust)
-            recovery_thrust_squared += thrust * thrust;
-          action_c_optimizer_thrust_energy_n2s_ +=
-              recovery_thrust_squared * std::max(0.0, dt);
-        }
+
       const double recovery_stop_angle = (action_c_resume_pending_ || model_c_recovery)
           ? action_c_posture_resume_rad_ : correction_stop_angle_;
       const bool continuous_c_recovery = action_c_continuous_recovery_enabled_ &&
           inchworm_action_c_enabled_ && !inchworm_action_d_enabled_ &&
           !fixed_arm_test_enabled_ && roll_only_recovery;
+      if (action_c_resume_pending_ &&
+          std::abs(wrapAngle(roll_ - target_roll_)) >=
+              action_c_emergency_stop_roll_rad_)
+        {
+          stopInchwormToGrasp(now,
+              "Action C emergency roll reached configured stop limit");
+          return;
+        }
       const bool recovery_pressure_fresh =
           !measured_pressure_stamp_.isZero() &&
           (now - measured_pressure_stamp_).toSec() >= 0.0 &&
@@ -1687,29 +1453,36 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
         case GRASP:
           publishCorrectionThrust(zero_thrust);
           if (rocking_gait_enabled_ || inchworm_action_c_enabled_)
-            publishBottomTarget(action_c_resume_pending_ ? 0.0 : rocking_bottom_low_kpa_);
-          publishPressureTarget(PressureArray{{base_pressure_kpa_, base_pressure_kpa_, base_pressure_kpa_, base_pressure_kpa_}}, maximum_step);
+            publishBottomTarget(action_c_resume_pending_ ? 0.0 :
+                (hybridLocomotionActive() && hybrid_hold_bottom_ ? hybrid_single_config_.bottom_kpa : rocking_bottom_low_kpa_));
           {
+          const PressureArray steady_grasp=(hybridLocomotionActive() && hybrid_hold_pressure_ && !action_c_resume_pending_)
+              ?hybrid_grasp_pressure_:PressureArray{{base_pressure_kpa_,base_pressure_kpa_,base_pressure_kpa_,base_pressure_kpa_}};
+          publishPressureTarget(steady_grasp, maximum_step);
           bool grasp_pressure_ready = pressure_valid;
           for (size_t arm = 0; arm < ARM_COUNT; ++arm)
             grasp_pressure_ready = grasp_pressure_ready &&
-                std::abs(measured_pressure_[arm] - base_pressure_kpa_) <=
+                std::abs(measured_pressure_[arm] - steady_grasp[arm]) <=
                 pressure_tolerance_kpa_;
           if (inchworm_action_c_enabled_ && !inchworm_action_d_enabled_)
             grasp_pressure_ready = pressure_valid && actionCPressureReady(
-                PressureArray{{base_pressure_kpa_, base_pressure_kpa_, base_pressure_kpa_, base_pressure_kpa_}}, now);
+                steady_grasp, now);
           if (!grasp_pressure_ready)
             ROS_INFO_THROTTLE(1.0,
                 "GRASP waiting for all arm pressures to reach %.1f +/- %.1f kPa",
                 base_pressure_kpa_, pressure_tolerance_kpa_);
           const double active_correction_trigger = action_c_resume_pending_
-              ? action_c_posture_recovery_trigger_rad_ : correction_trigger_angle_;
-          // Continuous C resumes on fresh pressure + stable posture, not
-          // atmospheric pressure. The next PREPARE owns the low bottom target.
+              ? (continuous_recovery_waiting_for_settle_
+                    ? action_c_posture_resume_rad_
+                    : action_c_posture_recovery_trigger_rad_)
+              : correction_trigger_angle_;
+          // Recovery thrust starts immediately and does not wait for bottom
+          // exhaust. Automatic locomotion resume is different: finish the
+          // retained-position sample at the same deflated boundary used at
+          // the start of a stride before a new inflation can begin.
           const bool recovery_bottom_ready = !action_c_resume_pending_ ||
-              (continuous_c_recovery ? recovery_pressure_fresh :
-               (std::isfinite(bottom_pressure_kpa_) &&
-                std::abs(bottom_pressure_kpa_) <= action_c_bottom_deflation_tolerance_kpa_));
+              (recovery_pressure_fresh && std::isfinite(bottom_pressure_kpa_) &&
+               std::abs(bottom_pressure_kpa_) <= action_c_bottom_deflation_tolerance_kpa_);
           const bool c_trend_mode = inchworm_action_c_enabled_ && !inchworm_action_d_enabled_;
           if (c_trend_mode)
             action_c_roll_trend_.update(body_imu_fresh && pressure_valid && neurons_fresh &&
@@ -1735,8 +1508,9 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               now.toSec(), action_c_posture_settle_sec_);
           if (action_c_resume_pending_ && !recovery_settled)
             ROS_INFO_THROTTLE(1.0,
-                "Action C auto-resume waiting: bottom %.1f kPa (zero not required in continuous mode), regrasp=%d, roll rate %.3f rad/s, blocked=%d; saved goal retained",
-                bottom_pressure_kpa_, grasp_pressure_ready, angular_rate, continuous_recovery_blocked_);
+                "Action C auto-resume waiting: bottom %.1f kPa (need <= %.1f kPa for retained endpoint), regrasp=%d, roll rate %.3f rad/s, blocked=%d; saved goal retained",
+                bottom_pressure_kpa_,action_c_bottom_deflation_tolerance_kpa_,
+                grasp_pressure_ready, angular_rate, continuous_recovery_blocked_);
           if (action_c_resume_pending_ && !continuous_c_recovery && !recovery_settled && !continuous_recovery_requested &&
               (now - state_start_).toSec() >= action_c_prepare_timeout_sec_)
             {
@@ -1861,21 +1635,24 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               if (continuous_c_recovery)
                 {
                   continuous_recovery_started_ = true;
+                  // A previous timed pass may have been waiting only for a
+                  // safe regrasp.  Once a new measured correction actually
+                  // starts, return to the normal post-success resume gate;
+                  // otherwise a stable 3--8 deg result could wait forever.
+                  continuous_recovery_waiting_for_settle_ = false;
                   // Use the verified Spinal pair sign independently of model
                   // magnitude; measured geometry sets magnitude in PREPARE.
                   correction_axis_ = {{roll_error >= 0.0 ? 1.0 : -1.0, 0.0}};
-                  prepare_arm_active_ = roll_error >= 0.0
-                      ? std::array<bool, ARM_COUNT>{{true, true, false, false}}
-                      : std::array<bool, ARM_COUNT>{{false, false, true, true}};
+                  // Match the experimentally verified Spinal roll convention:
+                  // current negative roll (positive target-current error)
+                  // uses motors 0+1. Keep this pair for the whole recovery.
+                  selectContinuousRecoveryPair(roll_error);
                   continuous_roll_recovery_.reset(attitude_error, now.toSec());
                   recovery_predictive_.reset();
                   roll_recovery_config_.stop = recovery_stop_angle;
                   roll_recovery_config_.horizon = correction_prediction_horizon_sec_;
                   roll_recovery_config_.limit = std::min(4.0,
                       std::min(prepare_max_thrust_n_, correction_max_thrust_n_));
-                  roll_recovery_config_.rise = prepare_thrust_ramp_rate_;
-                  roll_recovery_config_.fall = correction_thrust_down_rate_;
-                  roll_recovery_config_.integral_rate = correction_stall_thrust_ramp_n_s_;
                   roll_recovery_config_.start_rate = correction_motion_start_rate_;
                   roll_recovery_config_.detect_thrust = correction_motion_detection_min_thrust_n_;
                   roll_recovery_config_.confirm_sec = correction_motion_confirm_sec_;
@@ -1980,10 +1757,56 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               else if(recovery_predictive_config_.enabled && !recovery_predictive_config_.shadow &&
                       (!recovery_inputs_valid || !model.valid))
                 continuous_roll_recovery_.fault=true;
+              // Preserve the extended-arm recovery geometry throughout the
+              // active correction.  Rotor speed/prediction braking can begin
+              // far from level (31 deg in walk_c_3_after_build); it is not a
+              // pneumatic regrasp event.  A non-shadow predictor may still
+              // request pressure, but it cannot bend the selected arms above
+              // the configured release pressure before a real terminal
+              // handoff.
+              if (!continuous_roll_recovery_.pressureHandoffReady())
+                {
+                  for (size_t arm = 0; arm < ARM_COUNT; ++arm)
+                    if (prepare_arm_active_[arm])
+                      {
+                        const double active_pressure_ceiling = std::max(
+                            minimum_prepare_pressure_kpa_,
+                            std::min(grasp_pressure_[arm],
+                                     recovery_release_pressure_kpa_));
+                        prepare_pressure_[arm] = std::min(
+                            prepare_pressure_[arm], active_pressure_ceiling);
+                      }
+                }
               publishPressureTarget(prepare_pressure_, std::numeric_limits<double>::infinity());
-              const double thrust = continuous_roll_recovery_.update(
+              double thrust = continuous_roll_recovery_.update(
                   recovery_inputs_valid ? signed_error : std::numeric_limits<double>::quiet_NaN(),
                   omega, now.toSec(), dt, model, roll_recovery_config_, response, predictive_target);
+              // Full pneumatic support is a terminal handoff, never part of
+              // active roll correction.  In the real bag, speed braking at
+              // 31 deg restored 30 kPa, flexed the selected arms, removed the
+              // useful moment arm and stalled the final recovery.  Thrust
+              // prediction owns deceleration while the pair stays released;
+              // RECOVER restores the grasp only after the low-rate angle dwell.
+              // Timeout/fault still regrips immediately while thrust follows
+              // its existing bounded rundown.
+              if (continuous_roll_recovery_.pressureHandoffReady())
+                {
+                  for (size_t arm = 0; arm < ARM_COUNT; ++arm)
+                    if (prepare_arm_active_[arm])
+                      prepare_pressure_[arm] = grasp_pressure_[arm];
+                  publishPressureTarget(prepare_pressure_,
+                      std::numeric_limits<double>::infinity());
+                  ROS_INFO_THROTTLE(1.0,
+                      "Action C recovery pressure handoff: finished=%d timed_out=%d fault=%d; restoring selected pair to grasp pressure",
+                      continuous_roll_recovery_.finished,
+                      continuous_roll_recovery_.timed_out,
+                      continuous_roll_recovery_.fault);
+                }
+              // The pair sign is fixed by the verified Spinal/MuJoCo mapping
+              // for the whole recovery.  A temporary lack of progress is a
+              // contact/load observation; it must not swap to the opposite
+              // pair.  The rate PI may adapt magnitude, and the bounded
+              // no-progress timeout below performs a smooth regrasp handoff.
               for (size_t arm = 0; arm < ARM_COUNT; ++arm)
                 prepare_shape_thrust_[arm] = prepare_arm_active_[arm] ? thrust : 0.0;
               publishCorrectionThrust(prepare_shape_thrust_);
@@ -2015,12 +1838,16 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                     {
                       const bool progress_timeout = continuous_roll_recovery_.timed_out ||
                           (!continuous_roll_recovery_.fault && (now - state_start_).toSec() >= prepare_timeout_);
-                      if (progress_timeout && action_c_resume_pending_)
+                      if ((progress_timeout || continuous_roll_recovery_.fault) &&
+                          action_c_resume_pending_)
                         {
-                          // End evaluation before any hand-assisted displacement.
-                          finishActionCOptimizerTrial(true, "recovery progress timeout; waiting for stable posture");
-                          continuous_recovery_blocked_ = true;
+                          // Regrip, settle, then automatically retry recovery.
+                          // Keep the trial and its measured progress alive;
+                          // no operator command is required unless the 90-deg
+                          // posture or a sensor/pressure safety stop is hit.
+                          continuous_recovery_blocked_ = false;
                           continuous_recovery_waiting_for_settle_ = true;
+                          continuous_recovery_started_ = false;
                           prepare_shape_thrust_.fill(0.0);
                           publishCorrectionThrust(prepare_shape_thrust_);
                           publishBottomTarget(0.0);
@@ -2028,8 +1855,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                           action_c_resume_gate_.reset();
                           action_c_boundary_settle_gate_.reset();
                           enterState(RECOVER, now);
-                          ROS_WARN("Action C recovery paused: motors stopped, goal retained; resume after roll within %.1f deg, rate <=0.05 rad/s for 1 s, fresh sensors/mocap and regrasp. A zero motion command cancels continuation.",
-                                   action_c_posture_resume_rad_ * 180.0 / M_PI);
+                          ROS_WARN("Action C recovery pass ended without convergence: regrasping and automatically retrying from the measured roll; goal and trial retained. A zero motion command cancels continuation.");
                           break;
                         }
                       // No repeated timed search pulses after a fault/stall.
@@ -2640,6 +2466,18 @@ AttitudePressureController::allocateCorrectionThrust(
   return allocateCorrectionThrustFromAngles(desired, bend_angle);
 }
 
+void AttitudePressureController::selectContinuousRecoveryPair(
+    double roll_error)
+{
+  // Hardware mapping: positive target-current roll uses 0+1, negative uses
+  // 2+3.  This is also the measured MuJoCo mapping for the current model.
+  bool first_pair = correction_pair_reverse_spinal_mapping_
+      ? roll_error < 0.0 : roll_error >= 0.0;
+  prepare_arm_active_ = first_pair
+      ? std::array<bool, ARM_COUNT>{{true, true, false, false}}
+      : std::array<bool, ARM_COUNT>{{false, false, true, true}};
+}
+
 AttitudePressureController::PressureArray
 AttitudePressureController::allocateCorrectionThrustFromAngles(
     const Vector2& desired, const PressureArray& bend_angle) const
@@ -2671,9 +2509,18 @@ AttitudePressureController::allocateCorrectionThrustFromAngles(
   const bool pitch_dominant = !roll_only &&
                               std::abs(pitch_error) >=
                                   std::abs(roll_error);
-  const ArmPair correction_pair = pitch_dominant
+  ArmPair correction_pair = pitch_dominant
       ? (pitch_error >= 0.0 ? ArmPair{{1, 2}} : ArmPair{{0, 3}})
       : (roll_error >= 0.0 ? ArmPair{{0, 1}} : ArmPair{{2, 3}});
+  if (correction_pair_reverse_spinal_mapping_ && roll_only)
+    {
+      // Direct MuJoCo response tests show that its applied bidirectional
+      // thrust axis produces the opposite roll sign to the real Spinal
+      // convention (positive current roll: motors 0+1 restore it; negative:
+      // motors 2+3). Do not change the real-vehicle mapping above.
+      correction_pair = roll_error >= 0.0
+          ? ArmPair{{2, 3}} : ArmPair{{0, 1}};
+    }
   PressureArray result{{0.0, 0.0, 0.0, 0.0}};
   const Vector2 pair_column{{
       columns[correction_pair[0]][0] + columns[correction_pair[1]][0],
@@ -2693,7 +2540,8 @@ AttitudePressureController::allocateCorrectionThrustFromAngles(
       allocated_thrust = std::hypot(desired[0], roll_only ? 0.0 : desired[1]) /
           std::max(1.0e-4, std::hypot(pair_column[0], pair_column[1]));
       ROS_WARN_THROTTLE(1.0,
-          "Correction geometry sign disagrees with Spinal attitude; retaining verified motors %zu+%zu",
+          "Correction geometry sign disagrees with requested moment; retaining %s motors %zu+%zu",
+          correction_pair_reverse_spinal_mapping_ ? "MuJoCo-verified" : "hardware-verified",
           correction_pair[0], correction_pair[1]);
     }
 
@@ -2854,6 +2702,7 @@ void AttitudePressureController::publishBottomDirection(double direction_scale)
 void AttitudePressureController::publishCorrectionThrust(
     const PressureArray& thrust)
 {
+  observeHybridThrust(ros::Time::now(),thrust);
   spinal::PerchingThrustCommand command;
   for (size_t arm = 0; arm < ARM_COUNT; ++arm)
     command.thrust[arm] = std::max(0.0, std::min(correction_max_thrust_n_, thrust[arm]));
@@ -2996,28 +2845,21 @@ void AttitudePressureController::enterState(uint8_t state, const ros::Time& now)
     "FRONT_RELEASE", "FRONT_REACH", "FRONT_ANCHOR", "REAR_UNLOAD",
     "PULL", "REAR_ANCHOR", "SETTLE", "SUPPORT_RESTORE",
     "ACTION_B_FRONT_REACH", "ACTION_B_REGRASP", "ACTION_B_FRONT_REGRIP",
-    "ACTION_C_PREPARE", "ACTION_C_HORIZONTAL_PULL", "ACTION_C_EVALUATE",
+    "ACTION_C_PREPARE", "ACTION_C_HORIZONTAL_PULL", "RESERVED_17",
     "ACTION_C_REGRIP", "ROCK_BOTTOM_PRELOAD", "ROCK_FRONT_WINDUP",
     "ROCK_FRONT_LAND", "ROCK_REAR_UNLOAD", "ROCK_REAR_RECOVER",
     "ROCK_REAR_LAND", "ACTION_A_FRONT_PLACE", "ACTION_D_PREPARE",
     "ACTION_D_RAMP", "ACTION_D_REGRIP"
   };
-  // Preserve the same release latch across ON -> powered flexion only.
-  // A new attempt, regrip, disable or recovery must acquire release anew.
-  if (!(state_ == ACTION_C_HORIZONTAL_PULL && state == ACTION_C_EVALUATE &&
-        action_c_pressure_pull_active_))
-    action_c_rear_release_gate_.reset();
+  action_c_rear_release_gate_.reset();
   state_ = state;
-  if (state_ == ACTION_C_PREPARE) action_c_bottom_post_pulse_ = false;
-  if (state_ == ACTION_C_PREPARE) action_c_bottom_timing_.beginCycle();
-  if (state_ == GRASP || state_ == RECOVER) action_c_bottom_timing_.beginCycle();
   correction_entry_gate_.reset();
   action_c_resume_gate_.reset();
   action_c_recovery_gate_.reset();
   action_c_boundary_settle_gate_.reset();
   action_c_pressure_ready_gate_.reset();
   action_c_roll_trend_.reset();
-  action_c_boundary_ready_ = false;
+
   state_start_ = now;
   ready_start_ = ros::Time(0);
   if (state_ == PULL)
@@ -3295,6 +3137,13 @@ void AttitudePressureController::enterState(uint8_t state, const ros::Time& now)
 void AttitudePressureController::startInchwormStep(
     const Vector2& direction, double distance, const ros::Time& now)
 {
+  if (hybridLocomotionActive() && action_c_direction_sign_x_*(direction[0]>=0.?1.:-1.)<0.) {
+    const bool search_enabled=hybrid_search_.enabled;
+    const auto initial=hybrid_search_.initial;
+    hybrid_search_.reset();hybrid_search_.enabled=search_enabled;
+    hybrid_search_.initial=initial;hybrid_search_.current=initial;
+    hybrid_planner_.reset(hybrid_config_); // new pair: do not swap learned left/right responses
+  }
   inchworm_direction_body_ = direction;
   inchworm_direction_world_ = {{
       std::cos(yaw_) * direction[0] - std::sin(yaw_) * direction[1],
@@ -3310,39 +3159,8 @@ void AttitudePressureController::startInchwormStep(
       action_c_absolute_target_x_m_ = mocap_position_[0] +
           action_c_direction_sign_x_ * inchworm_total_target_distance_m_;
       action_c_resume_direction_ = direction;
-      // A new operator task permits a bounded recalibration block. Shared
-      // posture recovery is NOT a new task and must not restart learning.
-      action_c_coordination_.rounds = 0;
-      if (action_c_adaptive_burst_enabled_)
-        {
-          const bool optimizer_direction_changed =
-              action_c_optimizer_direction_sign_x_ != 0.0 &&
-              action_c_optimizer_direction_sign_x_ !=
-                  action_c_direction_sign_x_;
-          if (!action_c_optimizer_initialized_ ||
-              action_c_optimizer_reset_on_command_ ||
-              optimizer_direction_changed)
-            {
-              initializeActionCOptimizer();
-              if (optimizer_direction_changed)
-                ROS_WARN("Action C travel direction changed; reset optimizer instead of reusing the opposite-direction candidate");
-            }
-          action_c_optimizer_direction_sign_x_ =
-              action_c_direction_sign_x_;
-          pnh_.setParam("action_c_optimizer_direction_sign_x",
-                        action_c_optimizer_direction_sign_x_);
-          // An operator command starts a fresh measurement window. If the
-          // previous command ended mid-candidate, discard that incomplete
-          // window but retain all completed trial results and the candidate.
-          action_c_optimizer_trial_active_ = false;
-          beginActionCOptimizerTrial(now);
-        }
-      else
-        action_c_bottom_hold_kpa_ = action_c_bottom_initial_kpa_;
-      action_c_burst_pulse_count_ = 0;
+      // A new operator command starts a new task; recovery preserves its goal.
       action_c_posture_recovery_count_ = 0;
-      action_c_estimated_tilt_growth_rad_ = 0.0;
-      action_c_last_retained_progress_m_ = 0.0;
     }
   inchworm_front_.fill(false);
   for (size_t arm = 0; arm < ARM_COUNT; ++arm)
@@ -3371,10 +3189,6 @@ void AttitudePressureController::startInchwormStep(
       inchworm_front_order_[front_index++] = arm;
   inchworm_active_ = true;
   inchworm_cycle_count_ = 0;
-  // This latch belongs to the complete requested move, not to one short
-  // stroke.  Once roll has been restored, Action C may issue consecutive
-  // pulses until the wider re-correction threshold is crossed.
-  action_c_posture_ready_latched_ = false;
   startInchwormCycle(now);
   ROS_INFO("Inchworm motion started: body direction [%.2f, %.2f], total target %.1f mm, front arms [%d, %d, %d, %d]",
            direction[0], direction[1], 1000.0 * inchworm_total_target_distance_m_,
@@ -3397,11 +3211,6 @@ void AttitudePressureController::startInchwormCycle(const ros::Time& now)
   inchworm_start_position_ = mocap_position_;
   inchworm_target_distance_m_ = inchworm_action_d_enabled_
       ? remaining : std::min(inchworm_stroke_distance_m_, remaining);
-  // Freeze the burst goal before the first pulse. Neither early recovery nor
-  // fewer completed pulses can shrink the denominator of the shortfall cost.
-  if (action_c_optimizer_trial_active_ && action_c_optimizer_target_progress_m_ <= 0.0)
-    action_c_optimizer_target_progress_m_ = std::min(remaining,
-        inchworm_stroke_distance_m_ * action_c_optimizer_burst_pulses_);
   grasp_pressure_.fill(base_pressure_kpa_);
   for (size_t arm = 0; arm < ARM_COUNT; ++arm)
   {
@@ -3425,6 +3234,11 @@ void AttitudePressureController::startInchwormCycle(const ros::Time& now)
         ? grip_axis_coordinate_m_[arm]
         : std::numeric_limits<double>::quiet_NaN();
   ++inchworm_cycle_count_;
+  if (hybridLocomotionActive())
+    {
+      startHybridLocomotion(now);
+      return;
+    }
   if (rocking_gait_enabled_)
     {
       inchworm_swing_start_roll_ = roll_;
@@ -3485,76 +3299,6 @@ void AttitudePressureController::startInchwormCycle(const ros::Time& now)
                action_d_front_thrust_ramp_n_s_,
                action_d_rear_thrust_ramp_n_s_);
     }
-  else if (inchworm_action_c_enabled_)
-    {
-      action_c_bottom_post_pulse_ = false;
-      // Keep the useful pulse level and locally learned pressure/angle model
-      // through consecutive short strokes in one requested move.  Repeating
-      // the ineffective 2-N search pulse before every stroke made the former
-      // "continuous" behavior stop-and-search each time.
-      if (inchworm_cycle_count_ == 1 &&
-          !action_c_preserve_adaptation_on_start_)
-        {
-          if (!action_c_adaptive_burst_enabled_)
-            action_c_thrust_n_ = action_c_reference_pulse_mode_
-                ? action_c_reference_thrust_n_ : action_c_min_thrust_n_;
-          action_c_pressure_bias_kpa_.fill(0.0);
-          action_c_pressure_bend_sign_.fill(1.0);
-          action_c_dtheta_dpressure_.fill(0.02);
-          action_c_dtheta_dthrust_.fill(0.0);
-          action_c_pressure_gradient_initialized_ = false;
-          action_c_last_pulse_valid_ = false;
-          action_c_last_pulse_thrust_n_ = 0.0;
-        }
-      else
-        action_c_thrust_n_ = std::max(action_c_min_thrust_n_, std::min(
-            action_c_max_thrust_n_, action_c_thrust_n_));
-      action_c_angle_retry_ = 0;
-      action_c_pulse_started_ = false;
-      action_c_pressure_pull_active_ = false;
-      action_c_success_ = false;
-      action_c_pulse_angle_rad_ = 0.0;
-      action_c_front_angle_rad_.fill(0.0);
-      action_c_front_pressure_.fill(base_pressure_kpa_);
-      action_c_pulse_start_angle_rad_.fill(0.0);
-      action_c_pulse_min_angle_rad_.fill(0.0);
-      action_c_rate_previous_angle_rad_.fill(0.0);
-      action_c_filtered_bend_rate_rad_s_.fill(0.0);
-      action_c_previous_neuron_stamp_.fill(ros::Time(0));
-      action_c_command_thrust_n_ = 0.0;
-      action_c_pulse_start_travel_m_ = 0.0;
-      action_c_pulse_start_roll_ = roll_;
-      action_c_pulse_start_pitch_ = pitch_;
-      action_c_pre_roll_thrust_n_ = 0.0;
-      action_c_pre_roll_pair_sign_ = 0;
-      action_c_pre_roll_ready_start_ = ros::Time(0);
-      action_c_recovery_gate_.reset();
-      action_c_rate_time_ = now;
-      action_c_recovery_ready_start_ = ros::Time(0);
-      action_c_pulse_had_extension_ = false;
-      action_c_pulse_overextended_ = false;
-      action_c_optimizer_cycle_accounted_ = false;
-      action_c_cycle_start_tilt_rad_ =
-          std::abs(wrapAngle(roll_ - target_roll_));
-      action_c_cycle_peak_tilt_rad_ = action_c_cycle_start_tilt_rad_;
-      action_c_cycle_peak_rate_rad_s_ =
-          std::abs(body_angular_velocity_[0]);
-      // As with the rocking gait, apply the bottom force on the front side.
-      // This creates the rearward preload requested for Action C and reduces
-      // the chance that loss of front contact launches the whole body back.
-      publishBottomDirection(-1.0);
-      enterState(ACTION_C_PREPARE, now);
-      publishBottomTarget(actionCBottomTarget());
-      ROS_WARN("Action C started: direction %s, active front arms [%d %d %d %d], optimizer candidate [T %.2f N, bottom %.1f kPa, burst %d], bounded T %.1f--%.1f N / bottom %.1f--%.1f kPa; target extension %.1f deg; travel uses signed mocap x",
-               action_c_direction_sign_x_ > 0.0 ? "+x" : "-x",
-               inchworm_front_[0], inchworm_front_[1],
-               inchworm_front_[2], inchworm_front_[3],
-               action_c_thrust_n_, action_c_bottom_hold_kpa_,
-               action_c_optimizer_burst_pulses_,
-               action_c_min_thrust_n_, action_c_max_thrust_n_,
-               action_c_bottom_min_kpa_, action_c_bottom_max_kpa_,
-               action_c_extension_target_rad_ * 180.0 / M_PI);
-    }
   else if (inchworm_action_b_enabled_)
     {
       inchworm_swing_start_roll_ = roll_;
@@ -3610,20 +3354,25 @@ void AttitudePressureController::beginInchwormArmReach(
 void AttitudePressureController::stopInchwormToGrasp(
     const ros::Time& now, const char* reason)
 {
+  if (hybridLocomotionActive() && hybrid_trial_active_)
+    finishHybridLocomotion(now, false, false);
   continuous_recovery_waiting_for_settle_ = false;
   action_c_recovery_gate_.reset();
-  if (action_c_optimizer_trial_active_)
-    finishActionCOptimizerTrial(true, reason);
   const PressureArray zero_thrust{{0.0, 0.0, 0.0, 0.0}};
-  const PressureArray grasp_target{{base_pressure_kpa_, base_pressure_kpa_,
-                                    base_pressure_kpa_, base_pressure_kpa_}};
+  hybrid_hold_pressure_=hybridLocomotionActive() && hybrid_retain_grasp_pressure_ &&
+      hybrid_hold_pressure_ && std::string(reason)=="hybrid target reached";
+  // Retained travel is measured after bottom deflation. Do not re-inflate the
+  // bladder merely because the translation target has been reached.
+  hybrid_hold_bottom_=false;
+  const PressureArray grasp_target=hybrid_hold_pressure_?hybrid_grasp_pressure_:
+      PressureArray{{base_pressure_kpa_,base_pressure_kpa_,base_pressure_kpa_,base_pressure_kpa_}};
   inchworm_active_ = false;
   action_c_resume_pending_ = false;
   action_c_preserve_adaptation_on_start_ = false;
   inchworm_thrust_ = zero_thrust;
   prepare_shape_thrust_ = zero_thrust;
   publishCorrectionThrust(zero_thrust);
-  publishBottomTarget(action_a_bottom_low_kpa_);
+  publishBottomTarget(hybrid_hold_bottom_?hybrid_single_config_.bottom_kpa:action_a_bottom_low_kpa_);
   publishPressureTarget(grasp_target,
                         std::numeric_limits<double>::infinity());
   last_correction_end_ = now;
@@ -3631,609 +3380,63 @@ void AttitudePressureController::stopInchwormToGrasp(
   ROS_WARN("Inchworm stopped and returned directly to GRASP: %s", reason);
 }
 
-bool AttitudePressureController::finishActionCPropulsionTrial(bool recovery_required, double retained_dx)
-{
-  if (!action_c_propulsion_enabled_ || !action_c_pressure_pull_enabled_ || action_c_reference_pulse_mode_) return false;
-  const bool safe = !recovery_required && !action_c_optimizer_trial_had_extension_guard_ &&
-      action_c_optimizer_clock_valid_ &&
-      action_c_optimizer_valid_pulses_ == action_c_optimizer_completed_pulses_ &&
-      action_c_optimizer_peak_tilt_rad_ < action_c_posture_recovery_trigger_rad_ &&
-      action_c_optimizer_peak_rate_rad_s_ < action_c_posture_rate_trigger_rad_s_;
-  const double base = std::min(action_c_pressure_pull_max_n_, action_c_pressure_pull_ratio_ * action_c_thrust_n_);
-  // Pressure-only identification is allowed without successful locomotion.
-  // A recovery changes contact/pressure ownership, so do not commit that window.
-  const int changed = !recovery_required && action_c_propulsion_.commitTiming(inchworm_front_) ? 1 :
-      action_c_propulsion_.finish(safe, action_c_optimizer_completed_pulses_,
-          retained_dx, action_c_optimizer_target_progress_m_, base, action_c_pressure_pull_max_n_, inchworm_front_);
-  pnh_.setParam("action_c_pull_forward_impulse_ns", action_c_propulsion_.trial_forward_impulse);
-  pnh_.setParam("action_c_pull_extra_n", action_c_propulsion_.extra_n);
-  // This learner owns timing. Existing coordination may still update left/
-  // right offsets on a later boundary, but must not also update pressure lead.
-  action_c_coordination_.lag_count.fill(0);
-  if (!changed) return false;
-  // Re-evaluate the SAME T/P/burst; previous-waveform scores are no longer comparable.
-  action_c_optimizer_best_score_ = -std::numeric_limits<double>::infinity();
-  action_c_optimizer_direction_index_ = 0;
-  action_c_optimizer_sweep_improved_ = false;
-  action_c_optimizer_reprobe_pending_ = false;
-  pnh_.setParam("action_c_optimizer_best_score", action_c_optimizer_best_score_);
-  ROS_WARN("Action C PROPULSION commit: %s, pull extra %.2f N, leads [%.3f %.3f %.3f %.3f] s; same T/P/burst re-evaluation, outer search held",
-      changed==1 ? "pressure timing only" : "pull thrust only", action_c_propulsion_.extra_n,
-      action_c_propulsion_.response[0].lead, action_c_propulsion_.response[1].lead,
-      action_c_propulsion_.response[2].lead, action_c_propulsion_.response[3].lead);
-  return true;
-}
-
-void AttitudePressureController::observeActionCPropulsion(const ros::Time& now)
-{
-  if (!action_c_propulsion_enabled_ || !action_c_pressure_pull_enabled_ || action_c_reference_pulse_mode_) return;
-  const double age=(now-measured_pressure_stamp_).toSec();
-  const bool pressure_fresh=!measured_pressure_stamp_.isZero() && age>=0 && age<=.25;
-  double forward=0.;
-  bool both_powered=true;
-  for (size_t arm=0; arm<ARM_COUNT; ++arm) if (inchworm_front_[arm])
-    {
-      auto& response=action_c_propulsion_.response[arm];
-      auto& observer=action_c_pulse_observer_[arm];
-      observer.update(hugmy::relativeBendRate(neuron_gyro_[arm][1], body_angular_velocity_[0],
-          body_angular_velocity_[1], arm_yaw_[arm]), neuron_stamp_[arm].toSec());
-      const bool simulation_bend = std::isfinite(grip_joint_bend_rad_[arm]) &&
-          !grip_state_stamp_.isZero() && (now-grip_state_stamp_).toSec()>=0 &&
-          (now-grip_state_stamp_).toSec()<=.25;
-      const double bend=simulation_bend ? measuredArmBendAngle(arm) : observer.bend;
-      const double imu_age=(now-neuron_stamp_[arm]).toSec();
-      const bool fresh=pressure_fresh && (observer.valid || simulation_bend) && imu_age>=0 && imu_age<=imu_timeout_sec_;
-      if (pressure_fresh && inchworm_pressure_[arm]>=action_c_coordination_rebend_target_[arm]-.01)
-        response.command(now.toSec(), measured_pressure_[arm], inchworm_pressure_[arm], bend);
-      response.observe(now.toSec(), measured_pressure_stamp_.toSec(), measured_pressure_[arm],
-          bend, observer.rate, pressure_fresh, fresh);
-      const double projection=hugmy::actionCForwardProjection(bend, arm_yaw_[arm],
-          recovery_rotor_cant_rad_, (arm==0 || arm==2) ? 1. : -1., roll_, pitch_,
-          wrapAngle(yaw_-action_c_propulsion_heading_rad_), action_c_direction_sign_x_);
-      if (fresh) forward+=projection*inchworm_thrust_[arm];
-      both_powered = both_powered && fresh && projection>0. && inchworm_thrust_[arm]>.05;
-    }
-  if (action_c_pressure_pull_active_ && pressure_fresh)
-    action_c_propulsion_.force(now.toSec(), forward, both_powered);
-  ROS_INFO_THROTTLE(.2, "Action C PROPULSION: estimated commanded forward force %.3f N (initial body-x horizontal frame), pull impulse %.4f Ns, pressure delay [%.3f %.3f %.3f %.3f] s, rise [%.1f %.1f %.1f %.1f] kPa/s",
-      forward, action_c_propulsion_.forward_impulse,
-      action_c_propulsion_.response[0].delay, action_c_propulsion_.response[1].delay,
-      action_c_propulsion_.response[2].delay, action_c_propulsion_.response[3].delay,
-      action_c_propulsion_.response[0].rate, action_c_propulsion_.response[1].rate,
-      action_c_propulsion_.response[2].rate, action_c_propulsion_.response[3].rate);
-}
-
-void AttitudePressureController::initializeActionCOptimizer()
-{
-  action_c_propulsion_ = hugmy::ActionCPropulsion();
-  action_c_propulsion_heading_rad_ = yaw_;
-  action_c_coordination_.offset.fill(0.0);
-  action_c_coordination_.lead.fill(0.0);
-  action_c_coordination_.rounds = 0;
-  action_c_coordination_.clearTrial();
-  action_c_coordination_.startPulse();
-  action_c_optimizer_initialized_ = true;
-  action_c_optimizer_trial_active_ = false;
-  action_c_optimizer_recovery_pending_ = false;
-  action_c_optimizer_sweep_improved_ = false;
-  action_c_optimizer_trial_index_ = 0;
-  action_c_optimizer_direction_index_ = 0;
-  action_c_optimizer_best_score_ =
-      -std::numeric_limits<double>::infinity();
-  action_c_optimizer_thrust_step_n_ =
-      action_c_adaptive_thrust_step_n_;
-  action_c_optimizer_bottom_step_kpa_ = action_c_bottom_step_kpa_;
-  action_c_thrust_n_ = action_c_reference_pulse_mode_
-      ? action_c_reference_thrust_n_ : action_c_min_thrust_n_;
-  action_c_bottom_hold_kpa_ = action_c_bottom_initial_kpa_;
-  action_c_optimizer_burst_pulses_ =
-      action_c_optimizer_initial_burst_pulses_;
-  action_c_optimizer_best_thrust_n_ = action_c_thrust_n_;
-  action_c_optimizer_best_bottom_kpa_ = action_c_bottom_hold_kpa_;
-  action_c_optimizer_best_burst_pulses_ =
-      action_c_optimizer_burst_pulses_;
-  action_c_optimizer_safe_thrust_max_n_ = action_c_max_thrust_n_;
-  action_c_thrust_safety_.reset(action_c_max_thrust_n_);
-  action_c_arm_thrust_offset_n_.fill(0.0);
-  action_c_arm_calibration_changed_ = false;
-  action_c_optimizer_reprobe_pending_ = false;
-  pnh_.setParam("action_c_optimizer_hard_thrust_max_n", action_c_max_thrust_n_);
-  pnh_.setParam("action_c_optimizer_pair_thrust_max_n", action_c_max_thrust_n_);
-  pnh_.setParam("action_c_optimizer_reprobe_safe_pulses", 0);
-  pnh_.setParam("action_c_optimizer_last_guard_reasons", 0);
-  pnh_.setParam("action_c_optimizer_safe_thrust_max_n",
-                action_c_optimizer_safe_thrust_max_n_);
-  ROS_WARN("Action C optimizer reset: initial candidate T=%.2f N, bottom=%.1f kPa, burst=%d",
-           action_c_thrust_n_, action_c_bottom_hold_kpa_,
-           action_c_optimizer_burst_pulses_);
-}
-
-void AttitudePressureController::beginActionCOptimizerTrial(
-    const ros::Time& now)
-{
-  // Explicit fixed/single diagnostics do not run the optimizer. Timed-pulse
-  // search uses the same measured pulse-to-regrip progress and safety record.
-  if (!action_c_adaptive_burst_enabled_ ||
-      (action_c_reference_pulse_mode_ &&
-       (!action_c_pulse_search_enabled_ || action_c_reference_single_pulse_))) return;
-  action_c_optimizer_trial_active_ = true;
-  action_c_propulsion_.beginTrial();
-  action_c_coordination_.clearTrial();
-  action_c_optimizer_elapsed_sec_ = 0.0;
-  action_c_optimizer_recovery_sec_ = 0.0;
-  action_c_optimizer_last_clock_sec_ = now.toSec();
-  action_c_optimizer_clock_valid_ = true;
-  action_c_optimizer_recovery_pending_ = false;
-  action_c_optimizer_trial_start_x_m_ = mocap_position_[0];
-  action_c_optimizer_retained_progress_m_ = 0.0;
-  action_c_optimizer_target_progress_m_ = 0.0;
-  action_c_optimizer_peak_tilt_rad_ =
-      std::abs(wrapAngle(roll_ - target_roll_));
-  action_c_optimizer_peak_rate_rad_s_ =
-      std::abs(body_angular_velocity_[0]);
-  action_c_optimizer_peak_extension_mismatch_rad_ = 0.0;
-  action_c_optimizer_thrust_energy_n2s_ = 0.0;
-  action_c_optimizer_completed_pulses_ = 0;
-  action_c_optimizer_successful_pulses_ = 0;
-  action_c_optimizer_valid_pulses_ = 0;
-  action_c_optimizer_tracking_pulses_ = 0;
-  action_c_optimizer_failed_pulses_ = 0;
-  action_c_optimizer_trial_had_extension_guard_ = false;
-  action_c_optimizer_trial_guard_reasons_ = 0;
-  action_c_optimizer_trial_required_recovery_ = false;
-  action_c_burst_pulse_count_ = 0;
-  ++action_c_optimizer_trial_index_;
-  pnh_.setParam("action_c_optimizer_current_trial",
-                action_c_optimizer_trial_index_);
-  pnh_.setParam("action_c_optimizer_current_thrust_n",
-                action_c_thrust_n_);
-  pnh_.setParam("action_c_optimizer_current_bottom_kpa",
-                action_c_bottom_hold_kpa_);
-  pnh_.setParam("action_c_optimizer_current_burst_pulses",
-                action_c_optimizer_burst_pulses_);
-  ROS_WARN("Action C optimizer trial %d START %s: T=%.2f N, bottom=%.1f kPa, burst=%d",
-           action_c_optimizer_trial_index_,
-           action_c_direction_sign_x_ > 0.0 ? "+x" : "-x",
-           action_c_thrust_n_,
-           action_c_bottom_hold_kpa_, action_c_optimizer_burst_pulses_);
-}
-
-void AttitudePressureController::selectNextActionCCandidate()
-{
-  if (action_c_reference_pulse_mode_)
-    {
-      action_c_optimizer_burst_pulses_ = 1;
-      action_c_optimizer_reprobe_pending_ = false;
-      if (action_c_pulse_search_enabled_ && !action_c_reference_single_pulse_ &&
-          action_c_adaptive_burst_enabled_)
-        {
-          const double previous = action_c_thrust_n_;
-          const double retained = action_c_optimizer_retained_progress_m_ /
-              std::max(1, action_c_optimizer_valid_pulses_);
-          action_c_thrust_n_ = hugmy::actionCNextPulseAmplitude(
-              previous, action_c_min_thrust_n_,
-              std::min(action_c_max_thrust_n_, action_c_optimizer_safe_thrust_max_n_),
-              action_c_pulse_search_step_n_, retained, action_c_pulse_search_progress_m_,
-              action_c_optimizer_valid_pulses_ > 0,
-              action_c_optimizer_trial_had_extension_guard_,
-              action_c_optimizer_trial_required_recovery_, action_c_pulse_started_);
-          action_c_bottom_hold_kpa_ = action_c_bottom_initial_kpa_;
-          ROS_INFO("Action C PULSE SEARCH: retained %.2f/%.2f mm, valid=%d guard=%d recovery=%d; next %.2f -> %.2f N, ceiling %.2f N, bottom %.1f kPa",
-                   1000.0*retained, 1000.0*action_c_pulse_search_progress_m_,
-                   action_c_optimizer_valid_pulses_, action_c_optimizer_trial_had_extension_guard_,
-                   action_c_optimizer_trial_required_recovery_, previous, action_c_thrust_n_,
-                   action_c_optimizer_safe_thrust_max_n_, action_c_bottom_hold_kpa_);
-        }
-      else
-        ROS_INFO("Action C REFERENCE: candidate frozen at %.2f N / %.1f kPa; no automatic thrust increase",
-                 action_c_thrust_n_, action_c_bottom_hold_kpa_);
-      return;
-    }
-  if (!action_c_adaptive_burst_enabled_)
-    return;
-
-  if (action_c_individual_extension_enabled_ && action_c_arm_calibration_changed_)
-    {
-      // Changing individual feed-forward changes the candidate: scores from
-      // the old arm calibration are not comparable. Test one pulse first.
-      action_c_arm_calibration_changed_ = false;
-      action_c_optimizer_reprobe_pending_ = false;
-      action_c_optimizer_best_score_ = -std::numeric_limits<double>::infinity();
-      action_c_optimizer_direction_index_ = 0;
-      action_c_optimizer_burst_pulses_ = 1;
-      action_c_thrust_n_ = std::min(action_c_thrust_n_, action_c_optimizer_safe_thrust_max_n_);
-      ROS_WARN("Action C ARM CALIBRATION: next offsets [%.2f %.2f %.2f %.2f] N; base %.2f N, one pulse, old score invalidated",
-               action_c_arm_thrust_offset_n_[0], action_c_arm_thrust_offset_n_[1],
-               action_c_arm_thrust_offset_n_[2], action_c_arm_thrust_offset_n_[3], action_c_thrust_n_);
-      return;
-    }
-
-  if (action_c_individual_extension_enabled_ && action_c_optimizer_tracking_pulses_ == 0)
-    {
-      // Do not defeat individual calibration by raising BOTH arms just
-      // because a non-synchronized pulse failed to make forward progress.
-      action_c_optimizer_reprobe_pending_ = false;
-      action_c_optimizer_burst_pulses_ = 1;
-      action_c_thrust_n_ = std::min(action_c_thrust_n_, action_c_optimizer_safe_thrust_max_n_);
-      ROS_INFO("Action C TRACKING FIRST: base %.2f N unchanged; one pulse with individual assist until both extensions track the target",
-               action_c_thrust_n_);
-      return;
-    }
-
-  if (action_c_optimizer_reprobe_pending_)
-    {
-      // Test the newly unlocked increment exactly once, even if the current
-      // best remains at the old ceiling. Do not change bottom at the same time.
-      action_c_optimizer_reprobe_pending_ = false;
-      action_c_thrust_n_ = std::min(action_c_max_thrust_n_,
-          action_c_optimizer_safe_thrust_max_n_);
-      action_c_optimizer_burst_pulses_ = 1;
-      ROS_WARN("Action C optimizer REPROBE: one pulse at %.2f N / bottom %.1f kPa after verified safe pulses; all pulse-stop guards remain active",
-               action_c_thrust_n_, action_c_bottom_hold_kpa_);
-      return;
-    }
-
-  const bool have_safe_best =
-      std::isfinite(action_c_optimizer_best_score_);
-  if (!have_safe_best)
-    {
-      // No successful baseline: never wander from 30 to 20 kPa or increase
-      // burst count around an invalid current point. Change only thrust,
-      // one pulse at a time, and only after a safe completed measurement.
-      action_c_bottom_hold_kpa_ = action_c_bottom_initial_kpa_;
-      action_c_optimizer_burst_pulses_ = action_c_optimizer_min_burst_pulses_;
-      const double next_thrust = std::min(
-          std::min(action_c_max_thrust_n_,
-                   action_c_optimizer_safe_thrust_max_n_),
-          action_c_thrust_n_ + action_c_optimizer_thrust_step_n_);
-      if (!action_c_optimizer_trial_had_extension_guard_ &&
-          !action_c_optimizer_trial_required_recovery_ &&
-          action_c_optimizer_valid_pulses_ > 0 &&
-          next_thrust > action_c_thrust_n_ + 1.0e-6)
-        {
-          action_c_thrust_n_ = next_thrust;
-        }
-      action_c_thrust_n_ = std::min(action_c_thrust_n_,
-          action_c_optimizer_safe_thrust_max_n_);
-      ROS_INFO("Action C optimizer BASELINE: no positive safe baseline yet; T=%.2f N, bottom=%.1f kPa, burst=%d (safety ceiling %.2f N; no bottom/burst exploration)",
-               action_c_thrust_n_, action_c_bottom_hold_kpa_,
-               action_c_optimizer_burst_pulses_,
-               action_c_optimizer_safe_thrust_max_n_);
-      return;
-    }
-  const double base_thrust = std::min(
-      action_c_optimizer_safe_thrust_max_n_, have_safe_best
-          ? action_c_optimizer_best_thrust_n_ : action_c_thrust_n_);
-  const double base_bottom = action_c_optimize_bottom_enabled_
-      ? action_c_optimizer_best_bottom_kpa_ : action_c_bottom_initial_kpa_;
-  const int base_burst = have_safe_best
-      ? action_c_optimizer_best_burst_pulses_
-      : action_c_optimizer_burst_pulses_;
-  bool candidate_found = false;
-  double candidate_thrust = base_thrust;
-  double candidate_bottom = base_bottom;
-  int candidate_burst = base_burst;
-
-  // Bounded coordinate pattern search around the best safe candidate seen so
-  // far: +P, -P, +T, -T, +N, -N. Bottom support is explored before asking
-  // the human-contact rotors for more thrust. Continuous steps halve after a full
-  // sweep without improvement; burst length remains an integer step of one.
-  for (int attempt = 0; attempt < 6 && !candidate_found; ++attempt)
-    {
-      const int direction = action_c_optimizer_direction_index_;
-      action_c_optimizer_direction_index_ =
-          (action_c_optimizer_direction_index_ + 1) % 6;
-      candidate_thrust = base_thrust;
-      candidate_bottom = base_bottom;
-      candidate_burst = base_burst;
-      if (direction < 2 && !action_c_optimize_bottom_enabled_)
-        continue;
-      if (direction == 0)
-        candidate_bottom += action_c_optimizer_bottom_step_kpa_;
-      else if (direction == 1)
-        candidate_bottom -= action_c_optimizer_bottom_step_kpa_;
-      else if (direction == 2)
-        {
-          if (action_c_optimizer_valid_pulses_ > 0 &&
-              !action_c_optimizer_trial_had_extension_guard_ &&
-              !action_c_optimizer_trial_required_recovery_)
-            candidate_thrust += action_c_optimizer_thrust_step_n_;
-        }
-      else if (direction == 3)
-        candidate_thrust -= action_c_optimizer_thrust_step_n_;
-      else if (direction == 4)
-        {
-          if (action_c_optimizer_successful_pulses_ > 0 &&
-              !action_c_optimizer_trial_required_recovery_ &&
-              !action_c_optimizer_trial_had_extension_guard_)
-            ++candidate_burst;
-        }
-      else
-        --candidate_burst;
-
-      candidate_thrust = std::max(action_c_min_thrust_n_, std::min(
-          std::min(action_c_max_thrust_n_,
-                   action_c_optimizer_safe_thrust_max_n_),
-          candidate_thrust));
-      candidate_bottom = std::max(action_c_bottom_min_kpa_, std::min(
-          action_c_bottom_max_kpa_, candidate_bottom));
-      candidate_burst = std::max(action_c_optimizer_min_burst_pulses_,
-          std::min(action_c_optimizer_max_burst_pulses_, candidate_burst));
-      candidate_found =
-          std::abs(candidate_thrust - base_thrust) > 1.0e-6 ||
-          std::abs(candidate_bottom - base_bottom) > 1.0e-6 ||
-          candidate_burst != base_burst;
-
-      if (action_c_optimizer_direction_index_ == 0)
-        {
-          if (!action_c_optimizer_sweep_improved_)
-            {
-              action_c_optimizer_thrust_step_n_ = std::max(
-                  0.125, 0.5 * action_c_optimizer_thrust_step_n_);
-              action_c_optimizer_bottom_step_kpa_ = std::max(
-                  1.25, 0.5 * action_c_optimizer_bottom_step_kpa_);
-            }
-          action_c_optimizer_sweep_improved_ = false;
-        }
-    }
-
-  action_c_thrust_n_ = candidate_found ? candidate_thrust : base_thrust;
-  action_c_bottom_hold_kpa_ = candidate_found ? candidate_bottom : base_bottom;
-  action_c_optimizer_burst_pulses_ = candidate_found
-      ? candidate_burst : base_burst;
-  ROS_INFO("Action C optimizer NEXT: T=%.2f N, bottom=%.1f kPa, burst=%d; best J=%.6f at [%.2f N, %.1f kPa, %d]",
-           action_c_thrust_n_, action_c_bottom_hold_kpa_,
-           action_c_optimizer_burst_pulses_, action_c_optimizer_best_score_,
-           base_thrust, base_bottom, base_burst);
-}
-
-void AttitudePressureController::finishActionCOptimizerTrial(
-    bool recovery_required, const char* reason)
-{
-  if (!action_c_adaptive_burst_enabled_ ||
-      !action_c_optimizer_trial_active_)
-    return;
-  const double raw_trial_dx =
-      action_c_direction_sign_x_ *
-          (mocap_position_[0] - action_c_optimizer_trial_start_x_m_);
-  // Only motion generated between pulse ON and the completed regrip is gait
-  // progress. PREPARE drift and attitude-recovery motion must not make an
-  // otherwise failed candidate look good.
-  const double recovery_dx = action_c_direction_sign_x_ *
-      (mocap_position_[0] - action_c_optimizer_recovery_start_x_m_);
-  const double retained_dx = action_c_efficiency_objective_enabled_
-      ? std::min(raw_trial_dx, hugmy::actionCRetainedAfterRecovery(
-          action_c_optimizer_retained_progress_m_,
-          action_c_optimizer_recovery_pending_, recovery_dx))
-      : action_c_optimizer_retained_progress_m_;
-  const double progress_term =
-      action_c_objective_progress_weight_ * retained_dx;
-  const double tilt_cost = action_c_objective_tilt_weight_ *
-      action_c_optimizer_peak_tilt_rad_ *
-      action_c_optimizer_peak_tilt_rad_;
-  const double rate_cost = action_c_objective_rate_weight_ *
-      action_c_optimizer_peak_rate_rad_s_ *
-      action_c_optimizer_peak_rate_rad_s_;
-  const double thrust_cost = action_c_objective_thrust_energy_weight_ *
-      action_c_optimizer_thrust_energy_n2s_;
-  const double recovery_cost = recovery_required
-      ? action_c_objective_recovery_weight_ : 0.0;
-  const double angle_mismatch_cost =
-      action_c_objective_angle_mismatch_weight_ *
-      action_c_optimizer_peak_extension_mismatch_rad_ *
-      action_c_optimizer_peak_extension_mismatch_rad_;
-  const double failed_pulse_cost =
-      action_c_objective_failed_pulse_weight_ *
-      static_cast<double>(action_c_optimizer_failed_pulses_);
-  const double legacy_score = progress_term - tilt_cost - rate_cost -
-      thrust_cost - recovery_cost - angle_mismatch_cost - failed_pulse_cost;
-  const double shortfall_ratio = action_c_optimizer_target_progress_m_ > 0.0
-      ? std::max(0.0, 1.0 - retained_dx / action_c_optimizer_target_progress_m_) : 1.0;
-  const double shortfall_cost = action_c_efficiency_shortfall_weight_ * shortfall_ratio;
-  // Stability is enforced by the unchanged guards/supervisor. The online
-  // objective rewards retained speed, not tiny motion with zero recoveries.
-  const double score = action_c_efficiency_objective_enabled_
-      ? (action_c_optimizer_clock_valid_ ? hugmy::actionCEfficiencyScore(
-          retained_dx, action_c_optimizer_elapsed_sec_,
-          action_c_optimizer_thrust_energy_n2s_, action_c_efficiency_thrust_weight_,
-          action_c_optimizer_recovery_sec_, action_c_efficiency_recovery_time_weight_) - shortfall_cost
-         : -std::numeric_limits<double>::infinity())
-      : legacy_score;
-
-  const bool eligible = action_c_optimizer_valid_pulses_ > 0 &&
-      action_c_optimizer_successful_pulses_ > 0 &&
-      retained_dx > 0.0 && std::isfinite(score) &&
-      !action_c_optimizer_trial_had_extension_guard_;
-  const bool improved = eligible &&
-      score > action_c_optimizer_best_score_;
-  pnh_.setParam("action_c_optimizer_last_score", score);
-  pnh_.setParam("action_c_optimizer_target_progress_m", action_c_optimizer_target_progress_m_);
-  pnh_.setParam("action_c_optimizer_shortfall_cost", shortfall_cost);
-  ROS_INFO("Action C progress objective: goal %.2f mm, retained %.2f mm, deficit %.1f%%, shortfall cost %.6f; established successes %d/%d",
-           1000.0 * action_c_optimizer_target_progress_m_, 1000.0 * retained_dx,
-           100.0 * shortfall_ratio, shortfall_cost,
-           action_c_optimizer_successful_pulses_, action_c_optimizer_completed_pulses_);
-  pnh_.setParam("action_c_optimizer_elapsed_sec", action_c_optimizer_elapsed_sec_);
-  pnh_.setParam("action_c_optimizer_recovery_sec", action_c_optimizer_recovery_sec_);
-  ROS_INFO("Action C efficiency: retained %.2f mm / total %.3f s (recovery %.3f s), objective=%s J=%.6f; legacy diagnostic J=%.6f",
-           1000.0*retained_dx, action_c_optimizer_elapsed_sec_, action_c_optimizer_recovery_sec_,
-           action_c_efficiency_objective_enabled_ ? "retained-speed" : "legacy", score, legacy_score);
-  pnh_.setParam("action_c_optimizer_last_retained_dx_m", retained_dx);
-  pnh_.setParam("action_c_optimizer_last_raw_trial_dx_m", raw_trial_dx);
-  pnh_.setParam("action_c_optimizer_last_peak_tilt_rad",
-                action_c_optimizer_peak_tilt_rad_);
-  pnh_.setParam("action_c_optimizer_last_peak_rate_rad_s",
-                action_c_optimizer_peak_rate_rad_s_);
-  pnh_.setParam("action_c_optimizer_last_thrust_energy_n2s",
-                action_c_optimizer_thrust_energy_n2s_);
-  pnh_.setParam("action_c_optimizer_last_recovery_required",
-                recovery_required);
-  pnh_.setParam("action_c_optimizer_last_peak_extension_mismatch_rad",
-                action_c_optimizer_peak_extension_mismatch_rad_);
-  pnh_.setParam("action_c_optimizer_last_failed_pulses",
-                action_c_optimizer_failed_pulses_);
-  pnh_.setParam("action_c_optimizer_last_valid_pulses",
-                action_c_optimizer_valid_pulses_);
-  ROS_WARN("Action C optimizer trial %d RESULT %s (%s): u=[T %.2f N, bottom %.1f kPa, burst %d], credited retained dx=%.2f mm (raw trial %.2f mm), success/fail=%d/%d, peak roll=%.1f deg, peak roll rate=%.3f rad/s, peak extension mismatch=%.1f deg, integral T^2 dt=%.3f N^2s, recovery=%d, legacy_terms=[+%.6f -%.6f -%.6f -%.6f -%.6f -%.6f -%.6f], selected J=%.6f%s%s",
-           action_c_optimizer_trial_index_,
-           action_c_direction_sign_x_ > 0.0 ? "+x" : "-x", reason,
-           action_c_thrust_n_, action_c_bottom_hold_kpa_,
-           action_c_optimizer_burst_pulses_, 1000.0 * retained_dx,
-           1000.0 * raw_trial_dx,
-           action_c_optimizer_successful_pulses_,
-           action_c_optimizer_failed_pulses_,
-           action_c_optimizer_peak_tilt_rad_ * 180.0 / M_PI,
-           action_c_optimizer_peak_rate_rad_s_,
-           action_c_optimizer_peak_extension_mismatch_rad_ * 180.0 / M_PI,
-           action_c_optimizer_thrust_energy_n2s_, recovery_required,
-           progress_term, tilt_cost, rate_cost, thrust_cost, recovery_cost,
-           angle_mismatch_cost, failed_pulse_cost,
-           score, improved ? " NEW_BEST" : "",
-           eligible ? "" : " INELIGIBLE");
-  if (improved)
-    {
-      action_c_optimizer_best_score_ = score;
-      action_c_optimizer_best_thrust_n_ = action_c_thrust_n_;
-      action_c_optimizer_best_bottom_kpa_ = action_c_bottom_hold_kpa_;
-      action_c_optimizer_best_burst_pulses_ =
-          action_c_optimizer_burst_pulses_;
-      action_c_optimizer_sweep_improved_ = true;
-      pnh_.setParam("action_c_optimizer_best_score",
-                    action_c_optimizer_best_score_);
-      pnh_.setParam("action_c_optimizer_best_thrust_n",
-                    action_c_optimizer_best_thrust_n_);
-      pnh_.setParam("action_c_optimizer_best_bottom_kpa",
-                    action_c_optimizer_best_bottom_kpa_);
-      pnh_.setParam("action_c_optimizer_best_burst_pulses",
-                    action_c_optimizer_best_burst_pulses_);
-    }
-  const bool reprobe_qualified = !recovery_required &&
-      !action_c_optimizer_trial_had_extension_guard_ &&
-      action_c_optimizer_completed_pulses_ > 0 &&
-      action_c_optimizer_valid_pulses_ == action_c_optimizer_completed_pulses_ &&
-      std::isfinite(retained_dx) && retained_dx >= 0.0 &&
-      action_c_optimizer_peak_extension_mismatch_rad_ <=
-          action_c_thrust_reprobe_max_mismatch_rad_ &&
-      action_c_optimizer_peak_tilt_rad_ < action_c_posture_recovery_trigger_rad_ &&
-      action_c_optimizer_peak_rate_rad_s_ < action_c_posture_rate_trigger_rad_s_;
-  action_c_optimizer_reprobe_pending_ = action_c_thrust_safety_.observeTrial(
-      action_c_thrust_n_, action_c_min_thrust_n_, action_c_thrust_reprobe_step_n_,
-      action_c_optimizer_trial_guard_reasons_,
-      reprobe_qualified ? action_c_optimizer_valid_pulses_ : 0,
-      action_c_thrust_reprobe_safe_pulses_);
-  action_c_optimizer_safe_thrust_max_n_ = action_c_thrust_safety_.limit();
-  pnh_.setParam("action_c_optimizer_safe_thrust_max_n",
-                action_c_optimizer_safe_thrust_max_n_);
-  pnh_.setParam("action_c_optimizer_hard_thrust_max_n",
-                action_c_thrust_safety_.hard_max_n);
-  pnh_.setParam("action_c_optimizer_pair_thrust_max_n",
-                action_c_thrust_safety_.pair_max_n);
-  pnh_.setParam("action_c_optimizer_reprobe_safe_pulses",
-                action_c_thrust_safety_.safe_pulses);
-  pnh_.setParam("action_c_optimizer_last_guard_reasons",
-                static_cast<int>(action_c_optimizer_trial_guard_reasons_));
-  ROS_INFO("Action C optimizer LIMITS: effective %.2f N, hard %.2f N, pair %.2f N; verified pulses %d/%d, eligible=%d, guard mask=%u%s",
-           action_c_optimizer_safe_thrust_max_n_, action_c_thrust_safety_.hard_max_n,
-           action_c_thrust_safety_.pair_max_n, action_c_thrust_safety_.safe_pulses,
-           action_c_thrust_reprobe_safe_pulses_, reprobe_qualified,
-           action_c_optimizer_trial_guard_reasons_,
-           action_c_optimizer_reprobe_pending_ ? "; re-probe unlocked" : "");
-  action_c_optimizer_trial_active_ = false;
-  action_c_optimizer_recovery_pending_ = false;
-  action_c_optimizer_trial_required_recovery_ = recovery_required;
-  if (finishActionCPropulsionTrial(recovery_required, retained_dx)) return;
-  if (action_c_coordination_enabled_ && action_c_coordination_.finishTrial(
-          eligible && !recovery_required && !action_c_optimizer_trial_had_extension_guard_ &&
-          action_c_optimizer_clock_valid_ && action_c_optimizer_valid_pulses_ > 0 &&
-          action_c_optimizer_successful_pulses_ == action_c_optimizer_completed_pulses_))
-    {
-      // Calibration and optimizer NEVER change inputs at the same boundary.
-      // Re-measure the same T/P, one pulse, under the new fixed calibration.
-      action_c_optimizer_best_score_ = -std::numeric_limits<double>::infinity();
-      action_c_optimizer_direction_index_ = 0;
-      action_c_optimizer_sweep_improved_ = false;
-      action_c_optimizer_reprobe_pending_ = false;
-      action_c_optimizer_burst_pulses_ = 1;
-      pnh_.setParam("action_c_optimizer_best_score", action_c_optimizer_best_score_);
-      pnh_.setParam("action_c_coordination_learning_round", action_c_coordination_.rounds);
-      ROS_INFO("Action C COORDINATION commit %d/%d: offsets [%.3f %.3f %.3f %.3f] N, leads [%.3f %.3f %.3f %.3f] s; same T/P re-evaluation, optimizer held for this boundary",
-               action_c_coordination_.rounds, action_c_coordination_.learning_rounds,
-               action_c_coordination_.offset[0], action_c_coordination_.offset[1],
-               action_c_coordination_.offset[2], action_c_coordination_.offset[3],
-               action_c_coordination_.lead[0], action_c_coordination_.lead[1],
-               action_c_coordination_.lead[2], action_c_coordination_.lead[3]);
-      return;
-    }
-  selectNextActionCCandidate();
-}
-
 void AttitudePressureController::requestActionCPostureRecovery(
     const ros::Time& now, const char* reason)
 {
-  if (!action_c_adaptive_burst_enabled_ || !target_received_)
+  pauseHybridLocomotion(now);
+  if (!target_received_)
     {
-      stopInchwormToGrasp(now,
-          target_received_ ? reason :
-              "Action C cannot invoke attitude recovery without a target attitude");
+      stopInchwormToGrasp(now, "Action C cannot recover without a target attitude");
       return;
     }
-  if (action_c_optimizer_trial_active_)
-    {
-      action_c_optimizer_recovery_pending_ = true;
-      action_c_optimizer_recovery_start_x_m_ = mocap_position_[0];
-    }
-  if (action_c_posture_recovery_count_ >=
-      action_c_max_posture_recoveries_)
-    {
-      finishActionCOptimizerTrial(true, "posture recovery limit");
-      stopInchwormToGrasp(now,
-          "Action C reached the posture-recovery limit");
-      return;
-    }
-
   ++action_c_posture_recovery_count_;
   continuous_recovery_started_ = false;
   continuous_recovery_waiting_for_settle_ = false;
   action_c_recovery_gate_.reset();
   action_c_resume_pending_ = true;
-  action_c_pressure_pull_active_ = false;
-  action_c_bottom_timing_.filling = false;
-  action_c_bottom_timing_.peak_at = -1.;
   action_c_resume_direction_ = inchworm_direction_body_;
-  action_c_posture_ready_latched_ = false;
-  action_c_burst_pulse_count_ = 0;
-  action_c_command_thrust_n_ = 0.0;
   inchworm_thrust_.fill(0.0);
   inchworm_pressure_.fill(base_pressure_kpa_);
+  // Zero the gait output before handing ownership to shared roll recovery.
   publishCorrectionThrust(inchworm_thrust_);
-  publishPressureTarget(inchworm_pressure_,
-                        std::numeric_limits<double>::infinity());
-  // The bottom bladder makes the correction less stable, so exhaust it while
-  // the proven shared attitude-recovery sequence owns the robot.
+  publishPressureTarget(inchworm_pressure_, std::numeric_limits<double>::infinity());
   publishBottomTarget(0.0);
   inchworm_active_ = false;
   enterState(GRASP, now);
-  ROS_WARN("Action C paused for shared attitude recovery (%d/%d): %s; saved goal x %.4f m, current x %.4f m, next pulse %.2f N / bottom %.1f kPa",
-           action_c_posture_recovery_count_,
-           action_c_max_posture_recoveries_, reason,
-           action_c_absolute_target_x_m_, mocap_position_[0],
-           action_c_thrust_n_, action_c_bottom_hold_kpa_);
+  ROS_WARN("Action C paused for shared attitude recovery (attempt %d, no count stop): %s; saved goal x %.4f m, current x %.4f m",
+      action_c_posture_recovery_count_, reason,
+      action_c_absolute_target_x_m_, mocap_position_[0]);
 }
 
 bool AttitudePressureController::resumeActionCAfterRecovery(
     const ros::Time& now)
 {
   if (!action_c_resume_pending_) return false;
+  if (!hybridResumeAllowed(now)) return false;
   if (!mocap_received_ || (now - mocap_stamp_).toSec() < 0.0 ||
       (now - mocap_stamp_).toSec() > inchworm_mocap_timeout_sec_)
     {
       ROS_WARN_THROTTLE(1.0, "Action C auto-resume waiting for fresh mocap; saved goal retained");
       return false;
     }
+  if (hybrid_trial_active_ &&
+      (!std::isfinite(bottom_pressure_kpa_) ||
+       std::abs(bottom_pressure_kpa_) > action_c_bottom_deflation_tolerance_kpa_ ||
+       !hybrid_endpoint_mocap_window_.stable(now.toSec())))
+    {
+      // Keep the correction itself fast, but do not evaluate/restart a gait
+      // from an inflated or still-moving pose. This is the post-deflation end
+      // paired with the pre-inflation start used by the goal conditioner.
+      publishBottomTarget(0.0);
+      ROS_INFO_THROTTLE(1.0,
+          "Action C auto-resume waiting for stable deflated endpoint: bottom %.1f/%.1f kPa, mocap_stable=%d",
+          bottom_pressure_kpa_, action_c_bottom_deflation_tolerance_kpa_,
+          hybrid_endpoint_mocap_window_.stable(now.toSec()));
+      return false;
+    }
   continuous_recovery_waiting_for_settle_ = false;
   continuous_recovery_blocked_ = false;
-  if (action_c_optimizer_recovery_pending_)
-    finishActionCOptimizerTrial(true, "posture recovery");
+  finishHybridRecovery(now);
   const double remaining = action_c_direction_sign_x_ *
       (action_c_absolute_target_x_m_ - mocap_position_[0]);
   if (remaining <= inchworm_min_cycle_progress_m_)
@@ -4246,16 +3449,10 @@ bool AttitudePressureController::resumeActionCAfterRecovery(
     }
 
   action_c_resume_pending_ = false;
-  beginActionCOptimizerTrial(now);
   action_c_preserve_adaptation_on_start_ = true;
   startInchwormStep(action_c_resume_direction_, remaining, now);
   action_c_preserve_adaptation_on_start_ = false;
-  // The shared recovery has already certified the wider resume band. Do not
-  // immediately demand the old +/-2-deg manual gate on the next tick.
-  action_c_posture_ready_latched_ = true;
-  ROS_INFO("Action C resumed after attitude recovery: remaining %.2f mm, pulse %.2f N, bottom hold %.1f kPa",
-           1000.0 * remaining, action_c_thrust_n_,
-           action_c_bottom_hold_kpa_);
+  ROS_INFO("Action C resumed after attitude recovery: remaining %.2f mm", 1000.0 * remaining);
   return true;
 }
 
@@ -4268,201 +3465,6 @@ bool AttitudePressureController::actionCRearReleased(const ros::Time& now)
       action_c_rear_release_hard_kpa_, action_c_rear_release_grace_sec_);
 }
 
-void AttitudePressureController::updateActionCPressurePull(const ros::Time& now)
-{
-  const double elapsed = (now - state_start_).toSec();
-  const bool powered_regrip = action_c_propulsion_enabled_ && action_c_propulsion_.regrip_start>=0.;
-  const double pressure_age=(now-measured_pressure_stamp_).toSec();
-  if (action_c_propulsion_enabled_ && (measured_pressure_stamp_.isZero() || pressure_age<0. || pressure_age>.25 ||
-      !std::all_of(measured_pressure_.begin(), measured_pressure_.end(), [](double p){return std::isfinite(p);})))
-    {
-      action_c_pressure_pull_active_=false;
-      stopInchwormToGrasp(now, "stale or invalid pressure during powered pull/regrip");
-      return;
-    }
-  if (!powered_regrip && !actionCRearReleased(now))
-    {
-      action_c_pressure_pull_active_ = false;
-      stopInchwormToGrasp(now, "Action C pressure pull lost rear release");
-      return;
-    }
-  // Ordinary roll assessment belongs after recoil/regrip. Hard posture and
-  // impending bend-limit handoffs below may interrupt powered flexion.
-  if (std::abs(body_angular_velocity_[0]) >= action_c_posture_rate_trigger_rad_s_)
-    {
-      action_c_pressure_pull_active_ = false;
-      inchworm_thrust_.fill(0.0);
-      action_c_command_thrust_n_ = 0.0;
-      publishCorrectionThrust(inchworm_thrust_);
-      requestActionCPostureRecovery(now, "roll limit during pressure-driven pull");
-      return;
-    }
-  bool front_ready = true, both_rebent = true, both_reached_extension = true;
-  unsigned int guards = 0;
-  double predicted_bend_margin = std::numeric_limits<double>::infinity();
-  double min_extension = std::numeric_limits<double>::infinity();
-  double max_extension = -std::numeric_limits<double>::infinity();
-  std_msgs::Float32MultiArray diagnostic;
-  diagnostic.data.resize(ARM_COUNT, std::numeric_limits<float>::quiet_NaN());
-  for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-    {
-      inchworm_pressure_[arm] = inchworm_front_[arm] ? action_c_front_pressure_[arm] :
-          (powered_regrip ? base_pressure_kpa_ : 0.0);
-      if (!inchworm_front_[arm]) { inchworm_thrust_[arm] = 0.0; continue; }
-      auto& observer = action_c_pulse_observer_[arm];
-      observer.update(hugmy::relativeBendRate(neuron_gyro_[arm][1], body_angular_velocity_[0],
-          body_angular_velocity_[1], arm_yaw_[arm]), neuron_stamp_[arm].toSec());
-      const bool simulation_bend = std::isfinite(grip_joint_bend_rad_[arm]) &&
-          !grip_state_stamp_.isZero() && (now - grip_state_stamp_).toSec() <= 0.25;
-      const double bend = simulation_bend ? measuredArmBendAngle(arm) : observer.bend;
-      if ((!simulation_bend && !observer.valid) || !std::isfinite(bend))
-        guards |= hugmy::ACTION_C_ANGLE_UNRELIABLE;
-      const double extension = action_c_pulse_start_angle_rad_[arm] - bend;
-      const double floor = std::max(hugmy::actionCPulseBendFloor(
-          action_c_pulse_start_angle_rad_[arm], action_c_min_safe_angle_rad_,
-          action_c_hard_min_bend_rad_, action_c_extension_target_rad_,
-          action_c_start_extension_margin_rad_),
-          action_c_pulse_start_angle_rad_[arm] - action_c_max_extension_rad_);
-      const double predicted_margin = bend - floor + std::min(0.0, observer.rate) *
-          action_c_pulse_roll_handoff_lookahead_sec_;
-      if (std::isfinite(predicted_margin))
-        predicted_bend_margin = std::min(predicted_bend_margin, predicted_margin);
-      min_extension = std::min(min_extension, extension);
-      max_extension = std::max(max_extension, extension);
-      if (extension >= action_c_max_extension_rad_) guards |= hugmy::ACTION_C_OVER_EXTENSION;
-      if (bend <= hugmy::actionCPulseBendFloor(action_c_pulse_start_angle_rad_[arm],
-          action_c_min_safe_angle_rad_, action_c_hard_min_bend_rad_,
-          action_c_extension_target_rad_, action_c_start_extension_margin_rad_))
-        guards |= hugmy::ACTION_C_LOW_BEND;
-      if (observer.rate <= -action_c_extension_rate_limit_rad_s_) guards |= hugmy::ACTION_C_EXTENSION_RATE;
-      action_c_front_angle_rad_[arm] = bend;
-      action_c_pulse_min_angle_rad_[arm] = std::min(action_c_pulse_min_angle_rad_[arm], bend);
-      both_reached_extension = both_reached_extension &&
-          action_c_pulse_start_angle_rad_[arm]-action_c_pulse_min_angle_rad_[arm]>=action_c_extension_target_rad_;
-      const double rebound = bend - action_c_pulse_min_angle_rad_[arm];
-      both_rebent = both_rebent && rebound >= action_c_rebend_target_rad_;
-      front_ready = front_ready && std::isfinite(measured_pressure_[arm]) &&
-          measured_pressure_[arm] >= inchworm_pressure_[arm] - pressure_tolerance_kpa_;
-      inchworm_thrust_[arm] = action_c_propulsion_enabled_
-          ? std::max(0.0, std::min(inchworm_thrust_[arm], action_c_pressure_pull_ceiling_n_[arm]))
-          : hugmy::actionCPressurePullThrust(inchworm_thrust_[arm],
-              action_c_pressure_pull_ceiling_n_[arm], rebound, action_c_rebend_target_rad_, true);
-      diagnostic.data[arm] = bend * 180.0 / M_PI;
-    }
-  action_c_pulse_bend_pub_.publish(diagnostic);
-  action_c_pulse_had_extension_ = action_c_pulse_had_extension_ || both_reached_extension;
-  // During intentional asynchronous flexion, compare attained extensions,
-  // not one arm's rebound against the other's extension. Individual hard
-  // bend/rate limits and the measured roll supervisor are unchanged.
-  const double mismatch = action_c_propulsion_enabled_
-      ? hugmy::actionCPeakExtensionMismatch(inchworm_front_, action_c_pulse_start_angle_rad_, action_c_pulse_min_angle_rad_)
-      : max_extension - min_extension;
-  action_c_optimizer_peak_extension_mismatch_rad_ = std::max(action_c_optimizer_peak_extension_mismatch_rad_, mismatch);
-  if (max_extension >= action_c_extension_target_rad_ && mismatch >= action_c_max_extension_mismatch_rad_)
-    guards |= hugmy::ACTION_C_PAIR_MISMATCH;
-  if (inchwormTravel() - action_c_pulse_start_travel_m_ <= -action_c_abort_reverse_travel_m_)
-    guards |= hugmy::ACTION_C_REVERSE_TRAVEL;
-  if (std::hypot(wrapAngle(roll_ - action_c_pulse_start_roll_),
-                 wrapAngle(pitch_ - action_c_pulse_start_pitch_)) >= action_c_max_body_tilt_change_rad_)
-    guards |= hugmy::ACTION_C_BODY_TILT;
-  if (action_c_pulse_roll_handoff_enabled_ &&
-      !(guards & hugmy::ACTION_C_ANGLE_UNRELIABLE) &&
-      hugmy::actionCPulseRollHandoff(wrapAngle(roll_ - target_roll_),
-          wrapAngle(action_c_pulse_start_roll_ - target_roll_), body_angular_velocity_[0],
-          predicted_bend_margin, action_c_pulse_roll_handoff_margin_rad_,
-          action_c_posture_recovery_trigger_rad_, action_c_posture_hard_roll_rad_,
-          action_c_posture_rate_trigger_rad_s_, action_c_roll_trend_.growth_rad,
-          action_c_roll_trend_.outward_rate_rad_s))
-    {
-      action_c_pulse_overextended_ = true;
-      action_c_optimizer_trial_had_extension_guard_ |= guards != 0;
-      action_c_optimizer_trial_guard_reasons_ |= guards;
-      action_c_pressure_pull_active_ = false;
-      requestActionCPostureRecovery(now, "roll/bend limit during pressure-driven pull");
-      return;
-    }
-  if (guards)
-    {
-      action_c_pulse_overextended_ = true;
-      action_c_optimizer_trial_had_extension_guard_ = true;
-      action_c_optimizer_trial_guard_reasons_ |= guards;
-      action_c_pressure_pull_active_ = false;
-      ROS_WARN("Action C PRESSURE PULL guard mask=%u", guards);
-      stopInchwormToGrasp(now, "safety guard during pressure-driven pull");
-      return;
-    }
-  observeActionCPropulsion(now);
-  const bool timed_out = elapsed >= action_c_pressure_pull_timeout_sec_;
-  bool powered_complete=false;
-  if (action_c_propulsion_enabled_)
-    {
-      if (!powered_regrip && front_ready && both_rebent && elapsed>=.1)
-        {
-          action_c_propulsion_.regrip_start=now.toSec();
-          for (size_t arm=0;arm<ARM_COUNT;++arm)
-            if (!inchworm_front_[arm]) inchworm_pressure_[arm]=base_pressure_kpa_;
-          ROS_INFO("Action C POWERED REGRIP start: both arms flexed; retain bounded front thrust while rear pressure returns");
-        }
-      else if (!powered_regrip && timed_out)
-        {
-          action_c_pressure_pull_active_=false;
-          stopInchwormToGrasp(now, "powered flexion timeout: pressure or two-arm rebound incomplete");
-          return;
-        }
-      if (powered_regrip)
-        {
-          bool ready=front_ready && both_rebent;
-          for(size_t arm=0;arm<ARM_COUNT;++arm) if(!inchworm_front_[arm])
-            ready=ready && std::abs(measured_pressure_[arm]-base_pressure_kpa_)<=pressure_tolerance_kpa_;
-          powered_complete=action_c_propulsion_.regripReady(now.toSec(),ready);
-          if (!powered_complete && now.toSec()-action_c_propulsion_.regrip_start>=action_c_powered_regrip_timeout_sec_)
-            {
-              action_c_pressure_pull_active_=false;
-              stopInchwormToGrasp(now, "powered rear regrip timed out");
-              return;
-            }
-        }
-    }
-  if (!action_c_propulsion_enabled_ && timed_out && !front_ready)
-    {
-      action_c_pressure_pull_active_ = false;
-      stopInchwormToGrasp(now, "front pressure did not recover during bounded pressure pull");
-      return;
-    }
-  if (powered_complete || (!action_c_propulsion_enabled_ && front_ready && ((both_rebent && elapsed >= 0.1) || timed_out)))
-    {
-      action_c_propulsion_.complete(both_rebent && action_c_pulse_had_extension_ &&
-          (action_c_propulsion_enabled_ ? powered_complete && action_c_propulsion_.both_powered_sec>=.1 : !timed_out));
-      action_c_pressure_pull_active_ = false;
-      inchworm_thrust_.fill(0.0);
-      inchworm_pressure_.fill(base_pressure_kpa_);
-      action_c_recovery_ready_start_ = ros::Time(0);
-      // Start the full OFF/regrip timer AFTER powered pull, not at ON end.
-      enterState(ACTION_C_EVALUATE, now);
-      ROS_INFO("Action C PRESSURE PULL done: rebound=%d, duration=%.2f s; powered rear regrip=%d, joint forward-thrust time=%.2f s",
-          both_rebent, elapsed, powered_complete, action_c_propulsion_.both_powered_sec);
-    }
-  action_c_command_thrust_n_ = *std::max_element(inchworm_thrust_.begin(), inchworm_thrust_.end());
-  observeActionCPropulsion(now);
-  publishBottomTarget(actionCBottomTarget());
-  publishPressureTarget(inchworm_pressure_, std::numeric_limits<double>::infinity());
-  publishCorrectionThrust(inchworm_thrust_);
-  ROS_INFO_THROTTLE(0.1, "Action C PRESSURE PULL: residual [%.2f %.2f %.2f %.2f] N, front pressure ready=%d, rebent=%d, rear release enter/hold/hard %.1f/%.1f/%.1f kPa, grace %.2f s, elapsed %.2f/%.2f s",
-      inchworm_thrust_[0], inchworm_thrust_[1], inchworm_thrust_[2], inchworm_thrust_[3],
-      front_ready, both_rebent, action_c_rear_release_max_kpa_, action_c_rear_release_hold_kpa_,
-      action_c_rear_release_hard_kpa_, action_c_rear_release_grace_sec_,
-      elapsed, action_c_pressure_pull_timeout_sec_);
-}
-
-double AttitudePressureController::actionCBottomTarget() const
-{
-  if (action_c_bottom_sync_enabled_ &&
-      (state_ == SETTLE || (state_ == ACTION_C_PREPARE && !action_c_bottom_timing_.filling)))
-    return std::min(action_c_bottom_hold_kpa_, action_c_bottom_wait_kpa_);
-  return std::max(0.0, action_c_bottom_hold_kpa_ -
-      (action_c_bottom_post_pulse_ ? action_c_bottom_post_pulse_drop_kpa_ : 0.0));
-}
-
 bool AttitudePressureController::actionCPressureReady(
     const PressureArray& target, const ros::Time& now)
 {
@@ -4473,10 +3475,6 @@ bool AttitudePressureController::actionCPressureReady(
   if (action_c_continuous_recovery_enabled_ && inchworm_action_c_enabled_ &&
       !inchworm_action_d_enabled_ && (state_ == GRASP || state_ == RECOVER))
     tolerance.fill(std::max(pressure_tolerance_kpa_, action_c_pressure_hold_tolerance_kpa_));
-  for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-    if (state_ == ACTION_C_PREPARE && action_c_front_release_enabled_ &&
-        !action_c_reference_pulse_mode_ && inchworm_front_[arm] && std::abs(target[arm]) <= 1e-6)
-      tolerance[arm] = action_c_front_release_tolerance_kpa_;
   const double age = (now - measured_pressure_stamp_).toSec();
   return action_c_pressure_ready_gate_.update(measured_pressure_, target, tolerance,
       now.toSec(), !measured_pressure_stamp_.isZero() && age >= 0.0 && age <= 0.25,
@@ -4484,24 +3482,12 @@ bool AttitudePressureController::actionCPressureReady(
       action_c_pressure_max_deviation_kpa_);
 }
 
-double AttitudePressureController::actionCBottomPeakLead() const
-{
-  // Nominal peak timing only: an early extension/safety cutoff always wins.
-  const double level = std::max(0.0, std::min(action_c_thrust_n_, action_c_max_thrust_n_));
-  return std::min(action_c_pulse_duration_sec_, level / std::max(0.01, action_c_thrust_ramp_n_s_));
-}
-
 bool AttitudePressureController::pressureReached(
     const PressureArray& target) const
 {
   for (size_t arm = 0; arm < ARM_COUNT; ++arm)
     {
-      // Only the released front pair in C PREPARE gets the exhaust tolerance.
-      // Keep grasp/regrip, rear supports and other actions at their normal tolerance.
-      const double tolerance = state_ == ACTION_C_PREPARE &&
-          action_c_front_release_enabled_ && !action_c_reference_pulse_mode_ &&
-          inchworm_front_[arm] && std::abs(target[arm]) <= 1.0e-6
-          ? action_c_front_release_tolerance_kpa_ : pressure_tolerance_kpa_;
+      const double tolerance = pressure_tolerance_kpa_;
       if (!std::isfinite(target[arm]) || !std::isfinite(measured_pressure_[arm]) ||
           std::abs(measured_pressure_[arm] - target[arm]) > tolerance)
         return false;
@@ -4541,112 +3527,16 @@ double AttitudePressureController::inchwormTravel() const
 void AttitudePressureController::updateInchworm(
     const ros::Time& now, double dt, bool, bool)
 {
+  if (hybridLocomotionActive())
+    {
+      updateHybridLocomotion(now, dt);
+      return;
+    }
   auto approach = [dt](double value, double target, double rate) {
     const double step = std::max(0.0, rate * dt);
     return value < target ? std::min(target, value + step)
                           : std::max(target, value - step);
   };
-  if (action_c_coordination_enabled_ && inchworm_action_c_enabled_ &&
-      !inchworm_action_d_enabled_ && action_c_pulse_started_)
-    action_c_coordination_.observePressure(now.toSec(), measured_pressure_,
-        !measured_pressure_stamp_.isZero() &&
-        (now - measured_pressure_stamp_).toSec() >= 0.0 &&
-        (now - measured_pressure_stamp_).toSec() <= 0.25);
-  // Continue identification through zero-thrust re-inflation even after a
-  // guarded pulse. Never borrow samples from the shared recovery controller.
-  if (inchworm_action_c_enabled_ && !inchworm_action_d_enabled_ && action_c_pulse_started_ &&
-      !action_c_pressure_pull_active_ &&
-      (state_==ACTION_C_EVALUATE || state_==ACTION_C_REGRIP || state_==SETTLE))
-    observeActionCPropulsion(now);
-  if (inchworm_action_c_enabled_ && !inchworm_action_d_enabled_)
-    {
-      // Bottom pressure is an optimized Action-C input and intentionally
-      // changes pitch. Posture handoff and its optimizer terms therefore use
-      // only Spinal roll and roll rate. Pitch still remains covered by the
-      // per-pulse relative-tilt safety guard below.
-      const double tilt_error =
-          std::abs(wrapAngle(roll_ - target_roll_));
-      const double body_rate = std::abs(body_angular_velocity_[0]);
-      action_c_cycle_peak_tilt_rad_ = std::max(
-          action_c_cycle_peak_tilt_rad_, tilt_error);
-      action_c_cycle_peak_rate_rad_s_ = std::max(
-          action_c_cycle_peak_rate_rad_s_, body_rate);
-      if (action_c_optimizer_trial_active_)
-        {
-          action_c_optimizer_peak_tilt_rad_ = std::max(
-              action_c_optimizer_peak_tilt_rad_, tilt_error);
-          action_c_optimizer_peak_rate_rad_s_ = std::max(
-              action_c_optimizer_peak_rate_rad_s_, body_rate);
-          double thrust_squared = 0.0;
-          for (double thrust : inchworm_thrust_)
-            thrust_squared += thrust * thrust;
-          action_c_optimizer_thrust_energy_n2s_ +=
-              thrust_squared * std::max(0.0, dt);
-        }
-
-      // A pulse is allowed to finish recoil and regrip. Only count residual
-      // roll at a quiet PREPARE/SETTLE boundary, with the selected bottom
-      // pressure already reached. Never carry pulse/inflation excursions
-      // into the ordinary recovery confirmation timer.
-      const bool posture_boundary = state_ == ACTION_C_PREPARE || state_ == SETTLE;
-      const bool pneumatic_settled = posture_boundary && actionCPressureReady(inchworm_pressure_, now) &&
-          std::isfinite(bottom_pressure_kpa_) &&
-          std::abs(bottom_pressure_kpa_ - actionCBottomTarget()) <=
-              pressure_tolerance_kpa_;
-      const bool boundary_quiet = posture_boundary && pneumatic_settled &&
-          action_c_command_thrust_n_ <= 0.01 &&
-          std::all_of(inchworm_thrust_.begin(), inchworm_thrust_.end(),
-                      [](double thrust) { return std::abs(thrust) <= 0.01; }) &&
-          body_rate <= action_c_pre_roll_rate_tolerance_rad_s_;
-      action_c_roll_trend_.update(boundary_quiet, wrapAngle(roll_ - target_roll_),
-          body_angular_velocity_[0], now.toSec());
-      const bool hard_roll = tilt_error >= action_c_posture_hard_roll_rad_;
-      const bool boundary_settled = action_c_boundary_settle_gate_.update(boundary_quiet,
-          now.toSec(), action_c_posture_settle_sec_);
-      const bool posture_confirmed = action_c_recovery_gate_.update(
-          boundary_settled && tilt_error > action_c_posture_recovery_trigger_rad_ &&
-          action_c_roll_trend_.worsening,
-          now.toSec(), correction_trigger_confirm_sec_);
-      action_c_boundary_ready_ = boundary_settled && !hard_roll &&
-          (tilt_error <= action_c_posture_recovery_trigger_rad_ ||
-           (action_c_roll_trend_.ready && !action_c_roll_trend_.worsening));
-      // The low-pressure quiet boundary was certified BEFORE fill began.
-      // Do not demand high-pressure settling again during just-in-time fill.
-      // Absolute roll/rate guards below remain active in either direction.
-      if (action_c_bottom_sync_enabled_ && state_ == ACTION_C_PREPARE &&
-          action_c_bottom_timing_.filling)
-        action_c_boundary_ready_ = !hard_roll &&
-            body_rate <= action_c_pre_roll_rate_tolerance_rad_s_;
-      if (posture_boundary)
-        ROS_INFO_THROTTLE(0.5,
-            "Action C roll boundary: error %.1f deg, trend ready=%d worsening=%d, hard limit %.1f deg, next pulse ready=%d; bottom %.1f/%.1f kPa",
-            tilt_error * 180.0 / M_PI, action_c_roll_trend_.ready, action_c_roll_trend_.worsening,
-            action_c_posture_hard_roll_rad_ * 180.0 / M_PI, action_c_boundary_ready_,
-            bottom_pressure_kpa_, actionCBottomTarget());
-      const bool safe_to_handoff =
-          (state_ != ACTION_C_HORIZONTAL_PULL || !action_c_pulse_started_) &&
-          action_c_command_thrust_n_ <= 0.01;
-      if (action_c_adaptive_burst_enabled_ && safe_to_handoff &&
-          (posture_confirmed || hard_roll ||
-           body_rate >= action_c_posture_rate_trigger_rad_s_))
-        {
-          if (action_c_reference_pulse_mode_ && action_c_pulse_started_ &&
-              (action_c_reference_single_pulse_ || action_c_pulse_overextended_))
-            {
-              stopInchwormToGrasp(now, "reference single/guarded pulse ended with posture limit; no automatic pulse retry");
-              return;
-            }
-          // The candidate remains unchanged until its objective is measured
-          // after recovery. Mutating it here would mix two different u values
-          // in one optimization trial.
-          requestActionCPostureRecovery(now,
-              body_rate >= action_c_posture_rate_trigger_rad_s_
-                  ? "Spinal roll-rate limit (immediate)"
-                  : (hard_roll ? "absolute Spinal roll safety limit"
-                               : "worsening residual Spinal roll (angle growth and gyro confirmed)"));
-          return;
-        }
-    }
   auto updateActionDPressure = [this, &approach](size_t arm, double angle,
                                                  double) {
     double desired_pressure = action_d_initial_pressure_[arm];
@@ -5783,1499 +4673,6 @@ void AttitudePressureController::updateInchworm(
         }
       break;
 
-    case ACTION_C_PREPARE:
-      {
-      publishBottomDirection(-1.0);
-      publishBottomTarget(actionCBottomTarget());
-      bool front_shape_ready = true;
-      using Trend = hugmy::PressureThrustBendModel::Trend;
-      for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-        {
-          inchworm_thrust_[arm] = 0.0;
-          if (!inchworm_front_[arm])
-            {
-              inchworm_pressure_[arm] = base_pressure_kpa_;
-              continue;
-            }
-          double best_pressure = 0.0;
-          double best_error = std::numeric_limits<double>::infinity();
-          const double action_c_pressure_limit = std::min(
-              maximum_pressure_kpa_, action_c_max_pressure_kpa_);
-          for (double pressure = 0.0;
-               !action_c_reference_pulse_mode_ && !action_c_front_release_enabled_ &&
-               pressure <= action_c_pressure_limit + 1.0e-9; pressure += 0.1)
-            {
-              const double predicted = bend_model_.angleRad(
-                  pressure, action_c_thrust_n_ + bend_model_thrust_offset_n_,
-                  Trend::INCREASING, Trend::INCREASING);
-              const double error = std::abs(predicted - action_c_target_angle_rad_);
-              if (error < best_error)
-                {
-                  best_error = error;
-                  best_pressure = pressure;
-                }
-            }
-          // The successful gait releases the front before extension. A static
-          // 90-degree-at-thrust table counteracts the intended pulse extension.
-          // Keep that table only for explicit legacy comparisons.
-          double selected_pressure = action_c_reference_pulse_mode_
-              ? action_c_front_pulse_pressure_kpa_
-              : action_c_front_release_enabled_ ? 0.0
-              : best_pressure + (action_c_online_pressure_adaptation_enabled_
-                    ? action_c_pressure_bias_kpa_[arm] : 0.0);
-          // Once one pulse has been observed, use the local measured model
-          // to prepare the next operating point.  This compensates the
-          // expected arm-angle change caused by a new thrust level before
-          // that thrust is applied.  The table remains the safe initial
-          // guess for the first pulse.
-          if (!action_c_front_release_enabled_ && action_c_online_pressure_adaptation_enabled_ &&
-              action_c_last_pulse_valid_ &&
-              std::abs(action_c_dtheta_dpressure_[arm]) > 1.0e-4)
-            {
-              const double thrust_change = action_c_thrust_n_ -
-                  action_c_last_pulse_thrust_n_;
-              const double pressure_to_target =
-                  (action_c_target_angle_rad_ -
-                   action_c_last_pulse_bend_angle_rad_[arm]) /
-                  action_c_dtheta_dpressure_[arm];
-              const double pressure_for_thrust = -
-                  action_c_dtheta_dthrust_[arm] /
-                  action_c_dtheta_dpressure_[arm] * thrust_change;
-              selected_pressure = action_c_last_pulse_pressure_kpa_[arm] +
-                  std::max(-action_c_max_feedforward_pressure_step_kpa_,
-                      std::min(action_c_max_feedforward_pressure_step_kpa_,
-                          pressure_to_target + pressure_for_thrust));
-            }
-          action_c_front_pressure_[arm] = std::max(0.0, std::min(
-              action_c_pressure_limit, selected_pressure));
-          action_c_front_angle_rad_[arm] = measuredArmBendAngle(arm);
-          // Legacy table mode corrects its preparation shape. Release mode
-          // must not silently reinflate to 30+ kPa; the measured minimum-bend
-          // gate below still prevents starting from an already-straight arm.
-          if (!action_c_front_release_enabled_ && !action_c_reference_pulse_mode_ && action_c_front_angle_rad_[arm] <
-              action_c_target_angle_rad_ - action_c_angle_tolerance_rad_)
-            {
-              const double angle_error = action_c_target_angle_rad_ -
-                  action_c_front_angle_rad_[arm];
-              action_c_front_pressure_[arm] = std::min(
-                  action_c_pressure_limit,
-                  std::max(base_pressure_kpa_,
-                      action_c_front_pressure_[arm]) +
-                      action_c_pressure_gain_kpa_rad_ * angle_error);
-            }
-          const bool arm_shape_ready = hugmy::actionCStartBendReady(
-              action_c_front_angle_rad_[arm], action_c_prepare_min_bend_rad_,
-              action_c_hard_min_bend_rad_, action_c_extension_target_rad_,
-              action_c_start_extension_margin_rad_);
-          front_shape_ready = front_shape_ready && arm_shape_ready;
-          if (!arm_shape_ready)
-            ROS_WARN_THROTTLE(1.0, "Action C PREPARE bend blocked: arm%zu %.1f deg; start minimum %.1f deg, absolute floor %.1f deg + extension %.1f deg + margin %.1f deg",
-                arm, action_c_front_angle_rad_[arm] * 180.0 / M_PI,
-                action_c_prepare_min_bend_rad_ * 180.0 / M_PI,
-                action_c_hard_min_bend_rad_ * 180.0 / M_PI,
-                action_c_extension_target_rad_ * 180.0 / M_PI,
-                action_c_start_extension_margin_rad_ * 180.0 / M_PI);
-          if (action_c_reference_pulse_mode_ || action_c_pressure_pull_enabled_)
-            {
-              // Fail closed at unsafe starting bend; do not silently replace
-              // the requested 5 kPa with 30+ kPa to chase an absolute 90 deg.
-              const double gyro_norm = std::sqrt(
-                  neuron_gyro_[arm][0]*neuron_gyro_[arm][0] +
-                  neuron_gyro_[arm][1]*neuron_gyro_[arm][1] +
-                  neuron_gyro_[arm][2]*neuron_gyro_[arm][2]);
-              front_shape_ready = front_shape_ready &&
-                  std::abs(neuron_acc_norm_[arm] - 9.80665) <= 1.5 && gyro_norm <= 0.20;
-              if (!front_shape_ready)
-                ROS_WARN_THROTTLE(1.0, "Action C waiting for safe settled bend/IMU: arm%zu bend %.1f deg, acc %.2f m/s^2, gyro %.2f rad/s; front target stays %.1f kPa",
-                    arm, action_c_front_angle_rad_[arm]*180.0/M_PI,
-                    neuron_acc_norm_[arm], gyro_norm, action_c_front_pressure_[arm]);
-            }
-          inchworm_pressure_[arm] = action_c_front_pressure_[arm];
-        }
-      const bool nominal_arm_pressure_ready = actionCPressureReady(inchworm_pressure_, now);
-      const bool bottom_ready = std::isfinite(bottom_pressure_kpa_) &&
-          (!action_c_bottom_sync_enabled_ || action_c_bottom_timing_.fresh(now.toSec())) &&
-          ((action_c_bottom_sync_enabled_ && action_c_bottom_timing_.filling) ||
-           std::abs(bottom_pressure_kpa_ - actionCBottomTarget()) <= pressure_tolerance_kpa_);
-      // Requiring nominal pressure before the first correction is safe, but
-      // do not turn the correction off merely because its intentional
-      // pressure reduction moved the active pair away from that nominal
-      // target. Otherwise thrust and pressure would chatter every cycle.
-      const bool correction_allowed = action_c_auto_roll_correction_enabled_ &&
-          action_c_roll_trend_.worsening &&
-          bottom_ready && front_shape_ready &&
-          (action_c_pre_roll_pair_sign_ != 0 || nominal_arm_pressure_ready);
-
-      // Correct roll before releasing the rear chambers or starting the
-      // forward pulse. Use the explicitly verified real-machine mapping:
-      //   positive roll -> positive thrust on arms 2+3
-      //   negative roll -> positive thrust on arms 0+1
-      // Keep the currently active pair while ramping down so crossing zero
-      // cannot instantaneously transfer thrust to the opposite side.
-      const double roll_offset = wrapAngle(roll_ - action_c_roll_target_rad_);
-      if (action_c_posture_ready_latched_ &&
-          std::abs(roll_offset) >= action_c_roll_recorrect_threshold_rad_)
-        {
-          action_c_posture_ready_latched_ = false;
-          action_c_pre_roll_ready_start_ = ros::Time(0);
-          ROS_WARN("Action C continuous-pulse roll limit reached: %.1f deg (limit %.1f deg); pausing pulses for posture recovery",
-                   roll_offset * 180.0 / M_PI,
-                   action_c_roll_recorrect_threshold_rad_ * 180.0 / M_PI);
-        }
-      int desired_pair_sign = 0;
-      // Hysteresis is intentional.  Before the first good posture (or after
-      // exceeding the wide limit), restore roll to the narrow deadband. Once
-      // latched, tolerate normal pulse-to-pulse roll motion and do not run a
-      // correction before every pulse.
-      if (!action_c_posture_ready_latched_)
-        {
-          if (roll_offset > action_c_pre_roll_deadband_rad_)
-            desired_pair_sign = 1;
-          else if (roll_offset < -action_c_pre_roll_deadband_rad_)
-            desired_pair_sign = -1;
-        }
-      if (correction_allowed && desired_pair_sign != 0)
-        {
-          if (action_c_pre_roll_pair_sign_ == 0 &&
-              action_c_pre_roll_thrust_n_ <= 0.01)
-            action_c_pre_roll_pair_sign_ = desired_pair_sign;
-        }
-
-      // Release only the active roll pair, but do not gate rotor thrust on
-      // measured pressure. In c3 arm 2 fell from 30 to only 22--23 kPa during
-      // the entire eight-second PREPARE window; the former +/-3 kPa arrival
-      // gate therefore kept /pwm_test empty for every trial. The pressure
-      // command and bounded rotor ramp now start together.
-      const bool pressure_release_requested = correction_allowed &&
-          desired_pair_sign != 0 &&
-          action_c_pre_roll_pair_sign_ == desired_pair_sign;
-      const double active_pressure_drop =
-          action_c_pre_roll_pressure_drop_kpa_;
-      auto weakenPreRollArm = [this, active_pressure_drop](size_t arm) {
-        inchworm_pressure_[arm] = std::max(
-            action_c_pre_roll_min_pressure_kpa_,
-            inchworm_pressure_[arm] - active_pressure_drop);
-      };
-      if (pressure_release_requested && action_c_pre_roll_pair_sign_ > 0)
-        {
-          weakenPreRollArm(2);
-          weakenPreRollArm(3);
-          // Arms 0+1 are the support pair during positive-roll correction.
-          // Do not leave front arm 0 at the model's low 14-kPa preparation
-          // target while the opposite pair is released.
-          inchworm_pressure_[0] = std::max(
-              inchworm_pressure_[0], base_pressure_kpa_);
-          inchworm_pressure_[1] = std::max(
-              inchworm_pressure_[1], base_pressure_kpa_);
-        }
-      else if (pressure_release_requested &&
-               action_c_pre_roll_pair_sign_ < 0)
-        {
-          weakenPreRollArm(0);
-          weakenPreRollArm(1);
-          // Arms 2+3 support the body during negative-roll correction.
-          inchworm_pressure_[2] = std::max(
-              inchworm_pressure_[2], base_pressure_kpa_);
-          inchworm_pressure_[3] = std::max(
-              inchworm_pressure_[3], base_pressure_kpa_);
-        }
-      double desired_pre_roll_thrust = 0.0;
-      if (correction_allowed && pressure_release_requested &&
-          action_c_pre_roll_pair_sign_ == desired_pair_sign)
-        desired_pre_roll_thrust = std::min(
-            action_c_pre_roll_max_thrust_n_, std::max(
-                action_c_pre_roll_min_thrust_n_,
-                action_c_pre_roll_kp_n_rad_ *
-                    (std::abs(roll_offset) -
-                     action_c_pre_roll_deadband_rad_)));
-      action_c_pre_roll_thrust_n_ = approach(
-          action_c_pre_roll_thrust_n_, desired_pre_roll_thrust,
-          action_c_pre_roll_thrust_ramp_n_s_);
-      if (action_c_pre_roll_thrust_n_ <= 0.01 &&
-          desired_pair_sign == 0)
-        action_c_pre_roll_pair_sign_ = 0;
-      else if (action_c_pre_roll_thrust_n_ <= 0.01 &&
-               desired_pair_sign != 0 &&
-               action_c_pre_roll_pair_sign_ != desired_pair_sign)
-        action_c_pre_roll_pair_sign_ = desired_pair_sign;
-      inchworm_thrust_.fill(0.0);
-      if (action_c_pre_roll_pair_sign_ > 0)
-        inchworm_thrust_[2] = inchworm_thrust_[3] =
-            action_c_pre_roll_thrust_n_;
-      else if (action_c_pre_roll_pair_sign_ < 0)
-        inchworm_thrust_[0] = inchworm_thrust_[1] =
-            action_c_pre_roll_thrust_n_;
-
-      publishPressureTarget(inchworm_pressure_,
-                            std::numeric_limits<double>::infinity());
-      publishCorrectionThrust(inchworm_thrust_);
-      ROS_INFO_THROTTLE(0.5,
-          "Action C PREPARE: pulse %.1f N, roll %.1f/%.1f deg, posture latch %d (hard limit %.1f deg, auto correction %d), pre-roll pair %s at %.2f N, pressure target [%.1f %.1f %.1f %.1f] kPa, bottom %.1f/%.1f kPa, local model %d, learned front bias [%.1f %.1f %.1f %.1f] kPa, rear pulse target 0 kPa",
-          action_c_thrust_n_, roll_ * 180.0 / M_PI,
-          action_c_roll_target_rad_ * 180.0 / M_PI,
-          action_c_posture_ready_latched_ ? 1 : 0,
-          action_c_posture_hard_roll_rad_ * 180.0 / M_PI,
-          action_c_auto_roll_correction_enabled_ ? 1 : 0,
-          action_c_pre_roll_pair_sign_ > 0 ? "2+3" :
-              (action_c_pre_roll_pair_sign_ < 0 ? "0+1" : "off"),
-          action_c_pre_roll_thrust_n_,
-          inchworm_pressure_[0], inchworm_pressure_[1],
-          inchworm_pressure_[2], inchworm_pressure_[3],
-          bottom_pressure_kpa_,
-          action_c_bottom_hold_kpa_,
-          action_c_online_pressure_adaptation_enabled_ &&
-              action_c_last_pulse_valid_ ? 1 : 0,
-          action_c_pressure_bias_kpa_[0],
-          action_c_pressure_bias_kpa_[1], action_c_pressure_bias_kpa_[2],
-          action_c_pressure_bias_kpa_[3]);
-      const bool pneumatic_ready = actionCPressureReady(inchworm_pressure_, now) &&
-          bottom_ready && front_shape_ready;
-      const double allowed_roll_error = action_c_posture_ready_latched_
-          ? action_c_roll_recorrect_threshold_rad_
-          : (action_c_auto_roll_correction_enabled_
-                 ? action_c_pre_roll_deadband_rad_
-                 : action_c_posture_recovery_trigger_rad_);
-      const bool roll_ready =
-          (action_c_boundary_ready_ || std::abs(roll_offset) < allowed_roll_error) &&
-          std::abs(body_angular_velocity_[0]) <=
-              action_c_pre_roll_rate_tolerance_rad_s_ &&
-          action_c_pre_roll_thrust_n_ <= 0.01;
-      if (pneumatic_ready && roll_ready && action_c_boundary_ready_)
-        {
-          if (action_c_pre_roll_ready_start_.isZero())
-            action_c_pre_roll_ready_start_ = now;
-        }
-      else
-        action_c_pre_roll_ready_start_ = ros::Time(0);
-      const bool pre_roll_complete =
-          !action_c_pre_roll_ready_start_.isZero() &&
-          (now - action_c_pre_roll_ready_start_).toSec() >=
-              action_c_pre_roll_settle_sec_;
-      if (action_c_bottom_sync_enabled_ && action_c_bottom_timing_.filling &&
-          (!nominal_arm_pressure_ready || !front_shape_ready ||
-           !action_c_bottom_timing_.fresh(now.toSec())))
-        {
-          action_c_bottom_timing_.beginCycle();
-          publishBottomTarget(actionCBottomTarget());
-        }
-      if (pre_roll_complete && action_c_bottom_sync_enabled_)
-        {
-          if (!action_c_bottom_timing_.filling)
-            {
-              ROS_INFO("Action C BOTTOM fill start: low %.1f kPa, predicted precharge duration %.3f s from learned rate/lag; launch remains gated by fresh measured rise",
-                       bottom_pressure_kpa_, std::max(0.0,
-                         action_c_bottom_timing_.plannedFillLead(action_c_bottom_hold_kpa_, bottom_pressure_kpa_) -
-                         actionCBottomPeakLead()));
-              action_c_bottom_timing_.startFill(now.toSec());
-            }
-          publishBottomTarget(actionCBottomTarget());
-          ROS_INFO_THROTTLE(0.25,
-              "Action C BOTTOM SYNC: actual %.1f -> peak target %.1f kPa, rise %.1f kPa/s, delay %.3f s, ETA %.3f s / thrust peak lead %.3f s; previous peak error %.1f kPa",
-              bottom_pressure_kpa_, action_c_bottom_hold_kpa_, action_c_bottom_timing_.rate,
-              action_c_bottom_timing_.delay,
-              action_c_bottom_timing_.eta(action_c_bottom_hold_kpa_, pressure_tolerance_kpa_, now.toSec()),
-              actionCBottomPeakLead(), action_c_bottom_timing_.peak_error);
-        }
-      if (pre_roll_complete && (!action_c_bottom_sync_enabled_ ||
-          action_c_bottom_timing_.ready(action_c_bottom_hold_kpa_, pressure_tolerance_kpa_,
-                                       actionCBottomPeakLead(), now.toSec())))
-        {
-          if (!action_c_posture_ready_latched_)
-            {
-              action_c_posture_ready_latched_ = true;
-              ROS_INFO("Action C posture accepted at roll %.1f deg; stable offsets allowed, worsening roll requests recovery; hard limit %.1f deg",
-                       roll_offset * 180.0 / M_PI,
-                       action_c_posture_hard_roll_rad_ * 180.0 / M_PI);
-            }
-          action_c_pulse_started_ = false;
-          action_c_pulse_angle_rad_ = 0.0;
-          action_c_command_thrust_n_ = 0.0;
-          action_c_pulse_start_travel_m_ = travel;
-          action_c_pulse_start_roll_ = roll_;
-          action_c_pulse_start_pitch_ = pitch_;
-          action_c_pre_roll_ready_start_ = ros::Time(0);
-          enterState(ACTION_C_HORIZONTAL_PULL, now);
-        }
-      else if (elapsed >= action_c_prepare_timeout_sec_)
-        {
-          action_c_success_ = false;
-          ROS_ERROR("ACTION C FAILED safely in PREPARE: pressure/start bend (ready=%d, minimum %.1f deg plus absolute-floor headroom)/roll %.1f-deg target was not ready before the pulse",
-                    front_shape_ready, action_c_prepare_min_bend_rad_ * 180.0 / M_PI,
-                    action_c_roll_target_rad_ * 180.0 / M_PI);
-          enterState(ACTION_C_REGRIP, now);
-        }
-      }
-      break;
-
-    case ACTION_C_HORIZONTAL_PULL:
-      {
-      publishBottomDirection(-1.0);
-      // Bottom fill began in PREPARE; keep its peak target during the
-      // unchanged thrust ramp. Rear pressure still releases at the ON edge.
-      publishBottomTarget(actionCBottomTarget());
-      const double rear_target = 0.0;
-      double pulse_roll_trim_n = 0.0;
-      PressureArray angle_thrust_reduction_n{{0.0, 0.0, 0.0, 0.0}};
-      double front_extension_mismatch_rad = 0.0;
-      for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-        {
-          if (inchworm_front_[arm])
-            inchworm_pressure_[arm] = action_c_front_pressure_[arm];
-          else
-            inchworm_pressure_[arm] = rear_target;
-          if (!inchworm_front_[arm] || !action_c_pulse_started_)
-            inchworm_thrust_[arm] = 0.0;
-        }
-      if (!action_c_pulse_started_)
-        {
-          // An exhaust command is not evidence of low measured pressure.
-          // Start the pulse clock only AFTER rear pressure is low, so peak
-          // thrust cannot arrive while the rear is still gripping strongly.
-          if (action_c_pressure_pull_enabled_ &&
-              !actionCRearReleased(now))
-            {
-              inchworm_thrust_.fill(0.0);
-              publishPressureTarget(inchworm_pressure_, std::numeric_limits<double>::infinity());
-              publishCorrectionThrust(inchworm_thrust_);
-              ROS_INFO_THROTTLE(0.2, "Action C REAR RELEASE: waiting for rear <= %.1f kPa before pulse", action_c_rear_release_max_kpa_);
-              if (elapsed >= action_c_rear_release_timeout_sec_)
-                stopInchwormToGrasp(now, "Action C rear exhaust timeout; no pulse emitted");
-              break;
-            }
-          // The grasp can change during the rear-release wait after PREPARE.
-          // Recheck before latching ON or issuing any pulse thrust.
-          bool start_shape_ready = true;
-          for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-            if (inchworm_front_[arm])
-              start_shape_ready = start_shape_ready && hugmy::actionCStartBendReady(
-                  measuredArmBendAngle(arm), action_c_prepare_min_bend_rad_,
-                  action_c_hard_min_bend_rad_, action_c_extension_target_rad_,
-                  action_c_start_extension_margin_rad_);
-          if (!start_shape_ready)
-            {
-              stopInchwormToGrasp(now, "Action C start bend/headroom lost before pulse ON");
-              break;
-            }
-          action_c_pulse_started_ = true;
-          action_c_pulse_start_ = now;
-          if (action_c_bottom_sync_enabled_)
-            {
-              action_c_bottom_timing_.peak_at = now.toSec() + actionCBottomPeakLead();
-              action_c_bottom_timing_.peak_error = std::numeric_limits<double>::quiet_NaN();
-              // Learn pneumatic response before body/arm motion, not from
-              // pressure spikes caused by contact loading during the pulse.
-              action_c_bottom_timing_.filling = false;
-            }
-          action_c_coordination_.startPulse();
-          action_c_propulsion_.beginPulse();
-          for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-            action_c_coordination_rebend_target_[arm] = std::min(
-                std::min(maximum_pressure_kpa_, action_c_max_pressure_kpa_),
-                std::max(base_pressure_kpa_, std::max(action_c_front_pressure_[arm],
-                    measured_pressure_[arm]) + action_c_rebend_pressure_boost_kpa_));
-          action_c_pressure_feedback_time_ = now;
-          action_c_pulse_peak_thrust_n_.fill(0.0);
-          action_c_pulse_terminal_extension_rad_.fill(0.0);
-          action_c_pulse_arm_ceiling_n_.fill(0.0);
-          action_c_pulse_arm_nominal_n_.fill(0.0);
-          for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-            if (inchworm_front_[arm])
-              {
-                const double hard_limit = action_c_adaptive_burst_enabled_
-                    ? action_c_thrust_safety_.hard_max_n : action_c_max_thrust_n_;
-                action_c_pulse_arm_nominal_n_[arm] = std::max(0.0, std::min(
-                    std::min(action_c_max_thrust_n_, hard_limit),
-                    action_c_thrust_n_ + (action_c_individual_extension_enabled_
-                        ? action_c_arm_thrust_offset_n_[arm] : 0.0)));
-                action_c_pulse_arm_ceiling_n_[arm] = std::min(
-                    std::min(action_c_max_thrust_n_, hard_limit),
-                    action_c_pulse_arm_nominal_n_[arm] + (action_c_individual_extension_enabled_
-                        ? action_c_individual_assist_max_n_ : 0.0));
-                action_c_previous_pressure_kpa_[arm] = measured_pressure_[arm];
-                const double bend = measuredArmBendAngle(arm);
-                action_c_previous_bend_angle_rad_[arm] = bend;
-                action_c_pulse_start_angle_rad_[arm] = bend;
-                ROS_INFO("Action C bend limits arm%zu: start %.1f deg, pulse floor %.1f deg, relative extension limit %.1f deg",
-                    arm, bend * 180.0 / M_PI,
-                    hugmy::actionCPulseBendFloor(bend, action_c_min_safe_angle_rad_,
-                        action_c_hard_min_bend_rad_, action_c_extension_target_rad_,
-                        action_c_start_extension_margin_rad_) * 180.0 / M_PI,
-                    action_c_max_extension_rad_ * 180.0 / M_PI);
-                action_c_pulse_observer_[arm].seed(bend,
-                    hugmy::relativeBendRate(neuron_gyro_[arm][1], body_angular_velocity_[0],
-                        body_angular_velocity_[1], arm_yaw_[arm]), neuron_stamp_[arm].toSec());
-                action_c_pulse_min_angle_rad_[arm] = bend;
-                action_c_rate_previous_angle_rad_[arm] = bend;
-                action_c_filtered_bend_rate_rad_s_[arm] = 0.0;
-                action_c_previous_neuron_stamp_[arm] = neuron_stamp_[arm];
-              }
-          action_c_command_thrust_n_ = 0.0;
-          action_c_pulse_start_travel_m_ = travel;
-          action_c_pulse_start_roll_ = roll_;
-          action_c_pulse_start_pitch_ = pitch_;
-          publishBottomTarget(actionCBottomTarget());
-          action_c_rate_time_ = now;
-          action_c_pulse_had_extension_ = false;
-          action_c_pulse_overextended_ = false;
-          action_c_pulse_recoil_complete_ = false;
-          action_c_pressure_gradient_initialized_ = true;
-          ready_start_ = ros::Time(0);
-          ROS_INFO("Action C pulse ON: base front-pair level %.1f N (individual control may add bounded assist), rear command %.1f kPa (measured release required=%d), relative extension target %.1f deg, corrected start roll %.1f deg",
-                   action_c_thrust_n_, rear_target,
-                   action_c_pressure_pull_enabled_,
-                   action_c_extension_target_rad_ * 180.0 / M_PI,
-                   roll_ * 180.0 / M_PI);
-          if (action_c_individual_extension_enabled_)
-            ROS_INFO("Action C individual ceilings [%.2f %.2f %.2f %.2f] N; shared relative extension 0 -> %.1f deg in %.2f s (base %.2f N, pair ceiling limits base only)",
-                     action_c_pulse_arm_ceiling_n_[0], action_c_pulse_arm_ceiling_n_[1],
-                     action_c_pulse_arm_ceiling_n_[2], action_c_pulse_arm_ceiling_n_[3],
-                     action_c_extension_target_rad_ * 180.0 / M_PI,
-                     action_c_extension_trajectory_sec_, action_c_thrust_n_);
-        }
-      if (action_c_pulse_started_)
-        {
-          action_c_command_thrust_n_ = approach(
-              action_c_command_thrust_n_, action_c_thrust_n_,
-              action_c_thrust_ramp_n_s_);
-          double angle_sum = 0.0;
-          size_t angle_count = 0;
-          bool both_extended = true;
-          bool extension_guard = false;
-          unsigned int guard_reasons = 0;
-          double predicted_bend_margin = std::numeric_limits<double>::infinity();
-          size_t limiting_bend_arm = ARM_COUNT;
-          double minimum_extension = std::numeric_limits<double>::infinity();
-          double maximum_extension = -std::numeric_limits<double>::infinity();
-          for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-            if (inchworm_front_[arm])
-              {
-                // Do not fuse the pressure model into this feedback angle.
-                // The model is useful for the initial pressure guess, but
-                // under thrust/contact it can have a large bias.  Control
-                // each arm from its directly measured Spinal--Neuron bend.
-                action_c_front_angle_rad_[arm] = measuredArmBendAngle(arm);
-                if (action_c_reference_pulse_mode_ || action_c_pressure_pull_enabled_)
-                  {
-                    auto& observer = action_c_pulse_observer_[arm];
-                    observer.update(hugmy::relativeBendRate(neuron_gyro_[arm][1],
-                        body_angular_velocity_[0], body_angular_velocity_[1], arm_yaw_[arm]),
-                        neuron_stamp_[arm].toSec());
-                    const bool simulation_bend = std::isfinite(grip_joint_bend_rad_[arm]) &&
-                        !grip_state_stamp_.isZero() && (now-grip_state_stamp_).toSec() <= 0.25;
-                    if (!simulation_bend)
-                      {
-                        if (!observer.valid) guard_reasons |= hugmy::ACTION_C_ANGLE_UNRELIABLE;
-                        action_c_front_angle_rad_[arm] = observer.bend;
-                      }
-                    ROS_INFO_THROTTLE(0.2, "Action C ANGLE CHECK arm%zu: pulse estimate %.1f deg, accelerometer %.1f deg, acc norm %.2f m/s^2; valid=%d",
-                        arm, action_c_front_angle_rad_[arm]*180.0/M_PI,
-                        measuredArmBendAngle(arm)*180.0/M_PI, neuron_acc_norm_[arm], observer.valid);
-                  }
-                action_c_pulse_min_angle_rad_[arm] = std::min(
-                    action_c_pulse_min_angle_rad_[arm],
-                    action_c_front_angle_rad_[arm]);
-                const double extension = action_c_pulse_start_angle_rad_[arm] -
-                    action_c_front_angle_rad_[arm];
-                minimum_extension = std::min(minimum_extension, extension);
-                maximum_extension = std::max(maximum_extension, extension);
-                // Only differentiate a genuinely new Neuron sample. The main
-                // control loop is faster than the IMU transport, and treating
-                // repeated samples as new data made the short-pulse derivative
-                // alternate between zero and a large spike.
-                if (!neuron_stamp_[arm].isZero() &&
-                    neuron_stamp_[arm] !=
-                        action_c_previous_neuron_stamp_[arm])
-                  {
-                    const double sample_dt = std::max(1.0e-4,
-                        (neuron_stamp_[arm] -
-                         action_c_previous_neuron_stamp_[arm]).toSec());
-                    const double raw_rate =
-                        (action_c_front_angle_rad_[arm] -
-                         action_c_rate_previous_angle_rad_[arm]) / sample_dt;
-                    action_c_filtered_bend_rate_rad_s_[arm] =
-                        (1.0 - action_c_angle_rate_filter_alpha_) *
-                            action_c_filtered_bend_rate_rad_s_[arm] +
-                        action_c_angle_rate_filter_alpha_ * raw_rate;
-                    action_c_rate_previous_angle_rad_[arm] =
-                        action_c_front_angle_rad_[arm];
-                    action_c_previous_neuron_stamp_[arm] = neuron_stamp_[arm];
-                  }
-                if ((action_c_reference_pulse_mode_ || action_c_pressure_pull_enabled_) &&
-                    !(std::isfinite(grip_joint_bend_rad_[arm]) &&
-                      !grip_state_stamp_.isZero() && (now-grip_state_stamp_).toSec() <= 0.25))
-                  action_c_filtered_bend_rate_rad_s_[arm] = action_c_pulse_observer_[arm].rate;
-                const double bend_rate =
-                    action_c_filtered_bend_rate_rad_s_[arm];
-                const double bend_floor = hugmy::actionCPulseBendFloor(
-                    action_c_pulse_start_angle_rad_[arm], action_c_min_safe_angle_rad_,
-                    action_c_hard_min_bend_rad_, action_c_extension_target_rad_,
-                    action_c_start_extension_margin_rad_);
-                // Include both absolute/adjusted bend floor and relative
-                // extension limit. Re-flexion must not hide a current limit.
-                const double effective_floor = std::max(bend_floor,
-                    action_c_pulse_start_angle_rad_[arm] - action_c_max_extension_rad_);
-                const double predicted_margin = action_c_front_angle_rad_[arm] - effective_floor +
-                    std::min(0.0, bend_rate) * action_c_pulse_roll_handoff_lookahead_sec_;
-                if (std::isfinite(predicted_margin) && predicted_margin < predicted_bend_margin)
-                  {
-                    predicted_bend_margin = predicted_margin;
-                    limiting_bend_arm = arm;
-                  }
-                both_extended = both_extended &&
-                    (action_c_propulsion_enabled_ && action_c_pressure_pull_enabled_ && !action_c_reference_pulse_mode_
-                         ? action_c_pulse_start_angle_rad_[arm]-action_c_pulse_min_angle_rad_[arm]
-                         : extension) >= action_c_extension_target_rad_;
-                if (extension >= action_c_max_extension_rad_)
-                  guard_reasons |= hugmy::ACTION_C_OVER_EXTENSION;
-                if (action_c_front_angle_rad_[arm] <= hugmy::actionCPulseBendFloor(
-                    action_c_pulse_start_angle_rad_[arm], action_c_min_safe_angle_rad_,
-                    action_c_hard_min_bend_rad_, action_c_extension_target_rad_,
-                    action_c_start_extension_margin_rad_))
-                  guard_reasons |= hugmy::ACTION_C_LOW_BEND;
-                if (bend_rate <= -action_c_extension_rate_limit_rad_s_)
-                  guard_reasons |= hugmy::ACTION_C_EXTENSION_RATE;
-
-                // The optimizer selects the common pulse ceiling. Angle
-                // feedback may only reduce an individual rotor from that
-                // ceiling: it must never add thrust above the candidate. This
-                // lets the arm that straightens first slow down without the
-                // other arm receiving the same (wrong) correction.
-                const double desired_bend =
-                    action_c_pulse_start_angle_rad_[arm] -
-                    action_c_extension_target_rad_;
-                const double bend_error =
-                    action_c_front_angle_rad_[arm] - desired_bend;
-                const double raw_angle_trim =
-                    action_c_angle_thrust_kp_n_rad_ * bend_error +
-                    action_c_angle_thrust_kd_n_rad_s_ * bend_rate;
-                angle_thrust_reduction_n[arm] = std::max(0.0, std::min(
-                    action_c_angle_thrust_max_trim_n_, -raw_angle_trim));
-                angle_sum += action_c_front_angle_rad_[arm];
-                ++angle_count;
-              }
-          action_c_rate_time_ = now;
-          if (angle_count > 1 &&
-              std::isfinite(minimum_extension) &&
-              std::isfinite(maximum_extension))
-            front_extension_mismatch_rad =
-                maximum_extension - minimum_extension;
-          if (action_c_propulsion_enabled_ && std::any_of(action_c_propulsion_.flexing.begin(),
-              action_c_propulsion_.flexing.end(), [](bool flexing){return flexing;}))
-            front_extension_mismatch_rad = hugmy::actionCPeakExtensionMismatch(inchworm_front_,
-                action_c_pulse_start_angle_rad_, action_c_pulse_min_angle_rad_);
-          action_c_optimizer_peak_extension_mismatch_rad_ = std::max(
-              action_c_optimizer_peak_extension_mismatch_rad_,
-              front_extension_mismatch_rad);
-          // IMU-based bend can jump in both directions under rotor/body
-          // acceleration. A pair mismatch is unsafe only when at least one
-          // arm has genuinely reached the requested extension. Do not turn a
-          // common re-bend/no-extension sample into a permanent thrust cap.
-          const bool extension_imbalance_guard = angle_count > 1 &&
-              maximum_extension >= action_c_extension_target_rad_ &&
-              front_extension_mismatch_rad >=
-                  action_c_max_extension_mismatch_rad_;
-          if (extension_imbalance_guard)
-            guard_reasons |= hugmy::ACTION_C_PAIR_MISMATCH;
-          // Hard posture limits must not wait for pulse OFF. For smaller
-          // excursions, recover only when worsening roll threatens an arm's
-          // bend budget. Keep all actual angle guards and their accounting.
-          if (action_c_pulse_roll_handoff_enabled_ &&
-              !(guard_reasons & hugmy::ACTION_C_ANGLE_UNRELIABLE) &&
-              hugmy::actionCPulseRollHandoff(wrapAngle(roll_ - target_roll_),
-                  wrapAngle(action_c_pulse_start_roll_ - target_roll_), body_angular_velocity_[0],
-                  predicted_bend_margin, action_c_pulse_roll_handoff_margin_rad_,
-                  action_c_posture_recovery_trigger_rad_, action_c_posture_hard_roll_rad_,
-                  action_c_posture_rate_trigger_rad_s_, action_c_roll_trend_.growth_rad,
-                  action_c_roll_trend_.outward_rate_rad_s))
-            {
-              action_c_pulse_overextended_ = true; // interrupted, not a successful pulse
-              action_c_pulse_had_extension_ = false;
-              action_c_optimizer_trial_had_extension_guard_ |= guard_reasons != 0;
-              action_c_optimizer_trial_guard_reasons_ |= guard_reasons;
-              ROS_WARN("Action C pulse roll handoff: roll %.1f -> %.1f deg, gyro %.1f deg/s, limiting arm%zu predicted bend margin %.1f deg (lead %.2f s), actual guard mask=%u; cut pulse before shared recovery",
-                  wrapAngle(action_c_pulse_start_roll_ - target_roll_) * 180.0 / M_PI,
-                  wrapAngle(roll_ - target_roll_) * 180.0 / M_PI,
-                  body_angular_velocity_[0] * 180.0 / M_PI, limiting_bend_arm,
-                  predicted_bend_margin * 180.0 / M_PI,
-                  action_c_pulse_roll_handoff_lookahead_sec_, guard_reasons);
-              // requestActionCPostureRecovery publishes zero thrust FIRST,
-              // preserves the goal and then hands pressure/bottom to recovery.
-              requestActionCPostureRecovery(now, "worsening pulse roll near bend limit or hard posture limit");
-              return; // no later pulse output may overwrite recovery commands
-            }
-          const double common_front_thrust = std::max(0.0, std::min(
-              action_c_thrust_n_, action_c_command_thrust_n_));
-          const double pulse_elapsed = std::max(0.0, (now - action_c_pulse_start_).toSec());
-          const double shared_extension_reference = hugmy::actionCExtensionReference(
-              pulse_elapsed, action_c_extension_trajectory_sec_, action_c_extension_target_rad_);
-
-          // Never increase either rotor above the learned/selected common
-          // pulse magnitude for roll correction. Reduce the selected front
-          // rotor on the matching Y side; this trades a small amount of
-          // longitudinal thrust for posture instead of increasing load.
-          const double roll_error = wrapAngle(
-              roll_ - action_c_roll_target_rad_);
-          const double raw_roll_trim =
-              action_c_pulse_roll_kp_n_rad_ * roll_error +
-              action_c_pulse_roll_kd_n_rad_s_ *
-                  body_angular_velocity_[0];
-          const double roll_trim_capacity = std::max(0.0, std::min(
-              action_c_pulse_roll_max_trim_n_, common_front_thrust));
-          pulse_roll_trim_n = std::max(-roll_trim_capacity, std::min(
-              roll_trim_capacity, raw_roll_trim));
-          // The reference run identifies the paired pulse itself. Keep both
-          // commands equal; the roll supervisor and hard tilt guards remain.
-          if (action_c_reference_pulse_mode_) pulse_roll_trim_n = 0.0;
-          PressureArray relative_extension{}, coordinated_assist{};
-          for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-            relative_extension[arm] = action_c_pulse_start_angle_rad_[arm] - action_c_front_angle_rad_[arm];
-          if (action_c_coordination_enabled_)
-            coordinated_assist = action_c_coordination_.assist(inchworm_front_, relative_extension,
-                action_c_extension_target_rad_, roll_error, body_angular_velocity_[0],
-                std::hypot(wrapAngle(roll_ - action_c_pulse_start_roll_),
-                           wrapAngle(pitch_ - action_c_pulse_start_pitch_)),
-                action_c_max_body_tilt_change_rad_, pulse_elapsed, action_c_thrust_ramp_n_s_);
-          for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-            {
-              const double previous_thrust = inchworm_thrust_[arm];
-              inchworm_thrust_[arm] = 0.0;
-              if (!inchworm_front_[arm]) continue;
-              const double extension = action_c_pulse_start_angle_rad_[arm] -
-                  action_c_front_angle_rad_[arm];
-              // Brake the leading arm BEFORE it reaches its 8-deg target.
-              // Never speed up the lagging rotor above the common candidate.
-              const double sync_reduction = hugmy::actionCExtensionSyncReduction(
-                  extension, minimum_extension,
-                  action_c_filtered_bend_rate_rad_s_[arm],
-                  action_c_extension_target_rad_,
-                  action_c_extension_prediction_sec_,
-                  action_c_extension_sync_deadband_rad_,
-                  action_c_extension_sync_kp_n_rad_,
-                  action_c_angle_thrust_max_trim_n_);
-              angle_thrust_reduction_n[arm] = std::max(
-                  angle_thrust_reduction_n[arm], sync_reduction);
-              if (action_c_reference_pulse_mode_) angle_thrust_reduction_n[arm] = 0.0;
-              // Roll trim follows rotor Y position, not travel direction.
-              // Positive roll reduces the +Y front rotor; negative roll
-              // reduces the -Y rotor. Thus the same rule works for the +x
-              // pair 0/3 and the -x pair 1/2.
-              const bool positive_y = arm_base_position_[arm][1] > 0.0;
-              const double roll_reduction = positive_y
-                  ? std::max(0.0, pulse_roll_trim_n)
-                  : std::max(0.0, -pulse_roll_trim_n);
-              const double reduction = std::min(common_front_thrust,
-                  (action_c_reference_pulse_mode_ ? 0.0 : angle_thrust_reduction_n[arm]) + roll_reduction);
-              // Releasing a trim must not introduce a thrust step either.
-              inchworm_thrust_[arm] = std::min(
-                  std::max(0.0, common_front_thrust - reduction),
-                  previous_thrust + action_c_thrust_ramp_n_s_ * std::max(0.0, dt));
-              if (action_c_reference_pulse_mode_)
-                inchworm_thrust_[arm] = std::min(inchworm_thrust_[arm],
-                    action_c_pulse_arm_ceiling_n_[arm]);
-              if (action_c_individual_extension_enabled_)
-                {
-                  const double requested = hugmy::actionCIndividualThrust(
-                      action_c_pulse_arm_nominal_n_[arm], action_c_pulse_arm_ceiling_n_[arm], pulse_elapsed,
-                      action_c_thrust_ramp_n_s_, shared_extension_reference,
-                      extension, maximum_extension, action_c_filtered_bend_rate_rad_s_[arm],
-                      action_c_individual_kp_n_rad_, action_c_individual_kd_n_rad_s_,
-                      action_c_extension_prediction_sec_, action_c_extension_sync_deadband_rad_,
-                      action_c_sync_brake_band_rad_, action_c_extension_target_rad_);
-                  const double target = std::max(0.0, requested - roll_reduction);
-                  inchworm_thrust_[arm] = approach(previous_thrust, target,
-                      target < previous_thrust ? action_c_thrust_down_rate_n_s_
-                                              : action_c_thrust_ramp_n_s_);
-                  inchworm_thrust_[arm] = std::min(inchworm_thrust_[arm],
-                      action_c_pulse_arm_ceiling_n_[arm]);
-                  angle_thrust_reduction_n[arm] = std::max(0.0,
-                      action_c_pulse_arm_ceiling_n_[arm] - requested);
-                }
-              if (action_c_coordination_enabled_)
-                {
-                  // Existing angle/roll brakes have priority over both FF
-                  // and live assist; all output is still ramp/ceiling bounded.
-                  const double extra = reduction > 1e-6 ? 0.0 : coordinated_assist[arm];
-                  const double ceiling = std::min(action_c_max_thrust_n_,
-                      action_c_thrust_safety_.hard_max_n);
-                  // Pair-mismatch limits constrain the COMMON candidate, not
-                  // the small lagging-arm correction needed to remove mismatch.
-                  // Hard tilt/overextension limits still cap every rotor.
-                  const double requested = std::min(ceiling,
-                      std::max(0.0, common_front_thrust + extra - reduction));
-                  inchworm_thrust_[arm] = approach(previous_thrust, requested,
-                      requested < previous_thrust ? action_c_thrust_down_rate_n_s_ : action_c_thrust_ramp_n_s_);
-                  inchworm_thrust_[arm] = std::min(ceiling, inchworm_thrust_[arm]);
-                  if (!(action_c_propulsion_enabled_ && action_c_pressure_pull_enabled_ && !action_c_reference_pulse_mode_) &&
-                      action_c_coordination_.earlyPressure(arm, pulse_elapsed,
-                          action_c_pulse_duration_sec_, extension, action_c_extension_target_rad_,
-                          action_c_filtered_bend_rate_rad_s_[arm]))
-                    {
-                      if (action_c_coordination_.pressure_start[arm] < 0)
-                        ROS_INFO("Action C pressure lead arm%zu: %.3f s, measured extension %.1f deg; target %.1f kPa",
-                                 arm, action_c_coordination_.lead[arm], extension*180.0/M_PI,
-                                 action_c_coordination_rebend_target_[arm]);
-                      action_c_coordination_.startPressure(arm, now.toSec(), measured_pressure_[arm],
-                          action_c_coordination_rebend_target_[arm]);
-                      action_c_front_pressure_[arm] = action_c_coordination_rebend_target_[arm];
-                      inchworm_pressure_[arm] = action_c_front_pressure_[arm];
-                    }
-                }
-              if (action_c_propulsion_enabled_ && action_c_pressure_pull_enabled_ && !action_c_reference_pulse_mode_ &&
-                  action_c_propulsion_.response[arm].early(pulse_elapsed, action_c_pulse_duration_sec_,
-                      extension, action_c_extension_target_rad_, action_c_filtered_bend_rate_rad_s_[arm]))
-                {
-                  action_c_front_pressure_[arm] = action_c_coordination_rebend_target_[arm];
-                  inchworm_pressure_[arm] = action_c_front_pressure_[arm];
-                }
-              if (action_c_propulsion_enabled_ && action_c_pressure_pull_enabled_ && !action_c_reference_pulse_mode_)
-                {
-                  const double bend_floor = std::max(hugmy::actionCPulseBendFloor(
-                      action_c_pulse_start_angle_rad_[arm], action_c_min_safe_angle_rad_,
-                      action_c_hard_min_bend_rad_, action_c_extension_target_rad_, action_c_start_extension_margin_rad_),
-                      action_c_pulse_start_angle_rad_[arm]-action_c_max_extension_rad_);
-                  if (!action_c_propulsion_.flexing[arm] && hugmy::actionCFlexionHandoff(
-                      pulse_elapsed, extension, action_c_extension_target_rad_,
-                      action_c_filtered_bend_rate_rad_s_[arm], action_c_front_angle_rad_[arm]-bend_floor,
-                      action_c_extension_rate_limit_rad_s_, action_c_flexion_lookahead_sec_))
-                    {
-                      const double residual=std::min(action_c_pressure_pull_max_n_,
-                          action_c_pressure_pull_ratio_*action_c_thrust_n_+action_c_propulsion_.extra_n);
-                      action_c_propulsion_.startFlexion(arm, std::min(previous_thrust,inchworm_thrust_[arm]), residual);
-                      ROS_INFO("Action C arm%zu SOFT FLEXION: extension %.1f deg, rate %.1f deg/s; residual <= %.2f N, pressure %.1f kPa; other arm keeps its phase",
-                          arm, extension*180./M_PI, action_c_filtered_bend_rate_rad_s_[arm]*180./M_PI,
-                          action_c_propulsion_.flex_ceiling[arm], action_c_coordination_rebend_target_[arm]);
-                    }
-                  if (action_c_propulsion_.flexing[arm])
-                    {
-                      // Latched phase: releasing a roll trim cannot re-boost
-                      // an arm which has already started powered re-flexion.
-                      inchworm_thrust_[arm]=std::min(std::min(previous_thrust,inchworm_thrust_[arm]),
-                          action_c_propulsion_.flex_ceiling[arm]);
-                      action_c_front_pressure_[arm]=action_c_coordination_rebend_target_[arm];
-                      inchworm_pressure_[arm]=action_c_front_pressure_[arm];
-                    }
-                }
-              action_c_pulse_peak_thrust_n_[arm] = std::max(
-                  action_c_pulse_peak_thrust_n_[arm], inchworm_thrust_[arm]);
-            }
-          if (action_c_coordination_enabled_)
-            ROS_INFO_THROTTLE(0.1,
-                "Action C SYNC: requested assist [%.3f %.3f %.3f %.3f] N, output [%.3f %.3f %.3f %.3f] N, common limit %.2f N, rotor hard limit %.2f N",
-                coordinated_assist[0], coordinated_assist[1], coordinated_assist[2], coordinated_assist[3],
-                inchworm_thrust_[0], inchworm_thrust_[1], inchworm_thrust_[2], inchworm_thrust_[3],
-                action_c_optimizer_safe_thrust_max_n_, std::min(action_c_max_thrust_n_, action_c_thrust_safety_.hard_max_n));
-          if (action_c_individual_extension_enabled_)
-            ROS_INFO_THROTTLE(0.1,
-                "Action C TRACK: shared extension %.1f deg, measured [%.1f %.1f %.1f %.1f] deg, ceilings [%.2f %.2f %.2f %.2f] N",
-                shared_extension_reference * 180.0 / M_PI,
-                (action_c_pulse_start_angle_rad_[0] - action_c_front_angle_rad_[0]) * 180.0 / M_PI,
-                (action_c_pulse_start_angle_rad_[1] - action_c_front_angle_rad_[1]) * 180.0 / M_PI,
-                (action_c_pulse_start_angle_rad_[2] - action_c_front_angle_rad_[2]) * 180.0 / M_PI,
-                (action_c_pulse_start_angle_rad_[3] - action_c_front_angle_rad_[3]) * 180.0 / M_PI,
-                action_c_pulse_arm_ceiling_n_[0], action_c_pulse_arm_ceiling_n_[1],
-                action_c_pulse_arm_ceiling_n_[2], action_c_pulse_arm_ceiling_n_[3]);
-          if (angle_count > 0)
-            {
-              action_c_pulse_angle_rad_ =
-                  angle_sum / static_cast<double>(angle_count);
-
-              if (action_c_online_pressure_adaptation_enabled_)
-                {
-              // While thrust is ON, independently compensate both front-arm
-              // angles.  A thrust pulse tends to straighten an arm; a bend
-              // angle below 90 deg therefore produces a positive pressure
-              // correction.  This replaces the old pair-average/model-angle
-              // feedback which could drive both front pressures toward zero.
-              const double dt = std::max(0.0, std::min(
-                  0.1, (now - action_c_pressure_feedback_time_).toSec()));
-              const double pressure_limit = std::min(
-                  maximum_pressure_kpa_, action_c_max_pressure_kpa_);
-              for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-                if (inchworm_front_[arm])
-                  {
-                    // Use the same relative target as the pulse-end logic.
-                    // An absolute 90-deg target made a 137-deg starting arm
-                    // deliberately exhaust until it had straightened by
-                    // roughly 47 deg, even though this gait requests only an
-                    // 8-deg extension.
-                    const double desired_bend =
-                        action_c_pulse_start_angle_rad_[arm] -
-                        action_c_extension_target_rad_;
-                    const double angle_error = desired_bend -
-                        action_c_front_angle_rad_[arm];
-                    // Estimate the local sign from *actual* pressure and the
-                    // directly measured bend.  This makes the controller
-                    // robust to a reversed Neuron mounting/sign without an
-                    // arm-specific hand-tuned offset.  Ignore tiny changes,
-                    // which are dominated by pressure and accelerometer noise.
-                    if (action_c_pressure_gradient_initialized_)
-                      {
-                        const double delta_pressure = measured_pressure_[arm] -
-                            action_c_previous_pressure_kpa_[arm];
-                        const double delta_angle =
-                            action_c_front_angle_rad_[arm] -
-                            action_c_previous_bend_angle_rad_[arm];
-                        if (std::abs(delta_pressure) >=
-                                action_c_gradient_min_pressure_delta_kpa_ &&
-                            std::abs(delta_angle) >=
-                                action_c_gradient_min_angle_delta_rad_)
-                          {
-                            const double measured_sensitivity = delta_angle /
-                                delta_pressure;
-                            action_c_pressure_bend_sign_[arm] =
-                                measured_sensitivity >= 0.0 ? 1.0 : -1.0;
-                            // Limit one dynamic sample so a transient body
-                            // acceleration cannot overwrite the local model.
-                            const double bounded_sensitivity = std::max(-0.20,
-                                std::min(0.20, measured_sensitivity));
-                            action_c_dtheta_dpressure_[arm] =
-                                (1.0 - action_c_model_update_alpha_) *
-                                action_c_dtheta_dpressure_[arm] +
-                                action_c_model_update_alpha_ *
-                                bounded_sensitivity;
-                          }
-                      }
-                    if (dt > 0.0 && std::abs(angle_error) >
-                        action_c_pulse_angle_deadband_rad_)
-                      {
-                        const double requested_delta =
-                            action_c_pressure_bend_sign_[arm] *
-                            action_c_pulse_pressure_gain_kpa_rad_ * angle_error;
-                        const double max_delta =
-                            action_c_pulse_pressure_rate_kpa_s_ * dt;
-                        const double pressure_delta = std::max(-max_delta,
-                            std::min(max_delta, requested_delta));
-                        action_c_front_pressure_[arm] = std::max(0.0, std::min(
-                            pressure_limit,
-                            action_c_front_pressure_[arm] + pressure_delta));
-                        // Preserve the independent correction for a retry at
-                        // the same thrust level, but never let it set a
-                        // non-front arm's pressure.
-                        action_c_pressure_bias_kpa_[arm] = std::max(
-                            -action_c_max_pressure_kpa_, std::min(
-                                action_c_max_pressure_kpa_,
-                                action_c_pressure_bias_kpa_[arm] + pressure_delta));
-                      }
-                    action_c_previous_pressure_kpa_[arm] = measured_pressure_[arm];
-                    action_c_previous_bend_angle_rad_[arm] =
-                        action_c_front_angle_rad_[arm];
-                    inchworm_pressure_[arm] = action_c_front_pressure_[arm];
-                  }
-              action_c_pressure_feedback_time_ = now;
-                }
-            }
-
-          observeActionCPropulsion(now);
-          const double pulse_on_duration = action_c_reference_pulse_mode_ &&
-              action_c_pulse_search_enabled_ && !action_c_reference_single_pulse_
-              ? hugmy::actionCSearchPulseDuration(action_c_pulse_duration_sec_,
-                    action_c_thrust_n_, action_c_thrust_ramp_n_s_)
-              : action_c_pulse_duration_sec_;
-          const bool pulse_timeout =
-              (now - action_c_pulse_start_).toSec() >=
-                  pulse_on_duration;
-          if (action_c_reference_pulse_mode_ || action_c_pressure_pull_enabled_)
-            {
-              std_msgs::Float32MultiArray diagnostic;
-              diagnostic.data.resize(ARM_COUNT);
-              for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-                diagnostic.data[arm] = inchworm_front_[arm]
-                    ? action_c_front_angle_rad_[arm] * 180.0 / M_PI
-                    : std::numeric_limits<float>::quiet_NaN();
-              action_c_pulse_bend_pub_.publish(diagnostic);
-            }
-          const double pulse_travel = travel -
-              action_c_pulse_start_travel_m_;
-          const double pulse_tilt_change = std::hypot(
-              wrapAngle(roll_ - action_c_pulse_start_roll_),
-              wrapAngle(pitch_ - action_c_pulse_start_pitch_));
-          const bool pressure_pull_mode = action_c_pressure_pull_enabled_;
-          // Small ON recoil is diagnostic, not an early cut at the same
-          // amplitude on every attempt. Score it AFTER the full pull/regrip.
-          if (pressure_pull_mode && pulse_travel <= -action_c_max_reverse_travel_m_)
-            ROS_WARN_THROTTLE(0.2, "Action C transient ON retreat %.1f mm; evaluating after pressure pull/regrip (hard stop %.1f mm)",
-                -1000.0*pulse_travel, 1000.0*action_c_abort_reverse_travel_m_);
-          if (pulse_travel <= -(pressure_pull_mode ? action_c_abort_reverse_travel_m_
-                                                  : action_c_max_reverse_travel_m_))
-            guard_reasons |= hugmy::ACTION_C_REVERSE_TRAVEL;
-          if (pressure_pull_mode && !actionCRearReleased(now))
-            {
-              stopInchwormToGrasp(now, "Action C lost rear release during pulse");
-              break;
-            }
-          if (pulse_tilt_change >= action_c_max_body_tilt_change_rad_)
-            guard_reasons |= hugmy::ACTION_C_BODY_TILT;
-          extension_guard = guard_reasons != 0;
-          const bool flexion_pair_ready = action_c_propulsion_enabled_ && pressure_pull_mode &&
-              action_c_propulsion_.allFlexing(inchworm_front_);
-          if (((!action_c_reference_pulse_mode_ || pressure_pull_mode) && both_extended) ||
-              flexion_pair_ready ||
-              extension_guard || pulse_timeout)
-            {
-              action_c_pulse_had_extension_ = both_extended;
-              action_c_pulse_overextended_ = extension_guard;
-              action_c_optimizer_trial_had_extension_guard_ =
-                  action_c_optimizer_trial_had_extension_guard_ ||
-                  extension_guard;
-              action_c_optimizer_trial_guard_reasons_ |= guard_reasons;
-              for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-                if (inchworm_front_[arm])
-                  {
-                    const double extension = action_c_pulse_start_angle_rad_[arm] -
-                        action_c_front_angle_rad_[arm];
-                    action_c_pulse_terminal_extension_rad_[arm] = extension;
-                    // Only target overshoot reduces the next nominal thrust.
-                    // Normal pair mismatch is handled by lagging-arm assist.
-                    if (action_c_individual_extension_enabled_ && action_c_adaptive_burst_enabled_ &&
-                        extension > action_c_extension_target_rad_ + action_c_extension_sync_deadband_rad_)
-                      {
-                        const double next_ceiling = std::max(0.0,
-                            action_c_pulse_arm_nominal_n_[arm] - action_c_arm_learning_step_n_);
-                        const double next_offset = next_ceiling - action_c_thrust_n_;
-                        if (next_offset < action_c_arm_thrust_offset_n_[arm] - 1.0e-6)
-                          {
-                            action_c_arm_thrust_offset_n_[arm] = next_offset;
-                            action_c_arm_calibration_changed_ = true;
-                            ROS_INFO("Action C arm%zu target overshoot: next nominal %.2f N; measured extension %.1f deg",
-                                     arm, next_ceiling, extension * 180.0 / M_PI);
-                          }
-                      }
-                  }
-              if (extension_guard)
-                ROS_WARN("Action C guard reasons: over_extension=%d low_bend=%d extension_rate=%d pair_mismatch=%d reverse_travel=%d body_tilt=%d angle_unreliable=%d; pulse stopped",
-                         (guard_reasons & hugmy::ACTION_C_OVER_EXTENSION) != 0,
-                         (guard_reasons & hugmy::ACTION_C_LOW_BEND) != 0,
-                         (guard_reasons & hugmy::ACTION_C_EXTENSION_RATE) != 0,
-                         (guard_reasons & hugmy::ACTION_C_PAIR_MISMATCH) != 0,
-                         (guard_reasons & hugmy::ACTION_C_REVERSE_TRAVEL) != 0,
-                         (guard_reasons & hugmy::ACTION_C_BODY_TILT) != 0,
-                         (guard_reasons & hugmy::ACTION_C_ANGLE_UNRELIABLE) != 0);
-              // Store the terminal operating point before pressure is boosted
-              // for the recoil/re-bend phase.
-              for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-                if (inchworm_front_[arm])
-                  {
-                    if (action_c_online_pressure_adaptation_enabled_ &&
-                        action_c_last_pulse_valid_)
-                      {
-                        const double thrust_delta = action_c_thrust_n_ -
-                            action_c_last_pulse_thrust_n_;
-                        if (std::abs(thrust_delta) >= 0.25)
-                          {
-                            const double total_angle_delta =
-                                action_c_front_angle_rad_[arm] -
-                                action_c_last_pulse_bend_angle_rad_[arm];
-                            const double pressure_angle_delta =
-                                action_c_dtheta_dpressure_[arm] *
-                                (measured_pressure_[arm] -
-                                 action_c_last_pulse_pressure_kpa_[arm]);
-                            const double measured_dtheta_dthrust =
-                                (total_angle_delta - pressure_angle_delta) /
-                                thrust_delta;
-                            const double bounded_dtheta_dthrust = std::max(
-                                -1.0, std::min(1.0,
-                                    measured_dtheta_dthrust));
-                            action_c_dtheta_dthrust_[arm] =
-                                (1.0 - action_c_model_update_alpha_) *
-                                action_c_dtheta_dthrust_[arm] +
-                                action_c_model_update_alpha_ *
-                                bounded_dtheta_dthrust;
-                          }
-                      }
-                    action_c_last_pulse_pressure_kpa_[arm] =
-                        measured_pressure_[arm];
-                    action_c_last_pulse_bend_angle_rad_[arm] =
-                        action_c_front_angle_rad_[arm];
-                    action_c_front_pressure_[arm] = (action_c_coordination_enabled_ || action_c_propulsion_enabled_)
-                        ? action_c_coordination_rebend_target_[arm] : std::min(
-                        std::min(maximum_pressure_kpa_,
-                                 action_c_max_pressure_kpa_),
-                        std::max(base_pressure_kpa_,
-                            std::max(action_c_front_pressure_[arm],
-                                     measured_pressure_[arm]) +
-                                action_c_rebend_pressure_boost_kpa_));
-                    if (action_c_coordination_enabled_)
-                      action_c_coordination_.startPressure(arm, now.toSec(), measured_pressure_[arm],
-                          action_c_front_pressure_[arm]);
-                  }
-              action_c_last_pulse_thrust_n_ = action_c_thrust_n_;
-              action_c_last_pulse_valid_ =
-                  action_c_online_pressure_adaptation_enabled_;
-              action_c_pressure_pull_active_ = pressure_pull_mode && !extension_guard;
-              const double residual = action_c_pressure_pull_active_
-                  ? std::min(action_c_pressure_pull_max_n_, action_c_pressure_pull_ratio_ * action_c_thrust_n_ +
-                      (action_c_propulsion_enabled_ && !action_c_reference_pulse_mode_ ? action_c_propulsion_.extra_n : 0.0)) : 0.0;
-              action_c_command_thrust_n_ = extension_guard ? 0.0 : approach(
-                  action_c_command_thrust_n_, residual,
-                  action_c_thrust_down_rate_n_s_);
-              // The residual ceiling applies on the transition tick too;
-              // do not leave one full-pulse sample in the flexion phase.
-              if (action_c_pressure_pull_active_)
-                action_c_command_thrust_n_ = std::min(action_c_command_thrust_n_, residual);
-              for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-                {
-                  if (action_c_reference_pulse_mode_ && inchworm_front_[arm])
-                    action_c_front_pressure_[arm] = base_pressure_kpa_;
-                  inchworm_thrust_[arm] = inchworm_front_[arm]
-                      ? std::min(inchworm_thrust_[arm],
-                                 action_c_command_thrust_n_) : 0.0;
-                  action_c_pressure_pull_ceiling_n_[arm] = std::min(residual, inchworm_thrust_[arm]);
-                  if (action_c_propulsion_enabled_ && action_c_pressure_pull_active_ && inchworm_front_[arm])
-                    {
-                      action_c_propulsion_.startFlexion(arm, inchworm_thrust_[arm], residual);
-                      action_c_pressure_pull_ceiling_n_[arm] = std::min(action_c_pressure_pull_ceiling_n_[arm],
-                          action_c_propulsion_.flex_ceiling[arm]);
-                    }
-                  // Front pressure supplies flexion; rear stays released
-                  // until the bounded powered pull is finished.
-                  inchworm_pressure_[arm] = inchworm_front_[arm]
-                      ? action_c_front_pressure_[arm]
-                      : (action_c_pressure_pull_active_ ? 0.0 : base_pressure_kpa_);
-                }
-              publishCorrectionThrust(inchworm_thrust_);
-              observeActionCPropulsion(now);
-              // Lower the support slightly for re-placement/regrip. Keep the
-              // optimized ON pressure unchanged and restore it next PREPARE.
-              action_c_bottom_post_pulse_ = true;
-              action_c_bottom_timing_.filling = false;
-              action_c_bottom_timing_.peak_at = -1.; // early cutoff: no nominal-peak sample
-              publishBottomTarget(actionCBottomTarget());
-              ROS_INFO("Action C bottom after pulse: %.1f -> %.1f kPa until next PREPARE",
-                       action_c_bottom_hold_kpa_, actionCBottomTarget());
-              action_c_recovery_ready_start_ = ros::Time(0);
-              ROS_WARN("Action C pulse OFF (%s): command %.2f/%.2f N, bend [%.1f %.1f %.1f %.1f] deg; waiting for recoil/re-bend",
-                       extension_guard ? "extension guard" :
-                           (both_extended ? "both arms extended" : "duration"),
-                       action_c_command_thrust_n_, action_c_thrust_n_,
-                       action_c_front_angle_rad_[0] * 180.0 / M_PI,
-                       action_c_front_angle_rad_[1] * 180.0 / M_PI,
-                       action_c_front_angle_rad_[2] * 180.0 / M_PI,
-                       action_c_front_angle_rad_[3] * 180.0 / M_PI);
-              enterState(ACTION_C_EVALUATE, now);
-            }
-        }
-      publishPressureTarget(inchworm_pressure_,
-                            std::numeric_limits<double>::infinity());
-      publishCorrectionThrust(inchworm_thrust_);
-      ROS_INFO_THROTTLE(0.1,
-          "Action C PULL %s: common command %.1f N, thrust [%.2f %.2f %.2f %.2f] N, angle reduction [%.2f %.2f %.2f %.2f] N, extension mismatch %.1f/%.1f deg, front [%d %d %d %d], roll reduction selector %.2f N (+: +Y, -: -Y), roll %.1f deg (target %.1f), rear command %.1f kPa, front pressure [%.1f %.1f %.1f %.1f] kPa, bend [%.1f %.1f %.1f %.1f] deg (mean %.1f/%.1f), P->bend sign [%.0f %.0f %.0f %.0f], mocap x %.4f->%.4f, signed travel %.2f/%.2f mm, pulse %d",
-          action_c_direction_sign_x_ > 0.0 ? "+x" : "-x",
-          action_c_command_thrust_n_,
-          inchworm_thrust_[0], inchworm_thrust_[1],
-          inchworm_thrust_[2], inchworm_thrust_[3],
-          angle_thrust_reduction_n[0], angle_thrust_reduction_n[1],
-          angle_thrust_reduction_n[2], angle_thrust_reduction_n[3],
-          front_extension_mismatch_rad * 180.0 / M_PI,
-          action_c_max_extension_mismatch_rad_ * 180.0 / M_PI,
-          inchworm_front_[0], inchworm_front_[1],
-          inchworm_front_[2], inchworm_front_[3],
-          pulse_roll_trim_n,
-          roll_ * 180.0 / M_PI,
-          action_c_roll_target_rad_ * 180.0 / M_PI, rear_target,
-          action_c_front_pressure_[0], action_c_front_pressure_[1],
-          action_c_front_pressure_[2], action_c_front_pressure_[3],
-          action_c_front_angle_rad_[0] * 180.0 / M_PI,
-          action_c_front_angle_rad_[1] * 180.0 / M_PI,
-          action_c_front_angle_rad_[2] * 180.0 / M_PI,
-          action_c_front_angle_rad_[3] * 180.0 / M_PI,
-          action_c_pulse_angle_rad_ * 180.0 / M_PI,
-          action_c_target_angle_rad_ * 180.0 / M_PI,
-          action_c_pressure_bend_sign_[0], action_c_pressure_bend_sign_[1],
-          action_c_pressure_bend_sign_[2], action_c_pressure_bend_sign_[3],
-          inchworm_start_position_[0], mocap_position_[0],
-          1000.0 * travel, 1000.0 * inchworm_target_distance_m_,
-          action_c_pulse_started_);
-      }
-      break;
-
-    case ACTION_C_EVALUATE:
-      {
-      if (action_c_pressure_pull_active_)
-        {
-          updateActionCPressurePull(now);
-          break;
-        }
-      publishBottomDirection(-1.0);
-      publishBottomTarget(actionCBottomTarget());
-      action_c_command_thrust_n_ = approach(
-          action_c_command_thrust_n_, 0.0,
-          action_c_thrust_down_rate_n_s_);
-      bool rebend_ready = true;
-      double worst_angle_error = 0.0;
-      for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-        {
-          inchworm_pressure_[arm] = inchworm_front_[arm]
-              ? action_c_front_pressure_[arm] : base_pressure_kpa_;
-          inchworm_thrust_[arm] = inchworm_front_[arm]
-              ? std::min(inchworm_thrust_[arm],
-                         action_c_command_thrust_n_) : 0.0;
-          if (inchworm_front_[arm])
-            {
-              action_c_front_angle_rad_[arm] = measuredArmBendAngle(arm);
-              const double rebound = action_c_front_angle_rad_[arm] -
-                  action_c_pulse_min_angle_rad_[arm];
-              rebend_ready = rebend_ready &&
-                  (rebound >= action_c_rebend_target_rad_ ||
-                   action_c_front_angle_rad_[arm] >=
-                       action_c_target_angle_rad_ -
-                           action_c_angle_tolerance_rad_);
-              worst_angle_error = std::max(worst_angle_error,
-                  std::abs(action_c_target_angle_rad_ -
-                           action_c_front_angle_rad_[arm]));
-            }
-        }
-      publishPressureTarget(inchworm_pressure_,
-                            std::numeric_limits<double>::infinity());
-      publishCorrectionThrust(inchworm_thrust_);
-      const bool bottom_ready = std::isfinite(bottom_pressure_kpa_) &&
-          std::abs(bottom_pressure_kpa_ - actionCBottomTarget()) <=
-              pressure_tolerance_kpa_;
-      const bool thrust_off = action_c_command_thrust_n_ <= 0.01;
-      const bool recovery_condition = bottom_ready && thrust_off &&
-          (action_c_reference_pulse_mode_
-              ? (elapsed >= action_c_reference_off_sec_ && pressureReached(inchworm_pressure_))
-              : rebend_ready);
-      if (recovery_condition)
-        {
-          if (action_c_recovery_ready_start_.isZero())
-            action_c_recovery_ready_start_ = now;
-        }
-      else
-        action_c_recovery_ready_start_ = ros::Time(0);
-
-      const bool recovery_complete =
-          !action_c_recovery_ready_start_.isZero() &&
-          (now - action_c_recovery_ready_start_).toSec() >=
-              action_c_recovery_settle_sec_;
-      // Reference OFF must wait for pneumatic regrip, not inherit the short
-      // legacy angle-rebound timeout. Thrust is already zero while waiting.
-      const double recovery_wait_limit = action_c_reference_pulse_mode_
-          ? std::max(inchworm_anchor_timeout_sec_,
-                     action_c_reference_off_sec_ + action_c_recovery_settle_sec_)
-          : action_c_recovery_timeout_sec_;
-      const bool recovery_timeout = elapsed >= recovery_wait_limit;
-      const double pulse_travel = travel - action_c_pulse_start_travel_m_;
-      ROS_INFO_THROTTLE(0.1,
-          "Action C RECOIL: thrust %.2f N, bottom %.1f/%.1f kPa hold, rear command %.1f kPa (no pressure wait), rebend %d, bend [%.1f %.1f %.1f %.1f] deg, pulse travel %.2f/%.2f mm",
-          action_c_command_thrust_n_, bottom_pressure_kpa_,
-          actionCBottomTarget(), base_pressure_kpa_,
-          rebend_ready,
-          action_c_front_angle_rad_[0] * 180.0 / M_PI,
-          action_c_front_angle_rad_[1] * 180.0 / M_PI,
-          action_c_front_angle_rad_[2] * 180.0 / M_PI,
-          action_c_front_angle_rad_[3] * 180.0 / M_PI,
-          1000.0 * pulse_travel, 1000.0 * inchworm_target_distance_m_);
-      if (!recovery_complete && !recovery_timeout) break;
-      action_c_pulse_recoil_complete_ = recovery_complete;
-
-      const bool controlled_success = recovery_complete &&
-          action_c_pulse_had_extension_ &&
-          !action_c_pulse_overextended_ &&
-          pulse_travel >= inchworm_target_distance_m_;
-      if (action_c_reference_pulse_mode_)
-        {
-          // Extension/rebound remain diagnostics, not a condition that forces
-          // amplitude learning or repeats a failed fixed pulse indefinitely.
-          action_c_success_ = controlled_success;
-          enterState(ACTION_C_REGRIP, now);
-          break;
-        }
-      if (action_c_adaptive_burst_enabled_ && !controlled_success)
-        {
-          // T_pulse is an optimizer variable and must stay fixed throughout
-          // one trial. Record unsuccessful extension/rebound/travel as a poor
-          // outcome instead of changing thrust inside the candidate.
-          action_c_success_ = false;
-          ROS_WARN("Action C optimizer pulse failed at fixed candidate [T %.2f N, bottom %.1f kPa, burst %d]: extension=%d guard=%d recovery=%d travel=%.2f mm",
-                   action_c_thrust_n_, action_c_bottom_hold_kpa_,
-                   action_c_optimizer_burst_pulses_,
-                   action_c_pulse_had_extension_,
-                   action_c_pulse_overextended_, recovery_complete,
-                   1000.0 * pulse_travel);
-          enterState(ACTION_C_REGRIP, now);
-        }
-      else if (controlled_success)
-        {
-          action_c_success_ = true;
-          ROS_INFO("ACTION C SUCCESS: controlled extension and rebound retained %.2f/%.2f mm at %.1f N",
-                   1000.0 * pulse_travel,
-                   1000.0 * inchworm_target_distance_m_,
-                   action_c_thrust_n_);
-          enterState(ACTION_C_REGRIP, now);
-        }
-      else if (action_c_pulse_overextended_)
-        {
-          if (action_c_thrust_n_ - action_c_thrust_step_n_ >=
-              action_c_min_thrust_n_ + 1.0e-6)
-            {
-              action_c_thrust_n_ = std::max(action_c_min_thrust_n_,
-                  action_c_thrust_n_ - action_c_thrust_step_n_);
-              action_c_angle_retry_ = 0;
-              ROS_WARN("Action C extension guard fired; reducing next pulse to %.1f N",
-                       action_c_thrust_n_);
-              enterState(ACTION_C_PREPARE, now);
-            }
-          else
-            {
-              action_c_success_ = false;
-              ROS_ERROR("ACTION C FAILED safely: extension guard fired at minimum %.1f N",
-                        action_c_min_thrust_n_);
-              enterState(ACTION_C_REGRIP, now);
-            }
-        }
-      else if (!action_c_pulse_had_extension_)
-        {
-          if (action_c_thrust_n_ + action_c_thrust_step_n_ <=
-              action_c_max_thrust_n_ + 1.0e-6)
-            {
-              action_c_thrust_n_ = std::min(action_c_max_thrust_n_,
-                  action_c_thrust_n_ + action_c_thrust_step_n_);
-              ROS_WARN("Action C pulse did not extend both arms; advancing gently to %.1f N",
-                       action_c_thrust_n_);
-              enterState(ACTION_C_PREPARE, now);
-            }
-          else
-            {
-              action_c_success_ = false;
-              ROS_ERROR("ACTION C FAILED: both-arm extension was not obtained through %.1f N",
-                        action_c_max_thrust_n_);
-              enterState(ACTION_C_REGRIP, now);
-            }
-        }
-      else if (!recovery_complete &&
-               action_c_angle_retry_ < action_c_max_angle_retries_)
-        {
-          // Extension occurred but the pneumatic recoil was insufficient.
-          // Learn an independent pressure correction and repeat at the same
-          // thrust instead of making the dangerous response of increasing it.
-          for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-            if (inchworm_front_[arm])
-              {
-                const double angle_error = action_c_target_angle_rad_ -
-                    action_c_front_angle_rad_[arm];
-                const double correction = action_c_pressure_bend_sign_[arm] *
-                    action_c_pressure_gain_kpa_rad_ * angle_error;
-                action_c_pressure_bias_kpa_[arm] = std::max(
-                    -action_c_max_pressure_kpa_, std::min(
-                        action_c_max_pressure_kpa_,
-                        action_c_pressure_bias_kpa_[arm] + correction));
-              }
-          ++action_c_angle_retry_;
-          ROS_WARN("Action C rebound timeout; pressure retry %d/%d at the same %.1f N",
-                   action_c_angle_retry_, action_c_max_angle_retries_,
-                   action_c_thrust_n_);
-          enterState(ACTION_C_PREPARE, now);
-        }
-      else if (action_c_thrust_n_ + action_c_thrust_step_n_ <=
-               action_c_max_thrust_n_ + 1.0e-6 &&
-               worst_angle_error <
-                   action_c_max_error_before_thrust_increase_rad_)
-        {
-          action_c_thrust_n_ = std::min(action_c_max_thrust_n_,
-              action_c_thrust_n_ + action_c_thrust_step_n_);
-          action_c_angle_retry_ = 0;
-          ROS_WARN("Action C controlled cycle had no travel; advancing to %.1f N",
-                   action_c_thrust_n_);
-          enterState(ACTION_C_PREPARE, now);
-        }
-      else
-        {
-          action_c_success_ = false;
-          ROS_ERROR("ACTION C FAILED: no retained travel after controlled extension/rebound; restoring grasp");
-          enterState(ACTION_C_REGRIP, now);
-        }
-      }
-      break;
-
-    case ACTION_C_REGRIP:
-      inchworm_pressure_.fill(base_pressure_kpa_);
-      inchworm_thrust_.fill(0.0);
-      publishBottomTarget(actionCBottomTarget());
-      publishPressureTarget(inchworm_pressure_,
-                            std::numeric_limits<double>::infinity());
-      publishCorrectionThrust(inchworm_thrust_);
-      if (pressureReached(inchworm_pressure_) ||
-          elapsed >= inchworm_anchor_timeout_sec_)
-        {
-          if (action_c_reference_pulse_mode_ &&
-              (action_c_reference_single_pulse_ || action_c_pulse_overextended_ ||
-               !action_c_pulse_recoil_complete_ || !pressureReached(inchworm_pressure_)))
-            {
-              ROS_WARN("Action C REFERENCE done: retained x %.2f mm, extension=%d, guard=%d, OFF/regrip=%d; stopping without automatic retry",
-                       1000.0*(travel-action_c_pulse_start_travel_m_),
-                       action_c_pulse_had_extension_, action_c_pulse_overextended_,
-                       action_c_pulse_recoil_complete_ && pressureReached(inchworm_pressure_));
-              stopInchwormToGrasp(now, "reference pulse complete or guarded; inspect diagnostics before next command");
-              break;
-            }
-          const double pulse_retained_travel = action_c_pulse_started_
-              ? travel - action_c_pulse_start_travel_m_ : 0.0;
-          const double retained_threshold =
-              action_c_regrip_min_retained_ratio_ *
-              inchworm_target_distance_m_;
-          if (action_c_success_ &&
-              pulse_retained_travel < retained_threshold)
-            {
-              ROS_WARN("ACTION C retained-motion check failed: %.2f mm < %.2f mm after REGRIP",
-                       1000.0 * pulse_retained_travel,
-                       1000.0 * retained_threshold);
-              action_c_success_ = false;
-            }
-          ROS_INFO("Action C regrip complete: %s, retained travel %.2f mm (required %.2f mm)",
-                   action_c_success_ ? "SUCCESS" : "FAILED",
-                   1000.0 * pulse_retained_travel,
-                   1000.0 * retained_threshold);
-          if (action_c_adaptive_burst_enabled_)
-            {
-              if (!action_c_optimizer_cycle_accounted_)
-                {
-                  const bool valid_progress = action_c_pulse_started_ &&
-                      action_c_pulse_recoil_complete_ &&
-                      !action_c_pulse_overextended_ &&
-                      pressureReached(inchworm_pressure_);
-                  action_c_propulsion_.regrip(valid_progress);
-                  if (action_c_coordination_enabled_)
-                    action_c_coordination_.observePulse(inchworm_front_,
-                        action_c_pulse_terminal_extension_rad_, action_c_extension_target_rad_,
-                        valid_progress && action_c_success_);
-                  action_c_optimizer_retained_progress_m_ +=
-                      hugmy::actionCMeasuredProgress(pulse_retained_travel,
-                                                    valid_progress);
-                  if (valid_progress) ++action_c_optimizer_valid_pulses_;
-                  bool tracking_ready = valid_progress &&
-                      action_c_cycle_peak_tilt_rad_ < action_c_posture_recovery_trigger_rad_ &&
-                      action_c_cycle_peak_rate_rad_s_ < action_c_posture_rate_trigger_rad_s_;
-                  double minimum_final_extension = std::numeric_limits<double>::infinity();
-                  double maximum_final_extension = -std::numeric_limits<double>::infinity();
-                  for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-                    if (inchworm_front_[arm])
-                      {
-                        const double extension = action_c_pulse_terminal_extension_rad_[arm];
-                        tracking_ready = tracking_ready && std::abs(extension - action_c_extension_target_rad_) <=
-                            action_c_extension_sync_deadband_rad_;
-                        minimum_final_extension = std::min(minimum_final_extension, extension);
-                        maximum_final_extension = std::max(maximum_final_extension, extension);
-                      }
-                  tracking_ready = tracking_ready && std::isfinite(minimum_final_extension) &&
-                      maximum_final_extension - minimum_final_extension <= action_c_extension_sync_deadband_rad_;
-                  if (tracking_ready) ++action_c_optimizer_tracking_pulses_;
-                  if (action_c_individual_extension_enabled_)
-                    {
-                      // Increase only ONE saturated, lagging arm after a safe
-                      // complete cycle. Do not reward an opposite angle response.
-                      size_t lagging = ARM_COUNT;
-                      double least_extension = action_c_extension_target_rad_;
-                      for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-                        if (inchworm_front_[arm] && hugmy::actionCCanRaiseArm(
-                            valid_progress, action_c_optimizer_trial_had_extension_guard_,
-                            action_c_cycle_peak_tilt_rad_ < action_c_posture_recovery_trigger_rad_ &&
-                            action_c_cycle_peak_rate_rad_s_ < action_c_posture_rate_trigger_rad_s_,
-                            action_c_optimizer_peak_extension_mismatch_rad_,
-                            action_c_thrust_reprobe_max_mismatch_rad_,
-                            action_c_pulse_terminal_extension_rad_[arm],
-                            action_c_pulse_start_angle_rad_[arm] - action_c_pulse_min_angle_rad_[arm],
-                            action_c_extension_target_rad_, action_c_extension_sync_deadband_rad_,
-                            action_c_pulse_peak_thrust_n_[arm], action_c_pulse_arm_ceiling_n_[arm]) &&
-                            action_c_pulse_terminal_extension_rad_[arm] < least_extension)
-                          {
-                            lagging = arm;
-                            least_extension = action_c_pulse_terminal_extension_rad_[arm];
-                          }
-                      if (lagging < ARM_COUNT)
-                        {
-                          const double next_ceiling = std::min(
-                              std::min(action_c_max_thrust_n_, action_c_thrust_safety_.hard_max_n),
-                              action_c_pulse_arm_nominal_n_[lagging] + action_c_arm_learning_step_n_);
-                          const double next_offset = next_ceiling - action_c_thrust_n_;
-                          if (next_offset > action_c_arm_thrust_offset_n_[lagging] + 1.0e-6)
-                            {
-                              action_c_arm_thrust_offset_n_[lagging] = next_offset;
-                              action_c_arm_calibration_changed_ = true;
-                              ROS_INFO("Action C arm%zu safely lagging at ceiling: next nominal %.2f N (extension %.1f deg)",
-                                       lagging, next_ceiling, least_extension * 180.0 / M_PI);
-                            }
-                        }
-                    }
-                  ROS_INFO("Action C optimizer measurement: valid=%d, retained %.2f mm (sub-goal motion is scored; unsafe/incomplete positive motion is excluded)",
-                           valid_progress, 1000.0 * pulse_retained_travel);
-                  if (action_c_success_ && valid_progress)
-                    {
-                      ++action_c_optimizer_successful_pulses_;
-                    }
-                  else
-                    {
-                      // Keep the missed-stroke penalty independent of the
-                      // continuous, validated displacement measurement.
-                      ++action_c_optimizer_failed_pulses_;
-                    }
-                  action_c_optimizer_cycle_accounted_ = true;
-                }
-              ++action_c_optimizer_completed_pulses_;
-              ++action_c_burst_pulse_count_;
-            }
-          if (action_c_success_)
-            {
-              const double end_tilt =
-                  std::abs(wrapAngle(roll_ - target_roll_));
-              const double observed_growth = std::max(0.0,
-                  end_tilt - action_c_cycle_start_tilt_rad_);
-              action_c_estimated_tilt_growth_rad_ =
-                  (1.0 - action_c_tilt_growth_alpha_) *
-                      action_c_estimated_tilt_growth_rad_ +
-                  action_c_tilt_growth_alpha_ * observed_growth;
-              action_c_last_retained_progress_m_ = pulse_retained_travel;
-
-              const double predicted_next_tilt = end_tilt + std::max(
-                  0.0, action_c_estimated_tilt_growth_rad_);
-              const double signed_goal_remaining =
-                  action_c_direction_sign_x_ *
-                      (action_c_absolute_target_x_m_ - mocap_position_[0]);
-              const bool target_reached = signed_goal_remaining <=
-                  inchworm_min_cycle_progress_m_;
-              const bool predicted_posture_limit =
-                  predicted_next_tilt >=
-                      action_c_posture_recovery_trigger_rad_;
-              ROS_INFO("Action C optimizer sample %d/%d: retained %.2f mm, roll start/end/peak %.1f/%.1f/%.1f deg, peak roll rate %.2f rad/s, predicted next %.1f deg, fixed candidate [T %.2f N, bottom %.1f kPa, burst %d]",
-                       action_c_optimizer_completed_pulses_,
-                       action_c_optimizer_burst_pulses_,
-                       1000.0 * pulse_retained_travel,
-                       action_c_cycle_start_tilt_rad_ * 180.0 / M_PI,
-                       end_tilt * 180.0 / M_PI,
-                       action_c_cycle_peak_tilt_rad_ * 180.0 / M_PI,
-                       action_c_cycle_peak_rate_rad_s_,
-                       predicted_next_tilt * 180.0 / M_PI,
-                       action_c_thrust_n_, action_c_bottom_hold_kpa_,
-                       action_c_optimizer_burst_pulses_);
-              if (action_c_adaptive_burst_enabled_ && !target_reached &&
-                  predicted_posture_limit)
-                {
-                  // Keep this prediction as an optimizer diagnostic only.
-                  // Recovery is defined by the actual Spinal roll crossing
-                  // the configured 8-deg threshold; using predicted growth
-                  // here caused handoffs while measured roll was still safe.
-                  ROS_WARN("Action C predicts %.1f deg on the next pulse, but measured roll is %.1f deg; continuing until the actual %.1f-deg recovery threshold",
-                           predicted_next_tilt * 180.0 / M_PI,
-                           end_tilt * 180.0 / M_PI,
-                           action_c_posture_recovery_trigger_rad_ *
-                               180.0 / M_PI);
-                }
-              enterState(SETTLE, now);
-            }
-          else if (action_c_adaptive_burst_enabled_)
-            {
-              // A failed/reversed stride is still a valid low-score sample.
-              // SETTLE closes this candidate early and lets the optimizer
-              // choose a different u instead of heuristically increasing it.
-              enterState(SETTLE, now);
-            }
-          else
-            {
-              inchworm_active_ = false;
-              enterState(GRASP, now);
-            }
-        }
-      break;
-
     case ROCK_FRONT_UNLOAD:
       {
       // Establish the rearward bottom posture before touching the front-arm
@@ -8290,29 +5687,9 @@ void AttitudePressureController::updateInchworm(
     case SETTLE:
       inchworm_pressure_.fill(base_pressure_kpa_);
       inchworm_thrust_.fill(0.0);
-      if (inchworm_action_c_enabled_ && !inchworm_action_d_enabled_)
-        publishBottomTarget(actionCBottomTarget());
       publishPressureTarget(inchworm_pressure_, pressure_step);
       publishCorrectionThrust(inchworm_thrust_);
-      if (inchworm_action_c_enabled_ && !inchworm_action_d_enabled_ &&
-          !action_c_boundary_ready_)
-        ROS_INFO_THROTTLE(1.0,
-            "Action C boundary assessment: bottom %.1f/%.1f kPa held, regrasp=%d, roll %.2f deg, rate %.3f rad/s; waiting before next pulse",
-            bottom_pressure_kpa_, actionCBottomTarget(),
-            pressureReached(inchworm_pressure_),
-            wrapAngle(roll_ - target_roll_) * 180.0 / M_PI,
-            body_angular_velocity_[0]);
-      // Do not advance into the next pulse while the boundary assessment is
-      // pending; otherwise rapid state transitions can starve confirmation.
-      if (inchworm_action_c_enabled_ && !inchworm_action_d_enabled_ &&
-          !action_c_boundary_ready_ && elapsed >= action_c_prepare_timeout_sec_)
-        {
-          stopInchwormToGrasp(now, "Action C boundary settling timeout");
-          break;
-        }
-      if (elapsed >= inchworm_settle_duration_sec_ &&
-          (!(inchworm_action_c_enabled_ && !inchworm_action_d_enabled_) ||
-           action_c_boundary_ready_))
+      if (elapsed >= inchworm_settle_duration_sec_)
         {
           const double cycle_travel = inchwormTravel();
           const double overall_travel =
@@ -8342,30 +5719,8 @@ void AttitudePressureController::updateInchworm(
               overall_travel >= inchworm_total_target_distance_m_;
           const bool no_progress = cycle_travel < inchworm_min_cycle_progress_m_;
           const bool cycle_limit = inchworm_cycle_count_ >= inchworm_max_cycles_;
-          const bool action_c_optimizer =
-              inchworm_action_c_enabled_ && !inchworm_action_d_enabled_ &&
-              action_c_adaptive_burst_enabled_;
-          const bool candidate_complete = action_c_optimizer &&
-              (action_c_optimizer_completed_pulses_ >= action_c_optimizer_burst_pulses_ ||
-               action_c_arm_calibration_changed_);
-          if (action_c_optimizer && action_c_optimizer_trial_active_ &&
-              (candidate_complete || no_progress || target_reached ||
-               cycle_limit))
-            finishActionCOptimizerTrial(false,
-                target_reached ? "goal reached" :
-                (cycle_limit ? "cycle limit" :
-                 (no_progress ? "no retained progress" :
-                  "configured burst complete")));
-
-          if (!target_reached && !cycle_limit &&
-              (action_c_optimizer || !no_progress))
+          if (!target_reached && !cycle_limit && !no_progress)
             {
-              // A normal positive-progress cycle continues the same candidate
-              // until N_burst samples have completed. Candidate completion or
-              // early no-progress termination starts the newly selected one.
-              if (action_c_optimizer &&
-                  (candidate_complete || no_progress))
-                beginActionCOptimizerTrial(now);
               startInchwormCycle(now);
             }
           else
@@ -8373,9 +5728,7 @@ void AttitudePressureController::updateInchworm(
               if (no_progress && !target_reached)
                 ROS_WARN("Inchworm cycle retained only %.2f mm%s",
                          1000.0 * cycle_travel,
-                         action_c_optimizer
-                             ? "; candidate scored and optimizer advanced"
-                             : "; repetition stopped");
+                         "; repetition stopped");
               if (cycle_limit && !target_reached)
                 ROS_WARN("Inchworm repetition reached the %d-cycle limit",
                          inchworm_max_cycles_);

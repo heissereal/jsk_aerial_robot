@@ -23,8 +23,6 @@ def main():
         start = source.index(prefix)
         return source[start:source.index(';', start) + 1]
 
-    start = source.index('if (action_c_adaptive_burst_enabled_ && safe_to_handoff &&')
-    handoff = source[start:source.index('{', start)]
     assert source.count('attitude_error <= recovery_stop_angle') == 2
     assert 'angular_rate >= correction_max_angular_rate_' in source
     code = r'''
@@ -37,7 +35,6 @@ struct Controller {
   hugmy::PostureRecoveryGate correction_entry_gate_, action_c_recovery_gate_, action_c_resume_gate_;
   bool action_c_resume_pending_=false, target_received_=true;
   bool body_imu_fresh=true, pressure_valid=true, neurons_fresh=true, grasp_pressure_ready=true;
-  bool action_c_adaptive_burst_enabled_=true;
   bool recovery_bottom_ready=true, recovery_settled=true;
   bool continuous_c_recovery=false, continuous_recovery_blocked_=false;
   bool continuous_recovery_waiting_for_settle_=false, model_c_recovery=false;
@@ -66,12 +63,6 @@ struct Controller {
     TRIGGER
     RESUME
     return resume_ready;
-  }
-  bool handoff(double tilt_error, double body_rate, Time now, bool safe_to_handoff=true,
-               bool boundary_settled=true) {
-    POSTURE
-    HANDOFF return true;
-    return false;
   }
   bool finished(double attitude_error) {
     STOP
@@ -108,14 +99,6 @@ int main() {
     assert(c.finished(band) && !c.finished(band+.1*deg));
   }
   Controller c;
-  assert(!c.handoff(9*deg,0.,{0.}));
-  assert(!c.handoff(9*deg,0.,{.29}));
-  assert(!c.handoff(9*deg,0.,{.31},false,false)); // Pulse resets ordinary confirmation.
-  assert(!c.handoff(9*deg,0.,{.32}));
-  assert(c.handoff(9*deg,0.,{.63}));
-  assert(!c.handoff(7*deg,0.,{.33}));
-  assert(c.handoff(1*deg,.8,{.34})); // Rate path has NO confirmation delay.
-  assert(!c.handoff(1*deg,.8,{.35},false));
   c.action_c_resume_pending_=true;
   c.recovery_bottom_ready=false; c.recovery_settled=false;
   assert(!c.entry(9*deg,{.7}));
@@ -179,8 +162,6 @@ int main() {
         'ENTRY': statement('const bool correction_confirmed ='),
         'IMMEDIATE': statement('const bool continuous_recovery_requested ='),
         'RESUME': statement('const bool resume_ready ='),
-        'POSTURE': statement('const bool posture_confirmed ='),
-        'HANDOFF': handoff,
         'STOP': statement('const double recovery_stop_angle ='),
     }.items():
         code = code.replace(key, value)

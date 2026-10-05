@@ -72,6 +72,7 @@ bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
                      bottom_exhaust_rate_kpa_s_);
   pneumatic_nh.param("maximum_pressure", maximum_pressure_kpa_, maximum_pressure_kpa_);
   pneumatic_nh.param("initial_pressure", initial_pressure_kpa_, initial_pressure_kpa_);
+  pneumatic_nh.param("initial_bottom_pressure", initial_bottom_pressure_kpa_, initial_pressure_kpa_);
   pneumatic_nh.param("leak_rate", leak_rate_per_s_, leak_rate_per_s_);
   pneumatic_nh.param("bag_stiffness", bag_stiffness_nm_rad_, bag_stiffness_nm_rad_);
   pneumatic_nh.param("structural_stiffness", structural_stiffness_nm_rad_,
@@ -87,6 +88,8 @@ bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
   pneumatic_nh.param("human_arm_center_z", human_arm_center_z_, human_arm_center_z_);
   pneumatic_nh.param("initial_height_offset", initial_height_offset_m_,
                      initial_height_offset_m_);
+  pneumatic_nh.param("perching_initial_clearance", perching_initial_clearance_m_,
+                     perching_initial_clearance_m_);
   pneumatic_nh.param("human_arm_half_length", human_arm_half_length_m_,
                      human_arm_half_length_m_);
   pneumatic_nh.param("human_arm_radius", human_arm_radius_m_,
@@ -108,6 +111,8 @@ bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
                      grip_friction_coefficient_);
   pneumatic_nh.param("grip_tangential_damping", grip_tangent_damping_ns_m_,
                      grip_tangent_damping_ns_m_);
+  pneumatic_nh.param("grip_tangential_stiffness", grip_tangent_stiffness_n_m_,
+                     grip_tangent_stiffness_n_m_);
   pneumatic_nh.param("grip_marker_scale", grip_marker_scale_m_n_, grip_marker_scale_m_n_);
   pneumatic_nh.param("grip_marker_rate", grip_marker_rate_hz_, grip_marker_rate_hz_);
   pneumatic_nh.param("bottom_force_per_pressure", bottom_force_per_kpa_n_,
@@ -165,7 +170,7 @@ bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
       mujoco_model_->opt.timestep)) + 1;
 
   pressure_kpa_.fill(initial_pressure_kpa_);
-  bottom_pressure_kpa_ = initial_pressure_kpa_;
+  bottom_pressure_kpa_ = initial_bottom_pressure_kpa_;
   previous_model_pressure_.fill(initial_pressure_kpa_);
   thrust_n_.fill(0.0);
   previous_model_thrust_.fill(0.0);
@@ -228,6 +233,11 @@ bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
       return false;
     }
   const int root_qpos_address = mujoco_model_->jnt_qposadr[root_joint_id];
+  // Perching starts close to the fixture, not in a free-flight drop. Keep
+  // flight/spawn_human=false and an explicit zero-clearance legacy mode intact.
+  if (spawn_human_ && perching_initial_clearance_m_ > 0.0)
+    mujoco_data_->qpos[root_qpos_address + 2] =
+        human_arm_center_z_ + human_arm_radius_m_ + perching_initial_clearance_m_;
   mujoco_data_->qpos[root_qpos_address + 2] += initial_height_offset_m_;
   ROS_INFO("Hugmy MuJoCo initial height offset %.3f m: robot and cylinder moved together",
            initial_height_offset_m_);
@@ -259,6 +269,7 @@ bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
             bottom_reference_rotation_.begin());
   bottom_reference_initialized_ = true;
   previous_grip_qfrc_.assign(mujoco_model_->nv, 0.0);
+  for (auto& contact : grip_friction_) contact.reset();
   previous_bottom_qfrc_.assign(mujoco_model_->nv, 0.0);
 
   command_sub_ = model_nh.subscribe(
@@ -401,6 +412,15 @@ void HugmyPneumaticHWSim::reloadEpisodeParameters()
   grip_force_per_kpa_n_ = std::max(0.0, grip_force_per_kpa_n_);
   thrust_scale_ = std::max(0.0, thrust_scale_);
   mujoco_model_->geom_size[3 * grip_target_geom_id_ + 0] = human_arm_radius_m_;
+  // Native mesh/cylinder sliding contact is separate from pneumatic gripping.
+  // Preserve the MJCF value unless explicitly overridden for this fixture.
+  double sliding_friction = mujoco_model_->geom_friction[3 * grip_target_geom_id_];
+  ros::param::param(pneumatic_namespace_ + "/human_arm_sliding_friction",
+                    sliding_friction, sliding_friction);
+  if (std::isfinite(sliding_friction) && sliding_friction >= 0.0)
+    mujoco_model_->geom_friction[3 * grip_target_geom_id_] = sliding_friction;
+  else
+    ROS_ERROR("Ignoring invalid human_arm_sliding_friction; keeping MJCF/current value");
   const double cr = std::cos(0.5 * human_arm_roll_rad_);
   const double sr = std::sin(0.5 * human_arm_roll_rad_);
   const double cp = std::cos(0.5 * human_arm_pitch_rad_);
@@ -438,13 +458,14 @@ void HugmyPneumaticHWSim::processReset(const ros::Time& time)
               mujoco_data_->ctrl + mujoco_model_->nu, 0.0);
   control_input_.assign(control_input_.size(), 0.0);
   pressure_kpa_.fill(initial_pressure_kpa_);
-  bottom_pressure_kpa_ = initial_pressure_kpa_;
+  bottom_pressure_kpa_ = initial_bottom_pressure_kpa_;
   thrust_n_.fill(0.0);
   previous_model_pressure_.fill(initial_pressure_kpa_);
   previous_model_thrust_.fill(0.0);
   pressure_trend_.fill(BendTrend::NEUTRAL);
   thrust_trend_.fill(BendTrend::NEUTRAL);
   previous_grip_qfrc_.assign(mujoco_model_->nv, 0.0);
+  for (auto& contact : grip_friction_) contact.reset();
   previous_bottom_qfrc_.assign(mujoco_model_->nv, 0.0);
   bottom_tilt_target_rad_ = 0.0;
   bottom_tilt_measured_rad_ = 0.0;
@@ -554,7 +575,7 @@ void HugmyPneumaticHWSim::write(const ros::Time& time,
     }
   applyBagSprings(thrust);
   applyBottomInflatable();
-  applyGripForces(time);
+  applyGripForces(time, period.toSec());
   if ((time - last_actuator_marker_time_).toSec() >=
       1.0 / std::max(1.0, grip_marker_rate_hz_))
     {
@@ -1002,7 +1023,7 @@ void HugmyPneumaticHWSim::publishSensors(const ros::Time& time)
   bottom_state_pub_.publish(bottom_state);
 }
 
-void HugmyPneumaticHWSim::applyGripForces(const ros::Time& time)
+void HugmyPneumaticHWSim::applyGripForces(const ros::Time& time, double dt)
 {
   for (int dof = 0; dof < mujoco_model_->nv; ++dof)
     {
@@ -1077,6 +1098,14 @@ void HugmyPneumaticHWSim::applyGripForces(const ros::Time& time)
 
       mjtNum velocity[6];
       mj_objectVelocity(mujoco_model_, mujoco_data_, mjOBJ_BODY, body, velocity, 0);
+      // mjOBJ_BODY linear velocity is at its COM; the force is applied at
+      // xpos (the link-end origin), not xipos. Include omega cross offset.
+      const mjtNum* com = mujoco_data_->xipos + 3 * body;
+      const double offset[3] = {grip_position[0]-com[0],
+          grip_position[1]-com[1], grip_position[2]-com[2]};
+      velocity[3] += velocity[1]*offset[2]-velocity[2]*offset[1];
+      velocity[4] += velocity[2]*offset[0]-velocity[0]*offset[2];
+      velocity[5] += velocity[0]*offset[1]-velocity[1]*offset[0];
       const double normal_speed = velocity[3] * inward[0] +
                                   velocity[4] * inward[1] +
                                   velocity[5] * inward[2];
@@ -1091,17 +1120,17 @@ void HugmyPneumaticHWSim::applyGripForces(const ros::Time& time)
           velocity[3] - normal_speed * inward[0],
           velocity[4] - normal_speed * inward[1],
           velocity[5] - normal_speed * inward[2]}};
-      const double tangent_speed = std::sqrt(tangent[0] * tangent[0] +
-                                             tangent[1] * tangent[1] +
-                                             tangent[2] * tangent[2]);
-      const double requested_friction = grip_tangent_damping_ns_m_ * tangent_speed;
       const double friction_limit = grip_friction_coefficient_ * normal_force;
-      const double friction = std::min(requested_friction, friction_limit);
+      double requested_friction = 0.0;
+      const auto tangent_force = grip_friction_[arm].force(
+          tangent, inward, dt, grip_tangent_stiffness_n_m_,
+          grip_tangent_damping_ns_m_, friction_limit, &requested_friction);
+      const double friction = std::sqrt(tangent_force[0]*tangent_force[0] +
+          tangent_force[1]*tangent_force[1] + tangent_force[2]*tangent_force[2]);
       normal_forces[arm] = normal_force;
       tangential_forces[arm] = friction;
       for (size_t axis = 0; axis < 3; ++axis)
-        forces[arm][axis] = normal_force * inward[axis] -
-            (tangent_speed > 1e-9 ? friction * tangent[axis] / tangent_speed : 0.0);
+        forces[arm][axis] = normal_force * inward[axis] + tangent_force[axis];
       slip_ratios[arm] = friction_limit > 1e-9
           ? requested_friction / friction_limit : 0.0;
       active[arm] = true;
@@ -1110,6 +1139,9 @@ void HugmyPneumaticHWSim::applyGripForces(const ros::Time& time)
       mj_applyFT(mujoco_model_, mujoco_data_, force, torque, grip_position,
                  body, previous_grip_qfrc_.data());
     }
+  // Detachment/venting must release stored shear: no hidden permanent weld.
+  for (size_t arm=0;arm<ARM_COUNT;++arm)
+    if (!active[arm]) grip_friction_[arm].reset();
   for (int dof = 0; dof < mujoco_model_->nv; ++dof)
     mujoco_data_->qfrc_applied[dof] += previous_grip_qfrc_[dof];
 

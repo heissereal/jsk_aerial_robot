@@ -12,9 +12,12 @@ import tempfile
 def main():
     root = pathlib.Path(__file__).resolve().parents[1]
     source = (root / 'src/control/attitude_pressure_controller.cpp').read_text()
+    hybrid_source = (root / 'src/control/hybrid_locomotion.cpp').read_text()
     assert 'pressure_valid && actionCPressureReady(' in source
-    assert 'posture_boundary && actionCPressureReady(inchworm_pressure_, now)' in source
+    assert 'recovered = pressure_valid && actionCPressureReady(grasp_pressure_, now)' in source
     assert 'action_c_pressure_ready_gate_.reset();' in source
+    assert 'const bool boundary=hybrid_phase_!=1 && all_pressure &&' in hybrid_source
+    assert 'const bool boundary=hybrid_phase_!=1 && pressureReached(' not in hybrid_source
     cpp = r'''
 #include <hugmy/control/pressure_ready_gate.h>
 #include <hugmy/control/posture_recovery_gate.h>

@@ -15,6 +15,7 @@ sensor_plugin:
 # ground truth parameter
 # global namespace
 simulation:
+  physical_imu_on_ground: true
   # gaussian noise
   ground_truth_pos_noise: 0.001
   ground_truth_vel_noise: 0.005
