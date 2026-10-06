@@ -33,7 +33,7 @@ struct Config {
   // Individual thrust and upward-force constraints remain independent.
   double mismatch_limit=.261799, target_speed=.005, forward_force_max=12., up_force_max=6.;
   double run_min=.5, run_max=3., prepare_timeout=60., regrip_timeout=20., settle=.4;
-  double task_timeout=180., stroke=.02, pressure_tolerance=5.;
+  double stroke=.02, pressure_tolerance=5.;
   double energy_weight=.02, force_weight=2., ratio_weight=12., roll_weight=40.;
   double search_initial_thrust=1., search_thrust_step=.5, search_interval=.5;
   double search_thrust_weight=2.;
@@ -43,7 +43,7 @@ struct Config {
         pressure_max,pressure_measurement_margin,pressure_slew,pressure_rate,exhaust_rate,pressure_delay,bend_tau,
         bend_rate_tau,moment_gain,roll_damping,roll_limit,roll_rate_limit,pitch_change_limit,
         bend_min,bend_max,extension_limit,bend_rate_limit,mismatch_limit,target_speed,
-        forward_force_max,up_force_max,run_min,run_max,prepare_timeout,regrip_timeout,settle,task_timeout,
+        forward_force_max,up_force_max,run_min,run_max,prepare_timeout,regrip_timeout,settle,
         stroke,pressure_tolerance,energy_weight,force_weight,ratio_weight,roll_weight,
         search_initial_thrust,search_thrust_step,search_interval,search_thrust_weight,sliding_rear_pressure})
       if(!std::isfinite(v) || v<0.) return false;
@@ -55,7 +55,7 @@ struct Config {
       roll_rate_limit>0 && bend_min<bend_max && extension_limit>0 && bend_rate_limit>0 &&
       mismatch_limit>0 && target_speed>0 && forward_force_max>0 && up_force_max>0 && run_min>0 &&
       run_max>=run_min && run_max<=5 && prepare_timeout>0 && regrip_timeout>0 &&
-      settle>0 && task_timeout>run_max && stroke>0 && search_initial_thrust>0 &&
+      settle>0 && stroke>0 && search_initial_thrust>0 &&
       search_thrust_step>0 && search_thrust_step<=1. && search_interval>=.2 &&
       search_thrust_weight>0 && sliding_rear_pressure<=6.;
   }

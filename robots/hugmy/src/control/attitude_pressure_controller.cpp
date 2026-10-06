@@ -65,6 +65,7 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
     if (std::isfinite(configured)) value = hugmy::recoveryClamp(configured, low, high);
   };
   recovery_param("recovery_angle_gain_s_inv", roll_recovery_config_.angle_gain, 0.1, 3.0);
+  recovery_param("recovery_max_thrust_n", roll_recovery_config_.limit, 0.5, 6.0);
   pnh_.param("recovery_response_learning_enabled", roll_recovery_config_.learn_response, true);
   recovery_param("recovery_target_rate_rad_s", roll_recovery_config_.max_target_rate, 0.02, 0.3);
   recovery_param("recovery_rate_kp_n_s_rad", roll_recovery_config_.rate_kp, 0.1, 10.0);
@@ -207,8 +208,22 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   pnh_.param("inchworm_angular_rate_fault_delay_sec",
              inchworm_angular_rate_fault_delay_sec_, 0.20);
   pnh_.param("inchworm_mocap_timeout_sec", inchworm_mocap_timeout_sec_, 0.20);
+  pnh_.param("hand_relative_mocap_enabled",
+             hand_relative_mocap_enabled_, false);
+  pnh_.param("hand_target_selects_direction",
+             hand_target_selects_direction_, false);
   pnh_.param("use_mocap_attitude_for_inchworm",
              use_mocap_attitude_for_inchworm_, false);
+  if (hand_relative_mocap_enabled_)
+    {
+      // Human-arm locomotion uses the hand marker only as a translating
+      // reference.  Its quaternion must never change the vehicle attitude
+      // target or the Spinal attitude estimate.
+      use_mocap_attitude_for_inchworm_ = false;
+      target_roll_ = 0.0;
+      target_pitch_ = 0.0;
+      target_received_ = true;
+    }
   pnh_.param("inchworm_release_timeout_sec", inchworm_release_timeout_sec_, 30.0);
   pnh_.param("inchworm_reach_duration_sec", inchworm_reach_duration_sec_, 10.0);
   pnh_.param("inchworm_anchor_timeout_sec", inchworm_anchor_timeout_sec_, 8.0);
@@ -526,7 +541,7 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
              action_c_prepare_timeout_sec_, 20.0);
   pnh_.param("action_c_posture_recovery_trigger_rad",
              action_c_posture_recovery_trigger_rad_,
-             8.0 * M_PI / 180.0);
+             10.0 * M_PI / 180.0);
   pnh_.param("action_c_posture_resume_rad",
              action_c_posture_resume_rad_, 3.0 * M_PI / 180.0);
   pnh_.param("action_c_posture_settle_sec", action_c_posture_settle_sec_, 0.5);
@@ -704,6 +719,11 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   if (nh_.resolveName("mocap/pose") != "/mocap/pose")
     root_mocap_sub_ = nh_.subscribe("/mocap/pose", 1,
         &AttitudePressureController::rootMocapCallback, this);
+  hand_mocap_sub_ = nh_.subscribe("mocap/hand_pose", 1,
+      &AttitudePressureController::handMocapCallback, this);
+  if (nh_.resolveName("mocap/hand_pose") != "/mocap/hand_pose")
+    root_hand_mocap_sub_ = nh_.subscribe("/mocap/hand_pose", 1,
+        &AttitudePressureController::rootHandMocapCallback, this);
   pressure_target_pub_ = nh_.advertise<std_msgs::Float32MultiArray>(
       "independent_arm_pressure_controller/target_pressure", 1);
   bottom_target_pub_ = nh_.advertise<std_msgs::Float32>(
@@ -722,6 +742,9 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       "arm_shape_active", 1);
   arm_bend_angle_deg_pub_ = pnh_.advertise<std_msgs::Float32MultiArray>(
       "arm_bend_angle_deg", 1);
+  hand_relative_position_pub_ =
+      pnh_.advertise<geometry_msgs::Vector3Stamped>(
+          "hand_relative_position", 1);
   desired_moment_pub_ = pnh_.advertise<geometry_msgs::Vector3Stamped>("desired_moment", 1);
   achieved_moment_pub_ = pnh_.advertise<geometry_msgs::Vector3Stamped>("predicted_moment", 1);
   correction_thrust_pub_ = nh_.advertise<spinal::PerchingThrustCommand>(
@@ -741,8 +764,20 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   pnh_.param("hybrid_locomotion_outer_enabled", hybrid_search_.enabled, true);
   pnh_.param("hybrid_locomotion_initial_bottom_kpa", hybrid_search_.initial.bottom, 30.0);
   hybrid_single_config_.bottom_kpa=hybrid_search_.initial.bottom;
-  pnh_.param("hybrid_slip_probe_sec",hybrid_single_config_.slip_seconds,8.0);
-  pnh_.param("hybrid_lift_probe_sec",hybrid_single_config_.lift_seconds,10.0);
+  pnh_.param("hybrid_slip_probe_sec",hybrid_single_config_.slip_seconds,20.0);
+  pnh_.param("hybrid_slip_confirm_sec",
+      hybrid_single_config_.slip_confirm_seconds,.3);
+  pnh_.param("hybrid_slip_min_progress_m",
+      hybrid_single_config_.slip_min_progress,.002);
+  pnh_.param("hybrid_slip_min_speed_m_s",
+      hybrid_single_config_.slip_min_speed,.0015);
+  pnh_.param("hybrid_slip_min_thrust_n",
+      hybrid_single_config_.slip_min_thrust,.75);
+  pnh_.param("hybrid_soft_roll_confirm_sec",
+      hybrid_single_config_.soft_roll_confirm,.10);
+  pnh_.param("hybrid_roll_rate_confirm_sec",
+      hybrid_roll_rate_confirm_sec_,.10);
+  pnh_.param("hybrid_lift_probe_sec",hybrid_single_config_.lift_seconds,20.0);
   pnh_.param("hybrid_front_vent_timeout_sec",hybrid_single_config_.vent_seconds,30.0);
   pnh_.param("hybrid_front_vent_tolerance_kpa",hybrid_single_config_.vent_tolerance,5.0);
   pnh_.param("hybrid_lift_tilt_target_rad",hybrid_single_config_.tilt_target,3.*M_PI/180.);
@@ -760,6 +795,12 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       hybrid_single_config_.slip_seed_pull_max,3.0);
   pnh_.param("hybrid_goal_scale_min",
       hybrid_single_config_.goal_scale_min,.25);
+  pnh_.param("hybrid_goal_conditioning_start_ratio",
+      hybrid_single_config_.goal_conditioning_start_ratio,.55);
+  pnh_.param("hybrid_goal_progress_max_scale",
+      hybrid_single_config_.goal_progress_max_scale,1.5);
+  pnh_.param("hybrid_goal_preferred_stride_m",
+      hybrid_single_config_.goal_preferred_stride,.010);
   pnh_.param("hybrid_goal_extension_min_scale",
       hybrid_single_config_.goal_extension_min_scale,.55);
   pnh_.param("hybrid_goal_pull_taper_fraction",
@@ -783,12 +824,12 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   pnh_.param("hybrid_rear_vent_lead_margin_sec",
       hybrid_single_config_.rear_vent_lead_margin,.10);
   pnh_.param("hybrid_rear_vent_start_margin_rad",
-      hybrid_single_config_.rear_vent_start_margin,5.*M_PI/180.);
+      hybrid_single_config_.rear_vent_start_margin,2.*M_PI/180.);
   pnh_.param("hybrid_probe_extension_rad",hybrid_single_config_.extension_rad,8.*M_PI/180.);
   pnh_.param("hybrid_lift_identification_bend_rad",
-      hybrid_single_config_.identification_bend,20.*M_PI/180.);
+      hybrid_single_config_.identification_bend,45.*M_PI/180.);
   pnh_.param("hybrid_lift_identification_tolerance_rad",
-      hybrid_single_config_.identification_tolerance,M_PI/180.);
+      hybrid_single_config_.identification_tolerance,2.*M_PI/180.);
   pnh_.param("hybrid_lift_identification_confirm_sec",
       hybrid_single_config_.identification_confirm,.06);
   pnh_.param("hybrid_lift_identification_extension_limit_rad",
@@ -797,6 +838,8 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       hybrid_single_config_.identification_sync_deadband,3.*M_PI/180.);
   pnh_.param("hybrid_lift_identification_sync_gain_n_rad",
       hybrid_single_config_.identification_sync_gain,10.);
+  pnh_.param("hybrid_lift_identification_sync_assist_max_n",
+      hybrid_single_config_.identification_sync_assist_max,1.0);
   pnh_.param("hybrid_lift_identification_tracking_start_rad",
       hybrid_single_config_.identification_tracking_start,8.*M_PI/180.);
   pnh_.param("hybrid_lift_identification_angle_kp_n_rad",
@@ -805,8 +848,18 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       hybrid_single_config_.identification_rate_kd,.8);
   pnh_.param("hybrid_lift_identification_tracking_rise_n_s",
       hybrid_single_config_.identification_tracking_rise,4.);
-  pnh_.param("hybrid_lift_identification_thrust_brake_horizon_sec",
-      hybrid_single_config_.identification_thrust_brake_horizon,.08);
+  pnh_.param("hybrid_lift_identification_rate_feedback_min_bend_rad",
+      hybrid_single_config_.identification_rate_feedback_min_bend,45.*M_PI/180.);
+  pnh_.param("hybrid_lift_identification_rate_filter_tau_sec",
+      hybrid_single_config_.identification_rate_filter_tau,.25);
+  pnh_.param("hybrid_lift_identification_rate_confirm_sec",
+      hybrid_single_config_.identification_rate_confirm,.15);
+  pnh_.param("hybrid_lift_identification_rate_deadband_rad_s",
+      hybrid_single_config_.identification_rate_deadband,2.*M_PI/180.);
+  pnh_.param("hybrid_lift_identification_rate_control_gain_n_rad",
+      hybrid_single_config_.identification_rate_control_gain,1.5);
+  pnh_.param("hybrid_lift_identification_rate_control_fall_n_s",
+      hybrid_single_config_.identification_rate_control_fall,3.0);
   pnh_.param("hybrid_lift_identification_bend_rate_limit_rad_s",
       hybrid_single_config_.identification_bend_rate_limit,6.);
   pnh_.param("hybrid_lift_identification_return_bend_rate_limit_rad_s",
@@ -816,6 +869,20 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   pnh_.param("hybrid_slip_probe_max_thrust_n",hybrid_single_config_.slip_thrust_max,5.0);
   pnh_.param("hybrid_slip_probe_max_pressure_kpa",
       hybrid_single_config_.slip_pressure_max,40.0);
+  pnh_.param("hybrid_slip_probe_rise_n_s",
+      hybrid_single_config_.probe_rise,.25);
+  pnh_.param("hybrid_slip_pressure_tracking_tolerance_kpa",
+      hybrid_single_config_.slip_pressure_tracking_tolerance,2.0);
+  pnh_.param("hybrid_slip_extension_hold_margin_rad",
+      hybrid_single_config_.slip_extension_hold_margin,2.*M_PI/180.);
+  pnh_.param("hybrid_slip_hard_extension_margin_rad",
+      hybrid_single_config_.slip_hard_extension_margin,3.*M_PI/180.);
+  pnh_.param("hybrid_slip_extension_brake_fall_n_s",
+      hybrid_single_config_.slip_extension_brake_fall,.5);
+  pnh_.param("hybrid_slip_max_extension_rad",
+      hybrid_single_config_.slip_max_extension,10.*M_PI/180.);
+  pnh_.param("hybrid_slip_pressure_drop_max_kpa",
+      hybrid_single_config_.slip_pressure_drop_max,10.0);
   pnh_.param("hybrid_lift_search_rate_n_s",hybrid_single_config_.lift_rise,.7);
   pnh_.param("hybrid_reused_lift_rise_n_s",
       hybrid_single_config_.reused_lift_rise,8.0);
@@ -823,6 +890,8 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       hybrid_single_config_.reused_lift_brake_margin,4.*M_PI/180.);
   pnh_.param("hybrid_reused_lift_hold_pressure_max_kpa",
       hybrid_single_config_.reused_lift_hold_pressure_max,10.);
+  pnh_.param("hybrid_reused_lift_pressure_start_ratio",
+      hybrid_single_config_.reused_lift_pressure_start_ratio,.90);
   pnh_.param("hybrid_lift_pressure_gain_kpa_s_rad",hybrid_single_config_.lift_pressure_gain,20.);
   pnh_.param("hybrid_lift_overlap_pitch_start_rad",
       hybrid_single_config_.lift_overlap_pitch_start,5.*M_PI/180.);
@@ -861,7 +930,6 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   pnh_.param("hybrid_locomotion_search_interval_sec", hybrid_config_.search_interval, .5);
   pnh_.param("hybrid_locomotion_stroke_m", hybrid_config_.stroke, .02);
   pnh_.param("hybrid_locomotion_run_max_sec", hybrid_config_.run_max, 3.0);
-  pnh_.param("hybrid_locomotion_task_timeout_sec", hybrid_config_.task_timeout, 180.0);
   pnh_.param("hybrid_locomotion_regrip_timeout_sec", hybrid_config_.regrip_timeout, 20.0);
   pnh_.param("hybrid_locomotion_extension_limit_rad", hybrid_config_.extension_limit, 20.*M_PI/180.);
   pnh_.param("hybrid_locomotion_up_force_max_n", hybrid_config_.up_force_max, 6.0);
@@ -871,12 +939,18 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       use_pwm_test_for_correction_ ? pwm_test_max_thrust_n_ : correction_max_thrust_n_);
   hybrid_config_.pressure_max=std::min(50., maximum_pressure_kpa_);
   hybrid_config_.pressure_measurement_margin=action_c_pressure_max_deviation_kpa_;
+  // The soft gait handoff and the ordinary Action-C recovery request use one
+  // threshold. Both still require an outward roll trend; a stable offset is
+  // allowed to continue until the independent 15-deg hard boundary.
+  hybrid_single_config_.soft_roll=action_c_posture_recovery_trigger_rad_;
   hybrid_config_.roll_limit=std::min(hybrid_config_.roll_limit, action_c_posture_hard_roll_rad_);
   hybrid_config_.roll_rate_limit=std::min(hybrid_config_.roll_rate_limit, action_c_posture_rate_trigger_rad_s_);
   hybrid_config_.extension_limit=std::min(hybrid_config_.extension_limit, action_c_max_extension_rad_);
   hybrid_config_.bend_rate_limit=std::min(hybrid_config_.bend_rate_limit, action_c_extension_rate_limit_rad_s_);
   hybrid_config_.mismatch_limit=std::min(hybrid_config_.mismatch_limit, action_c_max_extension_mismatch_rad_);
   if (inchworm_action_c_enabled_ && (!hybrid_single_config_.valid() || !hybrid_config_.valid() ||
+      !std::isfinite(hybrid_roll_rate_confirm_sec_) ||
+      hybrid_roll_rate_confirm_sec_<.04 || hybrid_roll_rate_confirm_sec_>.5 ||
       !std::isfinite(hybrid_search_.initial.bottom) || hybrid_search_.initial.bottom<0. || hybrid_search_.initial.bottom>30. ||
       !std::isfinite(hybrid_search_.initial.minimum_ratio) || hybrid_search_.initial.minimum_ratio<0. || hybrid_search_.initial.minimum_ratio>1.))
     throw std::runtime_error("Invalid hybrid locomotion configuration (fail closed)");
@@ -1036,6 +1110,18 @@ void AttitudePressureController::bottomPressureCallback(
 void AttitudePressureController::targetCallback(const geometry_msgs::Vector3Stamped::ConstPtr& msg)
 {
   if (!std::isfinite(msg->vector.x) || !std::isfinite(msg->vector.y)) return;
+  if (hand_relative_mocap_enabled_)
+    {
+      if (std::abs(msg->vector.x) > 1.0e-6 ||
+          std::abs(msg->vector.y) > 1.0e-6 ||
+          std::abs(msg->vector.z) > 1.0e-6)
+        ROS_WARN_THROTTLE(1.0,
+            "Human-arm mode ignores nonzero target attitude; using [0, 0, 0] rad");
+      target_roll_ = 0.0;
+      target_pitch_ = 0.0;
+      target_received_ = true;
+      return;
+    }
   target_roll_ = msg->vector.x;
   target_pitch_ = msg->vector.y;
   target_received_ = true;
@@ -1085,12 +1171,93 @@ void AttitudePressureController::updateMocap(
     }
   mocap_stamp_ = ros::Time::now();
   mocap_received_ = true;
+  if (hand_mocap_received_)
+    {
+      geometry_msgs::Vector3Stamped relative;
+      relative.header.stamp = mocap_stamp_;
+      relative.header.frame_id = "world";
+      relative.vector.x = mocap_position_[0] - hand_mocap_position_[0];
+      relative.vector.y = mocap_position_[1] - hand_mocap_position_[1];
+      // ID 2 is an XY reference only. Its height is intentionally excluded.
+      relative.vector.z = 0.0;
+      hand_relative_position_pub_.publish(relative);
+    }
   // Keep a position window alive while Action C temporarily hands actuator
   // ownership to posture recovery. This provides a quiet, deflated endpoint
   // for an interrupted trial instead of sampling while the bottom is full.
   if (hybrid_trial_active_ || action_c_resume_pending_)
     hybrid_endpoint_mocap_window_.add(
-        mocap_stamp_.toSec(), mocap_position_[0]);
+        mocap_stamp_.toSec(), locomotionPosition()[0]);
+}
+
+void AttitudePressureController::handMocapCallback(
+    const geometry_msgs::PoseStamped::ConstPtr& msg)
+{
+  if (hand_mocap_topic_route_initialized_ && use_root_hand_mocap_topic_) return;
+  if (!hand_mocap_topic_route_initialized_)
+    {
+      hand_mocap_topic_route_initialized_ = true;
+      use_root_hand_mocap_topic_ = false;
+      ROS_INFO("Using namespaced mocap/hand_pose as position-only locomotion reference");
+    }
+  updateHandMocap(msg);
+}
+
+void AttitudePressureController::rootHandMocapCallback(
+    const geometry_msgs::PoseStamped::ConstPtr& msg)
+{
+  if (hand_mocap_topic_route_initialized_ && !use_root_hand_mocap_topic_) return;
+  if (!hand_mocap_topic_route_initialized_)
+    {
+      hand_mocap_topic_route_initialized_ = true;
+      use_root_hand_mocap_topic_ = true;
+      ROS_INFO("Using root /mocap/hand_pose as position-only locomotion reference");
+    }
+  updateHandMocap(msg);
+}
+
+void AttitudePressureController::updateHandMocap(
+    const geometry_msgs::PoseStamped::ConstPtr& msg)
+{
+  // Rigid body ID 2 is an XY reference fixed to the hand. Deliberately do
+  // not read either its height or its orientation.
+  hand_mocap_position_ = {{msg->pose.position.x, msg->pose.position.y, 0.0}};
+  hand_mocap_stamp_ = ros::Time::now();
+  hand_mocap_received_ = true;
+}
+
+AttitudePressureController::Vector3
+AttitudePressureController::locomotionPosition() const
+{
+  if (!hand_relative_mocap_enabled_)
+    return mocap_position_;
+  const double dx = hand_mocap_position_[0] - mocap_position_[0];
+  const double dy = hand_mocap_position_[1] - mocap_position_[1];
+  // Encode closeness as a signed 1-D task coordinate.  Pure translation or
+  // rotation of the human arm preserves the robot--hand distance, so it does
+  // not look like locomotion.  The sign keeps the existing +/-x Action-C
+  // progress convention valid when the hand is on either side of the robot.
+  const double distance = std::hypot(dx, dy);
+  return {{-hand_progress_direction_sign_x_ * distance, -dy, 0.0}};
+}
+
+bool AttitudePressureController::locomotionMocapReady() const
+{
+  return mocap_received_ &&
+      (!hand_relative_mocap_enabled_ || hand_mocap_received_);
+}
+
+bool AttitudePressureController::locomotionMocapFresh(
+    const ros::Time& now) const
+{
+  if (!mocap_received_ || (now - mocap_stamp_).toSec() < 0.0 ||
+      (now - mocap_stamp_).toSec() > inchworm_mocap_timeout_sec_)
+    return false;
+  if (!hand_relative_mocap_enabled_)
+    return true;
+  return hand_mocap_received_ &&
+      (now - hand_mocap_stamp_).toSec() >= 0.0 &&
+      (now - hand_mocap_stamp_).toSec() <= inchworm_mocap_timeout_sec_;
 }
 
 // --------------------------------------------------------------------------
@@ -1111,16 +1278,27 @@ void AttitudePressureController::inchwormCommandCallback(
       stopInchwormToGrasp(ros::Time::now(), "zero/invalid motion command");
       return;
     }
-  const Vector2 direction{{msg->vector.x / norm, msg->vector.y / norm}};
+  Vector2 direction{{msg->vector.x / norm, msg->vector.y / norm}};
+  if (hand_relative_mocap_enabled_ && hand_target_selects_direction_ &&
+      std::abs(direction[0]) >= 0.9 && hand_mocap_received_)
+    {
+      // In the longitudinal gait, "forward" means toward the hand marker.
+      // Only ID 2 position is used; its orientation is intentionally ignored.
+      direction = Vector2{{
+          hand_mocap_position_[0] >= mocap_position_[0] ? 1.0 : -1.0,
+          0.0}};
+    }
+  if (hand_relative_mocap_enabled_)
+    hand_progress_direction_sign_x_ = direction[0] >= 0.0 ? 1.0 : -1.0;
   if (inchworm_action_c_enabled_ && !inchworm_action_d_enabled_ &&
       std::abs(direction[0]) < 0.9)
     {
       ROS_ERROR("Action C currently supports longitudinal commands only; use body direction [+1, 0] or [-1, 0]");
       return;
     }
-  if (!mocap_received_)
+  if (!locomotionMocapReady() || !locomotionMocapFresh(ros::Time::now()))
     {
-      ROS_ERROR("Cannot start inchworm motion before receiving mocap/pose");
+      ROS_ERROR("Cannot start inchworm motion before receiving fresh robot and hand mocap positions (ID 1 and ID 2)");
       return;
     }
   // Do not discover this missing prerequisite only after a powered pulse
@@ -1260,11 +1438,6 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
   const double dt = std::max(0.0, std::min(0.1, (event.current_real - event.last_real).toSec()));
   const double maximum_step = pressure_rate_limit_kpa_s_ * dt;
 
-  if (hybridLocomotionActive() && hybrid_trial_active_ &&
-      (now.toSec()<hybrid_task_start_ || now.toSec()-hybrid_task_start_>hybrid_config_.task_timeout)) {
-    stopInchwormToGrasp(now,"hybrid total deadline includes shared recovery");return;
-  }
-
   if (state_machine_enabled_ && enabled_)
     {
       PressureArray zero_thrust{{0.0, 0.0, 0.0, 0.0}};
@@ -1346,8 +1519,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
 
       if (inchworm_active_)
         {
-          const bool mocap_fresh = mocap_received_ &&
-              (now - mocap_stamp_).toSec() <= inchworm_mocap_timeout_sec_;
+          const bool mocap_fresh = locomotionMocapFresh(now);
           const double angular_rate = std::hypot(body_angular_velocity_[0],
                                                  body_angular_velocity_[1]);
           // FRONT_REACH resolves target completion before applying the
@@ -1379,6 +1551,8 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   ? (now - imu_stamp_).toSec() : -1.0;
               const double mocap_age = mocap_received_
                   ? (now - mocap_stamp_).toSec() : -1.0;
+              const double hand_mocap_age = hand_mocap_received_
+                  ? (now - hand_mocap_stamp_).toSec() : -1.0;
               double oldest_neuron_age = 0.0;
               for (const auto& stamp : neuron_stamp_)
                 {
@@ -1393,11 +1567,12 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               ROS_ERROR(
                   "Inchworm cancelled in state %u: body_imu=%d age=%.3f/%.3f s, "
                   "pressure=%d, neurons=%d oldest_age=%.3f/%.3f s, "
-                  "mocap=%d age=%.3f/%.3f s, angular_rate=%.3f/%.3f rad/s, "
+                  "mocap=%d robot_age=%.3f hand_age=%.3f/%.3f s, angular_rate=%.3f/%.3f rad/s, "
                   "max_pressure=%.2f/%.2f kPa over_limit_for=%.3f/%.3f s",
                   state_, body_imu_fresh, body_imu_age, imu_timeout_sec_,
                   pressure_valid, neurons_fresh, oldest_neuron_age,
                   neuron_timeout_sec_, mocap_fresh, mocap_age,
+                  hand_relative_mocap_enabled_ ? hand_mocap_age : 0.0,
                   inchworm_mocap_timeout_sec_, angular_rate,
                   correction_max_angular_rate_, maximum_measured_pressure_kpa,
                   pressure_safety_limit_kpa_, pressure_over_limit_duration,
@@ -1519,7 +1694,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
             }
           // C correction succeeds inside 3 deg. At regrasp, also accept a stable
           // offset below the hard limit, so a completed recovery does not
-          // immediately trigger again solely because roll remains above 8 deg.
+          // immediately trigger again solely because roll remains above 10 deg.
           const bool resume_ready = action_c_resume_gate_.update(
               action_c_resume_pending_ && target_received_ &&
               (!continuous_recovery_blocked_ || continuous_recovery_waiting_for_settle_) &&
@@ -1638,7 +1813,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   // A previous timed pass may have been waiting only for a
                   // safe regrasp.  Once a new measured correction actually
                   // starts, return to the normal post-success resume gate;
-                  // otherwise a stable 3--8 deg result could wait forever.
+                  // otherwise a stable 3--10 deg result could wait forever.
                   continuous_recovery_waiting_for_settle_ = false;
                   // Use the verified Spinal pair sign independently of model
                   // magnitude; measured geometry sets magnitude in PREPARE.
@@ -1651,8 +1826,11 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   recovery_predictive_.reset();
                   roll_recovery_config_.stop = recovery_stop_angle;
                   roll_recovery_config_.horizon = correction_prediction_horizon_sec_;
-                  roll_recovery_config_.limit = std::min(4.0,
-                      std::min(prepare_max_thrust_n_, correction_max_thrust_n_));
+                  // This ceiling belongs only to continuous Action-C roll
+                  // recovery. Do not raise the locomotion/fixed-test ceiling
+                  // through the shared correction_max_thrust_n parameter.
+                  roll_recovery_config_.limit = std::min(
+                      roll_recovery_config_.limit, prepare_max_thrust_n_);
                   roll_recovery_config_.start_rate = correction_motion_start_rate_;
                   roll_recovery_config_.detect_thrust = correction_motion_detection_min_thrust_n_;
                   roll_recovery_config_.confirm_sec = correction_motion_confirm_sec_;
@@ -1671,7 +1849,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   publishBottomTarget(0.0);
                   publishPressureTarget(prepare_pressure_, std::numeric_limits<double>::infinity());
                   ROS_INFO("Action C continuous roll recovery: exhaust bottom and selected pair in parallel; no zero-pressure wait; limit %.2f N per rotor",
-                           std::min(prepare_max_thrust_n_, correction_max_thrust_n_));
+                           roll_recovery_config_.limit);
                 }
             }
           }
@@ -2704,8 +2882,10 @@ void AttitudePressureController::publishCorrectionThrust(
 {
   observeHybridThrust(ros::Time::now(),thrust);
   spinal::PerchingThrustCommand command;
+  const double output_limit = continuous_recovery_started_ && state_ == PREPARE
+      ? roll_recovery_config_.limit : correction_max_thrust_n_;
   for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-    command.thrust[arm] = std::max(0.0, std::min(correction_max_thrust_n_, thrust[arm]));
+    command.thrust[arm] = std::max(0.0, std::min(output_limit, thrust[arm]));
 
   if (use_pwm_test_for_correction_)
     {
@@ -3148,7 +3328,8 @@ void AttitudePressureController::startInchwormStep(
   inchworm_direction_world_ = {{
       std::cos(yaw_) * direction[0] - std::sin(yaw_) * direction[1],
       std::sin(yaw_) * direction[0] + std::cos(yaw_) * direction[1]}};
-  inchworm_overall_start_position_ = mocap_position_;
+  const Vector3 locomotion_position = locomotionPosition();
+  inchworm_overall_start_position_ = locomotion_position;
   inchworm_total_target_distance_m_ = distance > 0.0 ? distance
                                                       : inchworm_default_distance_m_;
   if (inchworm_action_c_enabled_ && !inchworm_action_d_enabled_)
@@ -3156,7 +3337,7 @@ void AttitudePressureController::startInchwormStep(
   if (inchworm_action_c_enabled_ && !inchworm_action_d_enabled_ &&
       !action_c_preserve_adaptation_on_start_)
     {
-      action_c_absolute_target_x_m_ = mocap_position_[0] +
+      action_c_absolute_target_x_m_ = locomotion_position[0] +
           action_c_direction_sign_x_ * inchworm_total_target_distance_m_;
       action_c_resume_direction_ = direction;
       // A new operator command starts a new task; recovery preserves its goal.
@@ -3194,21 +3375,32 @@ void AttitudePressureController::startInchwormStep(
            direction[0], direction[1], 1000.0 * inchworm_total_target_distance_m_,
            inchworm_front_[0], inchworm_front_[1], inchworm_front_[2],
            inchworm_front_[3]);
+  if (hand_relative_mocap_enabled_)
+    {
+      const double dx = hand_mocap_position_[0] - mocap_position_[0];
+      const double dy = hand_mocap_position_[1] - mocap_position_[1];
+      ROS_INFO("Human-arm relative goal: hand XY delta [%.3f, %.3f] m, distance %.1f mm -> %.1f mm",
+               dx, dy, 1000.0 * std::hypot(dx, dy),
+               1000.0 * std::max(0.0,
+                   std::hypot(dx, dy) -
+                   inchworm_total_target_distance_m_));
+    }
 }
 
 void AttitudePressureController::startInchwormCycle(const ros::Time& now)
 {
+  const Vector3 locomotion_position = locomotionPosition();
   const double overall_travel =
       inchworm_action_c_enabled_ && !inchworm_action_d_enabled_
           ? action_c_direction_sign_x_ *
-                (mocap_position_[0] - inchworm_overall_start_position_[0])
-          : (mocap_position_[0] - inchworm_overall_start_position_[0]) *
+                (locomotion_position[0] - inchworm_overall_start_position_[0])
+          : (locomotion_position[0] - inchworm_overall_start_position_[0]) *
                 inchworm_direction_world_[0] +
-            (mocap_position_[1] - inchworm_overall_start_position_[1]) *
+            (locomotion_position[1] - inchworm_overall_start_position_[1]) *
                 inchworm_direction_world_[1];
   const double remaining = std::max(0.0,
       inchworm_total_target_distance_m_ - overall_travel);
-  inchworm_start_position_ = mocap_position_;
+  inchworm_start_position_ = locomotion_position;
   inchworm_target_distance_m_ = inchworm_action_d_enabled_
       ? remaining : std::min(inchworm_stroke_distance_m_, remaining);
   grasp_pressure_.fill(base_pressure_kpa_);
@@ -3405,7 +3597,7 @@ void AttitudePressureController::requestActionCPostureRecovery(
   enterState(GRASP, now);
   ROS_WARN("Action C paused for shared attitude recovery (attempt %d, no count stop): %s; saved goal x %.4f m, current x %.4f m",
       action_c_posture_recovery_count_, reason,
-      action_c_absolute_target_x_m_, mocap_position_[0]);
+      action_c_absolute_target_x_m_, locomotionPosition()[0]);
 }
 
 bool AttitudePressureController::resumeActionCAfterRecovery(
@@ -3413,8 +3605,7 @@ bool AttitudePressureController::resumeActionCAfterRecovery(
 {
   if (!action_c_resume_pending_) return false;
   if (!hybridResumeAllowed(now)) return false;
-  if (!mocap_received_ || (now - mocap_stamp_).toSec() < 0.0 ||
-      (now - mocap_stamp_).toSec() > inchworm_mocap_timeout_sec_)
+  if (!locomotionMocapFresh(now))
     {
       ROS_WARN_THROTTLE(1.0, "Action C auto-resume waiting for fresh mocap; saved goal retained");
       return false;
@@ -3437,14 +3628,15 @@ bool AttitudePressureController::resumeActionCAfterRecovery(
   continuous_recovery_waiting_for_settle_ = false;
   continuous_recovery_blocked_ = false;
   finishHybridRecovery(now);
+  const Vector3 locomotion_position = locomotionPosition();
   const double remaining = action_c_direction_sign_x_ *
-      (action_c_absolute_target_x_m_ - mocap_position_[0]);
+      (action_c_absolute_target_x_m_ - locomotion_position[0]);
   if (remaining <= inchworm_min_cycle_progress_m_)
     {
       action_c_resume_pending_ = false;
       ROS_INFO("Action C %s goal was reached during attitude recovery: x %.4f/%.4f m",
                action_c_direction_sign_x_ > 0.0 ? "+x" : "-x",
-               mocap_position_[0], action_c_absolute_target_x_m_);
+               locomotion_position[0], action_c_absolute_target_x_m_);
       return true;
     }
 
@@ -3497,13 +3689,15 @@ bool AttitudePressureController::pressureReached(
 
 double AttitudePressureController::inchwormTravel() const
 {
+  const Vector3 position = locomotionPosition();
   if (inchworm_action_c_enabled_ && !inchworm_action_d_enabled_)
     {
       // Action C is longitudinal on the real fixture: arms 0/3 face +x and
       // arms 1/2 face -x. Apply the requested direction sign directly to raw
-      // mocap x; Spinal yaw has an unrelated marker mounting offset.
+      // mocap x (or robot-minus-hand x in human-arm mode); Spinal yaw has an
+      // unrelated marker mounting offset.
       return action_c_direction_sign_x_ *
-          (mocap_position_[0] - inchworm_start_position_[0]);
+          (position[0] - inchworm_start_position_[0]);
     }
   if (inchworm_action_d_enabled_)
     {
@@ -3513,14 +3707,14 @@ double AttitudePressureController::inchwormTravel() const
       // incorrectly reported the clearly positive mocap-x displacement as
       // backward travel. For the usual {+1, 0} command this is exactly the
       // raw positive mocap-x displacement requested by the operator.
-      return (mocap_position_[0] - inchworm_start_position_[0]) *
+      return (position[0] - inchworm_start_position_[0]) *
                  inchworm_direction_body_[0] +
-             (mocap_position_[1] - inchworm_start_position_[1]) *
+             (position[1] - inchworm_start_position_[1]) *
                  inchworm_direction_body_[1];
     }
-  return (mocap_position_[0] - inchworm_start_position_[0]) *
+  return (position[0] - inchworm_start_position_[0]) *
              inchworm_direction_world_[0] +
-         (mocap_position_[1] - inchworm_start_position_[1]) *
+         (position[1] - inchworm_start_position_[1]) *
              inchworm_direction_world_[1];
 }
 

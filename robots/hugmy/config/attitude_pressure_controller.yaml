@@ -2,8 +2,20 @@ control_rate_hz: 50.0
 hybrid_locomotion_outer_enabled: true
 hybrid_locomotion_initial_bottom_kpa: 30.0
 # One continuous slip probe, then at most one lift probe per operator task.
-hybrid_slip_probe_sec: 8.0  # ramp time after first measured release; wall cap is 3x
-hybrid_lift_probe_sec: 10.0  # powered time only; front/rear vent waiting is separate
+hybrid_slip_probe_sec: 20.0 # pressure-ready search time; 0.25 N/s reaches the 5-N ceiling, wall cap is 3x
+# Slip is accepted only when BOTH conditions hold: at least 2-mm net travel
+# and at least 1.5-mm/s measured motion for a leaky accumulated 0.3 s. This is
+# looser than the old 5-mm/s for a full 3-s rear cycle, but stationary mocap
+# noise cannot pass the independent net-displacement condition.
+hybrid_slip_confirm_sec: 0.3
+hybrid_slip_min_progress_m: 0.002
+hybrid_slip_min_speed_m_s: 0.0015
+hybrid_slip_min_thrust_n: 0.75 # exclude bottom/rear-pressure settling before deliberate rotor sliding
+# Keep both roll-rate limits, but reject a one-sample impact/IMU spike. The
+# soft brake no longer declares SlipProbe failed; it only pauses its ramp.
+hybrid_soft_roll_confirm_sec: 0.10
+hybrid_roll_rate_confirm_sec: 0.10
+hybrid_lift_probe_sec: 20.0  # long absolute-bend reach; rate FB normally finishes earlier
 hybrid_front_vent_timeout_sec: 30.0
 hybrid_front_vent_tolerance_kpa: 5.0  # target remains exactly zero
 hybrid_lift_tilt_target_rad: 0.05235987755982989  # 3 deg, with actual arm extension
@@ -24,6 +36,12 @@ hybrid_slip_seed_pull_max_n: 3.0        # failed static-slip endpoint is not cop
 # unchanged; motion 2 uses a shorter reach and motion 3 tapers its common
 # impulse while pressure regrips.
 hybrid_goal_scale_min: 0.25
+# Repeat the proven full stroke until only a genuinely short final correction
+# remains. With a nominal 20-mm stride, 16--17 mm remaining should take one
+# full stroke (minimum cycle count), not shrink early into repeated 1-mm steps.
+hybrid_goal_conditioning_start_ratio: 0.55
+hybrid_goal_progress_max_scale: 1.5 # computed target ratio cap, never a fixed multiplier
+hybrid_goal_preferred_stride_m: 0.010 # tile long goals around a repeatable 10-mm stride
 hybrid_goal_extension_min_scale: 0.55
 hybrid_goal_pull_taper_fraction: 0.15
 hybrid_front_regrip_timeout_sec: 8.0
@@ -31,30 +49,53 @@ hybrid_rear_release_sec: 2.0
 hybrid_rear_grasp_sec: 1.0
 hybrid_rear_low_kpa: 0.0
 hybrid_rear_vent_lead_margin_sec: 0.10 # motion 2 predicts rear exhaust so measured pressure is low at motion 3
-hybrid_rear_vent_start_margin_rad: 0.08726646259971647 # never pre-vent farther than 5 deg from both front targets
+hybrid_rear_vent_start_margin_rad: 0.03490658503988659 # pre-vent only when BOTH front arms are within 2 deg
 # Front target completion owns the handoff. Rear exhaust continues in motion3;
 # it may delay the handoff only until 12 kPa or for at most 0.5 s.
-hybrid_probe_extension_rad: 0.13962634015954636  # same 8-deg relative 3-joint-sum target as Action C
+hybrid_probe_extension_rad: 0.13962634015954636  # compatibility fallback; 8 deg is not normal motion-2 completion
 # The first motion=2 is identification, not an Action-C pulse.  Its early
 # extension is at 0 kPa.  On an adverse slope only, the late reach uses the
-# bounded predictive prefill below instead of waiting until near-straight.
-# Later motion=2 strokes return to the relative target above.
-hybrid_lift_identification_bend_rad: 0.3490658503988659        # 20 deg absolute bend target
-hybrid_lift_identification_tolerance_rad: 0.017453292519943295 # measured/predicted per-arm reach ends at <=21 deg
+# bounded predictive prefill below instead of waiting until the target.
+# Later motion=2 strokes return to each arm's identified absolute bend.
+# The former 20-deg target over-extended the real arm, while 60 deg restricted
+# the useful unloading motion too much. Use 45 deg, then let motion 3 provide
+# the intended pressure-driven flexion.
+hybrid_lift_identification_bend_rad: 0.7853981633974483        # 45 deg absolute bend target
+hybrid_lift_identification_tolerance_rad: 0.03490658503988659  # measured per-arm reach ends at <=47 deg
 hybrid_lift_identification_confirm_sec: 0.06 # both bounded per-arm reach latches must persist before motion 3
-hybrid_lift_identification_extension_limit_rad: 1.3962634015954636 # 80 deg, identification only
+# Relative 8 deg is only an extension-onset/tracking qualification. A stall at
+# any larger bend remains an incomplete test and increases the bounded thrust
+# search; it is never accepted as the learned absolute target.
+hybrid_lift_identification_extension_limit_rad: 1.3962634015954636 # independent 80-deg hard excursion guard
 hybrid_lift_identification_sync_deadband_rad: 0.05235987755982989  # 3 deg
 hybrid_lift_identification_sync_gain_n_rad: 10.0 # raise only the lagging arm; never drop the leading hold force
-hybrid_lift_identification_tracking_start_rad: 0.13962634015954636 # hold from 8-deg breakaway; completion still uses 20-deg absolute bend
+hybrid_lift_identification_sync_assist_max_n: 1.0 # keep synchronizing after both onsets without a 4--5 N runaway
+hybrid_lift_identification_tracking_start_rad: 0.13962634015954636 # relative 8 deg detects onset only; never completes motion 2 by itself
 hybrid_lift_identification_angle_kp_n_rad: 4.0 # absolute three-joint-sum bend feedback
-hybrid_lift_identification_rate_kd_n_s_rad: 0.8 # brake the sharp zero-pressure breakaway before the absolute target
+hybrid_lift_identification_rate_kd_n_s_rad: 0.8 # reused-stroke absolute-angle hold damping
 hybrid_lift_identification_tracking_rise_n_s: 4.0 # bounded lagging-arm catch-up without a second impulse
-hybrid_lift_identification_thrust_brake_horizon_sec: 0.08 # thrust is fast; do not reuse the ~0.6-s pneumatic horizon
+hybrid_lift_identification_rate_feedback_min_bend_rad: 0.7853981633974483 # rate shaping only at bend >=45 deg
+hybrid_lift_identification_rate_filter_tau_sec: 0.25 # reject one-sample rotor-side IMU spikes
+hybrid_lift_identification_rate_confirm_sec: 0.15 # confirm overspeed before holding the initial search ramp
+hybrid_lift_identification_rate_deadband_rad_s: 0.03490658503988659 # +/-2 deg/s about the 11.5-deg/s target
+hybrid_lift_identification_rate_control_gain_n_rad: 1.5 # rate error [rad/s] -> thrust slew [N/s]
+hybrid_lift_identification_rate_control_fall_n_s: 3.0 # smooth active braking; no one-sample thrust cut
 hybrid_lift_identification_bend_rate_limit_rad_s: 6.0 # initial released test only; normal C remains pi rad/s
-hybrid_lift_identification_return_bend_rate_limit_rad_s: 8.0 # intentional pressure-driven flexion after the near-straight test
-hybrid_lift_identification_return_pressure_slew_kpa_s: 30.0 # catch the first near-straight return before support is lost
+hybrid_lift_identification_return_bend_rate_limit_rad_s: 8.0 # intentional pressure-driven flexion after the unloading test
+hybrid_lift_identification_return_pressure_slew_kpa_s: 30.0 # catch the first unloaded return before support is lost
 hybrid_slip_probe_max_thrust_n: 5.0  # sliding identification only; lift/pull keep their separate 6 N cap
 hybrid_slip_probe_max_pressure_kpa: 40.0 # arm pressure only; bottom remains capped at 30 kPa
+hybrid_slip_probe_rise_n_s: 0.25 # slow common ramp; do not outrun pneumatic bend regulation
+hybrid_slip_pressure_tracking_tolerance_kpa: 2.0 # freeze (do not cut) thrust ramp until both pressures catch up
+hybrid_slip_extension_hold_margin_rad: 0.03490658503988659 # smoothly reduce rise over final 2 deg
+hybrid_slip_hard_extension_margin_rad: 0.05235987755982989 # only >3-deg overrun permits safety reduction
+hybrid_slip_extension_brake_fall_n_s: 0.5 # common soft brake; never the old 12-N/s one-arm chop
+# Sliding diagnoses the current grasp; it is not the zero-pressure extension
+# test.  From asymmetric starts such as [95, 127] deg, approach at most 10 deg
+# per arm and retain at least base_pressure-10 kPa. Larger release belongs to
+# motion 2 after an ineffective sliding result.
+hybrid_slip_max_extension_rad: 0.17453292519943295
+hybrid_slip_pressure_drop_max_kpa: 10.0
 # First pass searches slowly to identify breakaway. From the second motion 2,
 # use the former Action-C pulse rise while angle/rate/roll guards stay active.
 hybrid_lift_search_rate_n_s: 0.7
@@ -64,6 +105,7 @@ hybrid_reused_lift_rise_n_s: 8.0
 # motion-2 target or weakening the independent bend-floor guard.
 hybrid_reused_lift_brake_margin_rad: 0.06981317007977318
 hybrid_reused_lift_hold_pressure_max_kpa: 10.0 # normal motion 2: delay-compensated terminal brake and reached-arm hold
+hybrid_reused_lift_pressure_start_ratio: 0.90 # keep reused reach free; pressure brakes only the final 10%
 hybrid_lift_approach_rate_n_s: 2.0
 hybrid_lift_onset_margin_n: 0.6
 hybrid_lift_onset_angle_rad: 0.017453292519943295
@@ -96,7 +138,6 @@ hybrid_locomotion_stroke_m: 0.020
 # Maximum vertical-to-horizontal transfer time, NOT a powered-run stop timer.
 # Drive continues to the absolute goal unless prediction/measured guards stop it.
 hybrid_locomotion_run_max_sec: 3.0
-hybrid_locomotion_task_timeout_sec: 180.0
 hybrid_locomotion_up_force_max_n: 6.0  # also capped at 60% of configured body weight
 imu_timeout_sec: 0.10
 thrust_timeout_sec: 0.20
@@ -118,8 +159,9 @@ action_c_continuous_recovery_enabled: true
 # Spinal Euler roll rate includes p,q,r coupling; pitch itself is NOT a target.
 # The configured 0.50 N/s value below caps the sole PI integrator, not an
 # additional constant ramp. Breakaway thrust is logged, never held forever.
-recovery_angle_gain_s_inv: 1.0
-recovery_target_rate_rad_s: 0.14 # faster large-error correction; still far below the 0.8-rad/s hard guard
+recovery_angle_gain_s_inv: 0.65 # reduce only the final approach rate; far-error rate cap is unchanged
+recovery_max_thrust_n: 5.0 # continuous Action-C posture recovery only; locomotion remains independently capped
+recovery_target_rate_rad_s: 0.12 # slightly slower than the overshooting 0.14-rad/s real-arm trial
 recovery_rate_kp_n_s_rad: 3.0   # avoid reacting to each short gyro spike
 recovery_rate_ki_n_rad: 4.0
 recovery_integral_slew_n_s: 0.5 # reach the measured breakaway thrust sooner after a real stall
@@ -581,8 +623,8 @@ action_c_min_safe_angle_rad: 0.9599310885968813     # nominal pulse floor, NOT t
 action_c_extension_rate_limit_rad_s: 3.141592653589793  # cut above 180 deg/s extension
 action_c_pre_roll_rate_tolerance_rad_s: 0.17453292519943295  # 10 deg/s
 action_c_prepare_timeout_sec: 20.0
-action_c_posture_recovery_trigger_rad: 0.13962634015954636 # 8 deg
-# Above 8 deg, ordinary recovery requires worsening |roll| AND outward gyro.
+action_c_posture_recovery_trigger_rad: 0.17453292519943295 # 10 deg
+# Above 10 deg, ordinary recovery requires worsening |roll| AND outward gyro.
 # Stable/improving offsets below the hard limit can continue (either sign).
 action_c_roll_trend_window_sec: 0.5
 action_c_roll_trend_growth_rad: 0.017453292519943295  # >=1 deg growth over window
@@ -601,7 +643,7 @@ action_c_bottom_deflation_tolerance_kpa: 5.0  # recovery: target 0 +/-5 kPa only
 action_c_pressure_hold_tolerance_kpa: 5.0
 action_c_pressure_dropout_sec: 0.10
 action_c_pressure_max_deviation_kpa: 8.0
-# Active C correction target; a settled 3--8 deg rebound after normal regrasp may
+# Active C correction target; a settled 3--10 deg rebound after normal regrasp may
 # resume locomotion without another correction. Confirmation time is shared
 # with correction_trigger_confirm_sec above, not applied to the rate guard.
 # Progress-timeout waiting instead requires +/-3 deg, <=0.05 rad/s for 1 s.

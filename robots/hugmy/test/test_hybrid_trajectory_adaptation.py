@@ -13,19 +13,36 @@ int main() {
  TrajectoryAdaptation a;Pair bend{{1.4,1.45}};
  a.record(bend,0.,0.,.1,10.,1.,0.,false,true,true);
  assert(a.samples.empty()); // no airborne/noisy endpoint credit
- a.record(bend,0.,0.,.02,10.,20.,0.,true,true,true);
+ // One lucky stroke is not a model. Two repeatable measurements establish a
+ // 10-mm baseline and permit the first horizontal-mix candidate.
+ a.record(bend,0.,0.,.0095,10.,20.,0.,true,true,true);
+ assert(!std::isfinite(a.estimatedProgress(bend,0.,0.)));
  a.select(bend,0.,0.);assert(a.current==0);
- a.record(bend,0.,0.,.018,10.,20.,0.,true,true,true);
- a.select(bend,0.,0.);assert(a.current==0);
- a.record(bend,0.,0.,.019,10.,20.,0.,true,true,true);
- assert(a.estimatedProgress(bend,0.,0.)>.018 &&
-        a.estimatedProgress(bend,0.,0.)<.021);
+ a.record(bend,0.,0.,.0105,10.,20.,0.,true,true,true);
+ assert(std::abs(a.estimatedProgress(bend,0.,0.)-.010)<1e-9);
  a.select(bend,0.,0.);assert(a.current==1);
- for(int i=1;i<7;++i){assert(a.current==unsigned(i));
-   a.record(bend,0.,0.,i==3?.025:.015,10.,20.,0.,true,true,true);
-   a.select(bend,0.,0.);
- }
- assert(a.current==3); // useful motion beats idle and small thrust
+ // An exploratory candidate is repeated once before advancing.
+ a.record(bend,0.,0.,.011,10.,20.,0.,true,true,true);
+ a.select(bend,0.,0.);assert(a.current==1);
+ a.record(bend,0.,0.,.0112,10.,20.,0.,true,true,true);
+ a.select(bend,0.,0.);assert(a.current==2);
+ // Scaled results update the baseline response after normalization, but are
+ // excluded from direct candidate score comparison.
+ TrajectoryAdaptation scaled;
+ scaled.record(bend,0.,0.,.0096,10.,20.,0.,true,true,true,1.2);
+ scaled.record(bend,0.,0.,.0104,10.,20.,0.,true,true,true,1.3);
+ assert(std::abs(scaled.estimatedProgress(bend,0.,0.)-.008)<1e-9);
+ // Merely positive is not enough: a strongly scattered response must not be
+ // used to decide the number of remaining strokes or to strengthen a command.
+ TrajectoryAdaptation scattered;
+ scattered.record(bend,0.,0.,.0020,10.,20.,0.,true,true,true);
+ scattered.record(bend,0.,0.,.0050,10.,20.,0.,true,true,true);
+ assert(!std::isfinite(scattered.estimatedProgress(bend,0.,0.)));
+ // Distance tiling: exact long goals repeat; a weak last stroke is spread;
+ // an almost-full remainder becomes one slightly weaker extra stroke.
+ assert(std::abs(TrajectoryAdaptation::planStride(.050,.010,.010,.25,1.5)-.010)<1e-9);
+ assert(std::abs(TrajectoryAdaptation::planStride(.020,.008,.010,.25,1.5)-.010)<1e-9);
+ assert(std::abs(TrajectoryAdaptation::planStride(.039,.010,.010,.25,1.5)-.00975)<1e-9);
  a.record(bend,0.,0.,.1,10.,20.,0.,true,false,false);
  assert(a.samples.back().progress==0. && a.samples.back().score<0.);
  a.record(bend,0.,0.,.011,10.,20.,0.,true,false,true);
@@ -35,7 +52,7 @@ int main() {
  // A failed exploratory stroke forces two successful baseline revalidation
  // cycles before the next untried local candidate may run.
  TrajectoryAdaptation guarded;
- for(int i=0;i<3;++i)guarded.record(bend,0.,0.,.015,10.,20.,0.,true,true,true);
+ for(int i=0;i<2;++i)guarded.record(bend,0.,0.,.015,10.,20.,0.,true,true,true);
  guarded.select(bend,0.,0.);assert(guarded.current==1);
  guarded.record(bend,0.,0.,0.,10.,20.,0.,true,false,false);
  guarded.select(bend,0.,0.);assert(guarded.current==0);
@@ -46,7 +63,7 @@ int main() {
  // Safe retained travel from an early guard is valid evidence: repeated
  // forward guarded trials must not leave the optimizer stuck at baseline.
  TrajectoryAdaptation guarded_progress;
- for(int i=0;i<3;++i)
+ for(int i=0;i<2;++i)
    guarded_progress.record(bend,0.,0.,.011,10.,20.,0.,true,false,true);
  guarded_progress.select(bend,0.,0.);assert(guarded_progress.current==1);
  guarded_progress.record(bend,0.,0.,.010,10.,20.,0.,true,false,true);

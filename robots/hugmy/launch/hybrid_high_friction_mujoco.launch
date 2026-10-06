@@ -13,7 +13,7 @@
        separate until the same residual rear pressure is tested physically. -->
   <arg name="pressure_limit" default="30.0"/>
   <arg name="rear_pressure" default="5.0"/>
-  <arg name="lift_seconds" default="10.0"/>
+  <arg name="lift_seconds" default="15.0"/>
   <arg name="lift_rate" default="1.0"/>
   <arg name="pull_min_sec" default="1.5"/>
   <arg name="probe_extension_rad" default="0.13962634015954636"/>

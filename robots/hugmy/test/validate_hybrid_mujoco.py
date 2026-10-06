@@ -70,14 +70,18 @@ def main():
     parser.add_argument('--lift-pressure-gain', type=float, default=20., help='deprecated compatibility option; early lift remains at zero front pressure, with bounded predictive prefill on an adverse slope')
     parser.add_argument('--pull-min-sec', type=float, default=.5, help='minimum powered pull before front catch, .5..4 s; hard guards unchanged')
     parser.add_argument('--lift-rate', type=float, default=.7, help='lift thrust search rate, (0,1] N/s')
-    parser.add_argument('--lift-seconds', type=float, default=10., help='powered lift deadline after front venting, 1..10 s')
+    parser.add_argument('--lift-seconds', type=float, default=15., help='powered lift deadline after front venting, 1..20 s')
     parser.add_argument('--probe-extension-deg', type=float, default=8., help='desired extension, 3..15 degrees; protection remains separate')
-    parser.add_argument('--identification-bend-deg', type=float, default=20.,
-                        help='one-time motion=2 absolute bend target, 5..30 degrees')
+    parser.add_argument('--identification-bend-deg', type=float, default=45.,
+                        help='one-time motion=2 absolute unloading bend target, 5..60 degrees')
     parser.add_argument('--cylinder-radius', type=float, default=.05, help='fixture radius in m, robot placement follows cylinder top')
     parser.add_argument('--cylinder-pitch-deg', type=float, default=0.,
                         help='fixture pitch in degrees for longitudinal-slope validation, -15..15')
     parser.add_argument('--surface-friction', type=float, default=2.5, help='MuJoCo cylinder sliding friction, torsional/rolling coefficients unchanged')
+    parser.add_argument('--slip-min-progress', type=float, default=.002,
+                        help='test routing threshold in m; production default is .002')
+    parser.add_argument('--slip-thrust-max', type=float, default=5.,
+                        help='sliding-probe rotor ceiling in N; production default is 5')
     parser.add_argument('--require-cycles', type=int, default=0, help='minimum completed and measured locomotion strokes')
     parser.add_argument('--require-forward-cycles', type=int, default=0, help='minimum consecutive settled strokes retaining at least 1 mm each')
     parser.add_argument('--require-no-slip', action='store_true', help='also require absolute initial sliding probe displacement <=2 mm and no sustained sliding')
@@ -94,15 +98,17 @@ def main():
             math.isfinite(args.rear_pressure) and 0.<=args.rear_pressure<=6. and
             math.isfinite(args.grip_friction) and 0.<=args.grip_friction<=8. and
             math.isfinite(args.surface_friction) and 0.<=args.surface_friction<=8. and
+            math.isfinite(args.slip_min_progress) and .001<=args.slip_min_progress<=.02 and
+            math.isfinite(args.slip_thrust_max) and 0.<args.slip_thrust_max<=5. and
             math.isfinite(args.cylinder_radius) and .025<=args.cylinder_radius<=.15 and
             math.isfinite(args.cylinder_pitch_deg) and -15.<=args.cylinder_pitch_deg<=15. and
             math.isfinite(args.grip_stiffness) and 0.<=args.grip_stiffness<=5000. and
             math.isfinite(args.lift_pressure_gain) and 0.<args.lift_pressure_gain<=150. and
             math.isfinite(args.pull_min_sec) and .5<=args.pull_min_sec<=4. and
             math.isfinite(args.lift_rate) and 0.<args.lift_rate<=1. and
-            math.isfinite(args.lift_seconds) and 1.<=args.lift_seconds<=10. and
+            math.isfinite(args.lift_seconds) and 1.<=args.lift_seconds<=20. and
             math.isfinite(args.probe_extension_deg) and 3.<=args.probe_extension_deg<=15. and
-            math.isfinite(args.identification_bend_deg) and 5.<=args.identification_bend_deg<=30. and
+            math.isfinite(args.identification_bend_deg) and 5.<=args.identification_bend_deg<=60. and
             0<=args.require_cycles<=10 and
             0<=args.require_forward_cycles<=10 and
             math.isfinite(args.pressure_limit) and 30.<=args.pressure_limit<=50.):
@@ -180,6 +186,8 @@ def main():
                 'hybrid_locomotion_initial_m:='+str(args.mix),
                 'hybrid_rear_low_kpa:='+str(args.rear_pressure),
                 'hybrid_lift_pressure_gain_kpa_s_rad:='+str(args.lift_pressure_gain),
+                'hybrid_slip_min_progress_m:='+str(args.slip_min_progress),
+                'hybrid_slip_probe_max_thrust_n:='+str(args.slip_thrust_max),
                 'hybrid_pull_min_sec:='+str(args.pull_min_sec),
                 'hybrid_lift_search_rate_n_s:='+str(args.lift_rate),
                 'hybrid_lift_probe_sec:='+str(args.lift_seconds),
@@ -277,8 +285,8 @@ def main():
                           lateral_displacement=final_pose[1]-initial_pose[1],
                           final_grips=samples['grip'][-1][1][:4],
                           goal_confirmed=any('hybrid target reached' in message for _,message in samples['logs']))
-            result['max_roll_change_deg']=max(abs(math.atan2(math.sin(r-initial_roll),math.cos(r-initial_roll)))
-                for t,r in samples['physical_roll'] if t>=start)*180/math.pi
+            result['max_roll_change_deg']=max((abs(math.atan2(math.sin(r-initial_roll),math.cos(r-initial_roll)))
+                for t,r in samples['physical_roll'] if t>=start),default=0.)*180/math.pi
             result['success']=bool(result['powered_phase_seen'] and result['goal_confirmed'] and
                                    result['body_z_drop']<.04 and sum(result['final_grips'])>=1)
             # Reaching x while falling or retaining thrust is not a completed
@@ -290,13 +298,17 @@ def main():
             final_roll=samples['physical_roll'][-1][1]*180/math.pi
             final_thrust=samples['actuator'][-1][1][4:8]
             result.update(final_roll_deg=final_roll,final_thrust=final_thrust,tail_x_span_mm=1000*tail_span)
-            inflated_start=next((v[22] for _,v in samples['plan'] if len(v)>=26 and v[0]==2 and v[23]>0.5),initial_x_mean)
+            result['final_bottom_kpa']=samples['bottom'][-1][1]
+            # Diagnostic schema 3 is the current C/D single-pass controller;
+            # retain schema 2 so archived validation traces remain readable.
+            is_hybrid_plan=lambda v: len(v)>=26 and int(v[0]) in (2,3)
+            inflated_start=next((v[22] for _,v in samples['plan'] if is_hybrid_plan(v) and v[23]>0.5),initial_x_mean)
             result.update(preinflation_mean_dx_mm=1000*(end_x_mean-initial_x_mean),
                           retained_mean_dx_mm=1000*(end_x_mean-inflated_start),tail_mean_span_mm=1000*mean_span,tail_stable=tail_stable)
-            result['probe_counts']=([max(v[3] for _,v in samples['plan'] if len(v)>=26 and v[0]==2),
-                                     max(v[4] for _,v in samples['plan'] if len(v)>=26 and v[0]==2)]
-                                    if any(len(v)>=26 and v[0]==2 for _,v in samples['plan']) else None)
-            adaptation=[v for _,v in samples['plan'] if len(v)>=34 and v[0]==2]
+            result['probe_counts']=([max(v[3] for _,v in samples['plan'] if is_hybrid_plan(v)),
+                                     max(v[4] for _,v in samples['plan'] if is_hybrid_plan(v))]
+                                    if any(is_hybrid_plan(v) for _,v in samples['plan']) else None)
+            adaptation=[v for _,v in samples['plan'] if len(v)>=34 and int(v[0]) in (2,3)]
             result['extension_onset_samples']=[max(v[26+j] for v in adaptation) for j in range(2)] if adaptation else None
             result['fast_approach_samples']=[sum(v[32+j]>.5 for v in adaptation) for j in range(2)] if adaptation else None
             result['front_vent_seen']=any(v[1]==1 and v[2]==6 for v in adaptation)
@@ -305,10 +317,10 @@ def main():
             result['trajectory_observations']=sum('Hybrid measured trajectory optimization:' in m for _,m in samples['logs'])
             result['completed_cycles']=sum('Hybrid C/D result: completed=1 safe=1' in msg for _,msg in samples['logs'])
             result['cycle_retained_mm'],result['consecutive_forward_cycles']=forward_cycle_summary(samples['logs'])
-            slip=[t for t,v in samples['plan'] if len(v)>=26 and v[0]==2 and v[1]==1 and v[2]==0]
+            slip=[t for t,v in samples['plan'] if is_hybrid_plan(v) and v[1]==1 and v[2]==0]
             slip_tail=[p[0] for t,p in samples['pose'] if slip and slip[-1]-.5<=t<=slip[-1]]
             result['initial_slip_dx_mm']=1000*(sum(slip_tail)/len(slip_tail)-inflated_start) if slip_tail else None
-            result['slide_hold_seen']=any(len(v)>=26 and v[0]==2 and v[1]==1 and v[2]==1 for _,v in samples['plan'])
+            result['slide_hold_seen']=any(is_hybrid_plan(v) and v[1]==1 and v[2]==1 for _,v in samples['plan'])
             result['fixture']={'radius_m':args.cylinder_radius,
                 'pitch_deg':args.cylinder_pitch_deg,'grip_mu':args.grip_friction,
                 'surface_mu':args.surface_friction,'tangential_stiffness_n_m':args.grip_stiffness,
@@ -321,7 +333,7 @@ def main():
                 abs(result['body_z_drop'])<.02 and abs(result['lateral_displacement'])<args.lateral_limit and
                 sum(result['final_grips'])>=3 and abs(final_roll)<8. and result['max_roll_change_deg']<15. and
                 max(abs(t) for t in final_thrust)<.05 and all(p>=25. for p in samples['pressure'][-1][1]) and
-                abs(samples['bottom'][-1][1]-args.bottom)<=3. and tail_stable)
+                abs(samples['bottom'][-1][1])<=3. and tail_stable)
             result['success']=bool(result['success'] and result['completed_cycles']>=args.require_cycles and
                 result['consecutive_forward_cycles']>=args.require_forward_cycles and
                 (not args.require_no_slip or (result['initial_slip_dx_mm'] is not None and

@@ -6,7 +6,7 @@ import tempfile
 
 root=Path(__file__).resolve().parents[1]
 source=(root/'src/control/hybrid_locomotion.cpp').read_text()
-start=source.index('  if(std::abs(s.roll)>=hybrid_config_.roll_limit')
+start=source.index('  const double measured_roll_rate=')
 hard=source[start:source.index('  if(!hybrid_terminal_settle_',start)]
 start=source.index('  const double boundary_bottom_tolerance=')
 conditions=source[start:source.index('  const bool quiet=',start)]
@@ -32,8 +32,9 @@ struct Controller {
  std::array<double,4> inchworm_thrust_{},inchworm_pressure_{};
  double pressure_tolerance_kpa_=2.,action_c_pre_roll_rate_tolerance_rad_s_=.174532925;
  double action_c_bottom_deflation_tolerance_kpa_=5.;
- double action_c_posture_settle_sec_=.5,action_c_posture_recovery_trigger_rad_=8*M_PI/180.;
+ double action_c_posture_settle_sec_=.5,action_c_posture_recovery_trigger_rad_=10*M_PI/180.;
  double correction_trigger_confirm_sec_=.3;
+ double hybrid_roll_rate_confirm_sec_=.10,hybrid_roll_rate_limit_since_=-1.;
  hugmy::RollTrendGate action_c_roll_trend_;
  hugmy::PostureRecoveryGate action_c_boundary_settle_gate_,action_c_recovery_gate_;
  int hybrid_phase_=0;bool arms_ready=true,ready=false,recovery=false;
@@ -71,18 +72,19 @@ int main(){
    Controller regrip;regrip.hybrid_phase_=2;regrip.arms_ready=false;
    assert(!regrip.drive(0.,1.2,9.*sign,3.*sign));assert(!regrip.ready);
    regrip.arms_ready=true;assert(!regrip.drive(2.,1.2,10.*sign));assert(regrip.ready);
-   // Hard limits are immediate, regardless of phase/pressure readiness.
+   // Absolute roll remains immediate. Angular rate keeps the same limit but
+   // requires persistence so one impact/IMU sample cannot hand off control.
    powered.tick(4.,16.*sign);assert(powered.recovery);
-   powered.tick(4.1,1.,50.*sign);assert(powered.recovery);
-   powered.filtered_quiet=true;powered.tick(4.2,1.,50.*sign);assert(powered.recovery);
+   powered.tick(4.1,1.,50.*sign);assert(!powered.recovery);
+   powered.filtered_quiet=true;powered.tick(4.21,1.,50.*sign);assert(powered.recovery);
  }
- Controller invalid;invalid.bottom=NAN;assert(!invalid.drive(0.,1.,10.));assert(!invalid.ready);
+ Controller invalid;invalid.bottom=NAN;assert(!invalid.drive(0.,1.,11.));assert(!invalid.ready);
  Controller low;low.hybrid_search_.current.bottom=0.;low.bottom=3.;
- assert(!low.drive(0.,1.2,10.));assert(low.ready);
- low.bottom=5.01;low.tick(2.,10.);assert(!low.ready);
- Controller reset;assert(!reset.drive(2.,1.,10.));assert(reset.ready);
- reset.tick(1.,10.);assert(!reset.ready && !reset.recovery);
- std::cout<<"PASS: predictive C +/- residual roll, transient/inflation isolation, regrip gating, immediate hard guards and clock reset\n";
+ assert(!low.drive(0.,1.2,11.));assert(low.ready);
+ low.bottom=5.01;low.tick(2.,11.);assert(!low.ready);
+ Controller reset;assert(!reset.drive(2.,1.,11.));assert(reset.ready);
+ reset.tick(1.,11.);assert(!reset.ready && !reset.recovery);
+ std::cout<<"PASS: predictive C +/- residual roll, transient/inflation isolation, regrip gating, confirmed rate guard, immediate roll guard and clock reset\n";
 }
 """.replace('HARD',hard).replace('CONDITIONS',conditions)
 with tempfile.TemporaryDirectory(prefix='hugmy_phase_recovery_') as directory:

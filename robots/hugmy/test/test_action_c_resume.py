@@ -30,6 +30,7 @@ Time operator-(Time a,Time b){return {a.t-b.t};}}
 class AttitudePressureController {
 public:
  static constexpr size_t ARM_COUNT=4;
+ using Vector3=std::array<double,3>;
  bool action_c_resume_pending_=true, hybrid_trial_active_=true;
  bool mocap_received_=true, action_c_preserve_adaptation_on_start_=false;
  bool active=false;
@@ -65,6 +66,10 @@ public:
    assert(action_c_preserve_adaptation_on_start_); commanded_distance=d;active=true;++starts;hybrid_trial_active_=true;
  }
  bool resumeActionCAfterRecovery(const ros::Time&);
+ Vector3 locomotionPosition()const{return mocap_position_;}
+ bool locomotionMocapFresh(const ros::Time& now)const {
+   const double age=(now-mocap_stamp_).toSec();return mocap_received_&&age>=0.&&age<=inchworm_mocap_timeout_sec_;
+ }
  void selectContinuousRecoveryPair(double);
  bool hybridResumeAllowed(const ros::Time&) {return true;} // deadline tested separately
  void finishHybridRecovery(const ros::Time& now) {finishHybridLocomotion(now,false,true);}

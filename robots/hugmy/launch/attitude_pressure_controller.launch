@@ -8,21 +8,32 @@
   <arg name="hybrid_rear_grasp_sec" default="1.0" />
   <arg name="hybrid_rear_low_kpa" default="0.0" />
   <arg name="hybrid_rear_vent_lead_margin_sec" default="0.10" />
-  <arg name="hybrid_rear_vent_start_margin_rad" default="0.08726646259971647" />
+  <arg name="hybrid_rear_vent_start_margin_rad" default="0.03490658503988659" />
   <arg name="hybrid_locomotion_initial_m" default="1.0" />
   <arg name="hybrid_locomotion_retain_grasp_pressure" default="false" />
   <arg name="hybrid_locomotion_regrip_timeout_sec" default="20.0" />
   <arg name="hybrid_lift_pressure_gain_kpa_s_rad" default="20.0" />
-  <arg name="hybrid_lift_probe_sec" default="10.0" />
+  <arg name="hybrid_slip_min_progress_m" default="0.002" />
+  <arg name="hybrid_slip_min_speed_m_s" default="0.0015" />
+  <arg name="hybrid_lift_probe_sec" default="20.0" />
   <arg name="hybrid_lift_search_rate_n_s" default="0.7" />
   <arg name="hybrid_reused_lift_rise_n_s" default="8.0" />
   <arg name="hybrid_reused_lift_brake_margin_rad" default="0.06981317007977318" />
   <arg name="hybrid_pull_min_sec" default="0.5" />
   <arg name="hybrid_probe_extension_rad" default="0.13962634015954636" />
-  <arg name="hybrid_lift_identification_bend_rad" default="0.3490658503988659" />
-  <arg name="hybrid_lift_identification_tolerance_rad" default="0.017453292519943295" />
+  <arg name="hybrid_lift_identification_bend_rad" default="0.7853981633974483" />
+  <arg name="hybrid_lift_identification_tolerance_rad" default="0.03490658503988659" />
   <arg name="hybrid_lift_identification_extension_limit_rad" default="1.3962634015954636" />
+  <arg name="hybrid_lift_identification_rate_feedback_min_bend_rad" default="0.7853981633974483" />
+  <arg name="hybrid_lift_identification_rate_filter_tau_sec" default="0.25" />
+  <arg name="hybrid_lift_identification_rate_confirm_sec" default="0.15" />
+  <arg name="hybrid_slip_probe_max_thrust_n" default="5.0" />
   <arg name="hybrid_slip_probe_max_pressure_kpa" default="40.0" />
+  <arg name="hybrid_slip_probe_rise_n_s" default="0.25" />
+  <arg name="hybrid_slip_pressure_tracking_tolerance_kpa" default="2.0" />
+  <arg name="hybrid_slip_extension_hold_margin_rad" default="0.03490658503988659" />
+  <arg name="hybrid_slip_hard_extension_margin_rad" default="0.05235987755982989" />
+  <arg name="hybrid_slip_extension_brake_fall_n_s" default="0.5" />
   <arg name="maximum_pressure_kpa" default="40.0" />
   <arg name="correction_pair_reverse_spinal_mapping" default="false" />
   <arg name="inchworm_action_d" default="false" />
@@ -31,6 +42,8 @@
   <arg name="recovery_predictive_shadow" default="true" />
   <arg name="bottom_control_enabled" default="true" />
   <arg name="use_mocap_attitude_for_inchworm" default="false" />
+  <arg name="hand_relative_mocap_enabled" default="false" />
+  <arg name="hand_target_selects_direction" default="false" />
   <!-- Action-A gait parameters.  Defaults reproduce the YAML configuration;
        the optimization wrapper overrides them for each MuJoCo episode. -->
   <arg name="base_pressure_kpa" default="30.0" />
@@ -135,6 +148,8 @@
       <param name="hybrid_locomotion_retain_grasp_pressure" value="$(arg hybrid_locomotion_retain_grasp_pressure)" />
       <param name="hybrid_locomotion_regrip_timeout_sec" value="$(arg hybrid_locomotion_regrip_timeout_sec)" />
       <param name="hybrid_lift_pressure_gain_kpa_s_rad" value="$(arg hybrid_lift_pressure_gain_kpa_s_rad)" />
+      <param name="hybrid_slip_min_progress_m" value="$(arg hybrid_slip_min_progress_m)" />
+      <param name="hybrid_slip_min_speed_m_s" value="$(arg hybrid_slip_min_speed_m_s)" />
       <param name="hybrid_lift_probe_sec" value="$(arg hybrid_lift_probe_sec)" />
       <param name="hybrid_lift_search_rate_n_s" value="$(arg hybrid_lift_search_rate_n_s)" />
       <param name="hybrid_reused_lift_rise_n_s" value="$(arg hybrid_reused_lift_rise_n_s)" />
@@ -144,7 +159,16 @@
       <param name="hybrid_lift_identification_bend_rad" value="$(arg hybrid_lift_identification_bend_rad)" />
       <param name="hybrid_lift_identification_tolerance_rad" value="$(arg hybrid_lift_identification_tolerance_rad)" />
       <param name="hybrid_lift_identification_extension_limit_rad" value="$(arg hybrid_lift_identification_extension_limit_rad)" />
+      <param name="hybrid_lift_identification_rate_feedback_min_bend_rad" value="$(arg hybrid_lift_identification_rate_feedback_min_bend_rad)" />
+      <param name="hybrid_lift_identification_rate_filter_tau_sec" value="$(arg hybrid_lift_identification_rate_filter_tau_sec)" />
+      <param name="hybrid_lift_identification_rate_confirm_sec" value="$(arg hybrid_lift_identification_rate_confirm_sec)" />
+      <param name="hybrid_slip_probe_max_thrust_n" value="$(arg hybrid_slip_probe_max_thrust_n)" />
       <param name="hybrid_slip_probe_max_pressure_kpa" value="$(arg hybrid_slip_probe_max_pressure_kpa)" />
+      <param name="hybrid_slip_probe_rise_n_s" value="$(arg hybrid_slip_probe_rise_n_s)" />
+      <param name="hybrid_slip_pressure_tracking_tolerance_kpa" value="$(arg hybrid_slip_pressure_tracking_tolerance_kpa)" />
+      <param name="hybrid_slip_extension_hold_margin_rad" value="$(arg hybrid_slip_extension_hold_margin_rad)" />
+      <param name="hybrid_slip_hard_extension_margin_rad" value="$(arg hybrid_slip_hard_extension_margin_rad)" />
+      <param name="hybrid_slip_extension_brake_fall_n_s" value="$(arg hybrid_slip_extension_brake_fall_n_s)" />
       <param name="maximum_pressure_kpa" value="$(arg maximum_pressure_kpa)" />
       <param name="correction_pair_reverse_spinal_mapping" value="$(arg correction_pair_reverse_spinal_mapping)" />
       <param name="inchworm_action_d_enabled" value="$(arg inchworm_action_d)" />
@@ -262,6 +286,10 @@
       <param name="rocking_max_tilt_rad" value="$(arg rocking_max_tilt_rad)" />
       <param name="use_mocap_attitude_for_inchworm"
              value="$(arg use_mocap_attitude_for_inchworm)" />
+      <param name="hand_relative_mocap_enabled"
+             value="$(arg hand_relative_mocap_enabled)" />
+      <param name="hand_target_selects_direction"
+             value="$(arg hand_target_selects_direction)" />
     </node>
   </group>
 </launch>

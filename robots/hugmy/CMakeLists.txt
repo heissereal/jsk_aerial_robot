@@ -27,7 +27,7 @@ find_package(PythonInterp REQUIRED)
 
 catkin_package(
   LIBRARIES hugmy_pneumatic_mujoco_hw_sim hugmy_quad_bi_controller
-  CATKIN_DEPENDS aerial_robot_control pluginlib aerial_robot_model aerial_robot_simulation mujoco_ros_control spinal std_msgs std_srvs geometry_msgs tf visualization_msgs
+  CATKIN_DEPENDS aerial_robot_control pluginlib aerial_robot_model aerial_robot_simulation mujoco_ros_control spinal std_msgs std_srvs geometry_msgs sensor_msgs tf visualization_msgs
   )
 
 include_directories(
@@ -155,6 +155,14 @@ target_link_libraries(independent_arm_pressure_controller_node
 add_executable(joy_arm_pressure_command_node src/nodes/joy_arm_pressure_command_node.cpp)
 add_dependencies(joy_arm_pressure_command_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(joy_arm_pressure_command_node ${catkin_LIBRARIES})
+
+add_executable(joy_human_arm_locomotion_node
+  src/nodes/joy_human_arm_locomotion_node.cpp)
+add_dependencies(joy_human_arm_locomotion_node ${catkin_EXPORTED_TARGETS})
+target_link_libraries(joy_human_arm_locomotion_node ${catkin_LIBRARIES})
+
+install(TARGETS joy_arm_pressure_command_node joy_human_arm_locomotion_node
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
 catkin_install_python(PROGRAMS
   script/analyze_hugmy_sac.py

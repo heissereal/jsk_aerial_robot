@@ -28,9 +28,12 @@ assert arguments['simulation']=='true' and arguments['real_machine']=='false'
 assert arguments['mujoco']=='true' and arguments['fixed_arms']=='false'
 assert not fixture.findall('.//node') # no automated commands on the user's master
 src=(root/'src/control/hybrid_locomotion.cpp').read_text()
-assert 'std::abs(body_angular_velocity_[0])>=hybrid_config_.roll_rate_limit' in src
+assert 'roll_rate_limit_confirmed' in src
+assert 'clock-hybrid_roll_rate_limit_since_>=hybrid_roll_rate_confirm_sec_' in src
 validator=Path(module.__file__).read_text()
 assert "parser.add_argument('--lateral-limit', type=float, default=.03" in validator
 assert "abs(result['lateral_displacement'])<args.lateral_limit" in validator
 assert "abs(result['lateral_displacement'])<.02" in validator  # grasp-only negative control remains strict
+assert "abs(samples['bottom'][-1][1])<=3." in validator  # retained endpoints are post-deflation
+assert "samples['bottom'][-1][1]-args.bottom" not in validator
 print('PASS: noisy stationary endpoint accepted; drift, incomplete/stale endpoints rejected')

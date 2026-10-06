@@ -12,9 +12,10 @@ void AttitudePressureController::observeHybridThrust(const ros::Time& now,const 
 void AttitudePressureController::pauseHybridLocomotion(const ros::Time& now)
 {
   if (!hybridLocomotionActive() || !hybrid_trial_active_ || hybrid_recovery_start_>=0.) return;
-  hybrid_recovery_start_=now.toSec();hybrid_recovery_x_=mocap_position_[0];
+  const double relative_x=locomotionPosition()[0];
+  hybrid_recovery_start_=now.toSec();hybrid_recovery_x_=relative_x;
   hybrid_pre_recovery_dx_=hybrid_run_start_>=0. ?
-      action_c_direction_sign_x_*(mocap_position_[0]-hybrid_run_x_) : 0.;
+      action_c_direction_sign_x_*(relative_x-hybrid_run_x_) : 0.;
 }
 
 bool AttitudePressureController::hybridResumeAllowed(const ros::Time& now)
@@ -72,6 +73,7 @@ bool AttitudePressureController::hybridLocomotionActive() const
 
 void AttitudePressureController::startHybridLocomotion(const ros::Time& now)
 {
+  const double relative_x=locomotionPosition()[0];
   if (inchworm_cycle_count_==1 && !action_c_preserve_adaptation_on_start_)
     {hybrid_task_start_=now.toSec();hybrid_settling_loss_=0.;
      hybrid_single_.reset();
@@ -84,7 +86,7 @@ void AttitudePressureController::startHybridLocomotion(const ros::Time& now)
   hybrid_body_rate_filter_.reset();
   hybrid_probe_budget_.reset();
   hybrid_prediction_limited_=false;
-  hybrid_trial_start_=now.toSec(); hybrid_trial_x_=mocap_position_[0];
+  hybrid_trial_start_=now.toSec(); hybrid_trial_x_=relative_x;
   hybrid_start_mean_valid_=hybrid_end_mean_valid_=false;hybrid_bottom_changed_=false;
   hybrid_preinflate_measured_=false;hybrid_terminal_settle_=false;
   hybrid_terminal_retry_=false;
@@ -95,11 +97,12 @@ void AttitudePressureController::startHybridLocomotion(const ros::Time& now)
   hybrid_endpoint_pitch_window_.reset();hybrid_endpoint_pitch_window_.duration=3.;
   hybrid_bottom_assist_.reset(0.);
   hybrid_run_start_=-1.;hybrid_ready_since_=-1.;hybrid_recovery_start_=-1.;
+  hybrid_roll_rate_limit_since_=-1.;
   hybrid_last_stamp_=-1.;hybrid_speed_=0.;hybrid_phase_=0;hybrid_candidate_selected_=false;
   hybrid_result_=hugmy::hybrid::Result();
   hybrid_effort_stamp_=now.toSec();hybrid_sent_thrust_.fill(0.);
   hybrid_result_.goal=std::min(hybrid_config_.stroke,
-      std::max(.0001,action_c_direction_sign_x_*(action_c_absolute_target_x_m_-mocap_position_[0])));
+      std::max(.0001,action_c_direction_sign_x_*(action_c_absolute_target_x_m_-relative_x)));
   hybrid_planner_.beginRun();hybrid_planner_.hold_thrust_search=false;hybrid_planner_.model.newWindow();
   action_c_recovery_gate_.reset();action_c_boundary_settle_gate_.reset();
   action_c_roll_trend_.reset();
@@ -128,7 +131,8 @@ void AttitudePressureController::beginHybridRegrip(const ros::Time& now,bool pre
     for(size_t arm=0;arm<ARM_COUNT;++arm) if(inchworm_front_[arm]) hybrid_grasp_pressure_[arm]=front_grasp;
   }
   hybrid_regrip_bottom_=hybrid_bottom_assist_.command;
-  hybrid_regrip_x_=hybrid_position_window_.ready(now.toSec())?hybrid_position_window_.mean():mocap_position_[0];
+  hybrid_regrip_x_=hybrid_position_window_.ready(now.toSec())?
+      hybrid_position_window_.mean():locomotionPosition()[0];
   hybrid_prediction_limited_=prediction_limited;
   hybrid_phase_=2;hybrid_ready_since_=-1.;
   hybrid_pressure_ready_gate_.reset();
@@ -165,12 +169,13 @@ void AttitudePressureController::finishHybridLocomotion(const ros::Time& now,boo
   if(!hybrid_trial_active_) return;
   observeHybridThrust(now,hybrid_sent_thrust_);
   const bool measured=hybrid_start_mean_valid_ && hybrid_end_mean_valid_;
-  const double end_x=measured?hybrid_end_mean_x_:mocap_position_[0];
+  const double relative_x=locomotionPosition()[0];
+  const double end_x=measured?hybrid_end_mean_x_:relative_x;
   const double raw=action_c_direction_sign_x_*(end_x-hybrid_trial_x_);
-  double retained=hybrid_run_start_>=0 ? action_c_direction_sign_x_*(mocap_position_[0]-hybrid_run_x_) : std::min(0.,raw);
+  double retained=hybrid_run_start_>=0 ? action_c_direction_sign_x_*(relative_x-hybrid_run_x_) : std::min(0.,raw);
   if(hybrid_recovery_start_>=0) {
     hybrid_result_.recovery_seconds=std::max(0.,now.toSec()-hybrid_recovery_start_);
-    retained=hybrid_pre_recovery_dx_+std::min(0.,action_c_direction_sign_x_*(mocap_position_[0]-hybrid_recovery_x_));
+    retained=hybrid_pre_recovery_dx_+std::min(0.,action_c_direction_sign_x_*(relative_x-hybrid_recovery_x_));
   }
   hybrid_result_.progress=measured?raw:std::min(0.,std::min(raw,retained));
   // A stable pre-inflation/post-deflation pair is the authoritative retained
@@ -201,16 +206,16 @@ void AttitudePressureController::finishHybridLocomotion(const ros::Time& now,boo
         1000.*hybrid_result_.progress,
         1000.*hybrid_single_config_.pull_progress_threshold,
         previous_pull,hybrid_single_.pull_forward);
-  // A continuously changing bottom is not a sample of one fixed candidate.
+  // The first identification reach is a different waveform and must not
+  // teach the repeated-stroke model. Subsequent shortened/strengthened
+  // strokes remain useful because record() retains their exact scale.
   // Missing stable endpoints are diagnostics, not positive training samples.
-  // Single-pass identification owns the trajectory, not the legacy outer search.
-  if(hybrid_single_.calibrated &&
-     !hybrid_single_.goal_conditioned) {
+  if(hybrid_single_.calibrated && hybrid_single_.strokes>1) {
     hybrid_single_.trajectory.enabled=hybrid_search_.enabled;
     hybrid_single_.trajectory.record(hybrid_single_.context_bend,hybrid_single_.context_roll,
         hybrid_single_.context_pitch,hybrid_result_.progress,hybrid_result_.seconds,
         hybrid_result_.effort,hybrid_result_.recovery_seconds,measured,
-        hybrid_result_.completed,safe);
+        hybrid_result_.completed,safe,hybrid_single_.goal_scale);
     const auto choice=hybrid_single_.trajectory.selected();
     ROS_INFO("Hybrid measured trajectory optimization: candidate %u, mix offset %.2f force scale %.2f, observations %zu; retained %.2f mm",
         hybrid_single_.trajectory.current,choice.mix_offset,choice.force_scale,
@@ -232,6 +237,7 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
   using namespace hugmy::hybrid;
   if (!hybridLocomotionActive()) return;
   const double clock=now.toSec();
+  const Vector3 locomotion_position=locomotionPosition();
   auto fresh=[&](const ros::Time& stamp,double limit) {
     const double age=(now-stamp).toSec();return !stamp.isZero() && age>=0. && age<=limit;
   };
@@ -251,11 +257,11 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
   // Use the configured mocap timeout.  The generic inchworm safety path does
   // the same; imposing an undocumented 0.25-s cap here aborted otherwise
   // healthy real runs on short OptiTrack gaps.
-  const bool mocap_fresh=fresh(mocap_stamp_,inchworm_mocap_timeout_sec_);
+  const bool mocap_fresh=locomotionMocapFresh(now);
   s.fresh=imu_fresh && arm_pressure_fresh && bottom_pressure_fresh && mocap_fresh;
   if(grip_state_valid_) s.fresh=s.fresh && fresh(grip_state_stamp_,.25);
   for(double value:{s.roll,s.roll_rate,s.pitch,s.bottom,body_angular_velocity_[0],body_angular_velocity_[1],
-      mocap_position_[0],mocap_position_[1],mocap_position_[2]})
+      locomotion_position[0],locomotion_position[1],mocap_position_[2]})
     s.fresh=s.fresh && std::isfinite(value);
   std::array<size_t,2> arms=inchworm_front_order_;
   for(size_t arm=0;arm<ARM_COUNT;++arm) {
@@ -279,11 +285,11 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
   if(mocap_stamp_.toSec()!=hybrid_last_stamp_) {
     const double sample_dt=mocap_stamp_.toSec()-hybrid_last_stamp_;
     if(hybrid_last_stamp_>=0 && sample_dt>0 && sample_dt<=.25)
-      hybrid_speed_=.7*hybrid_speed_+.3*action_c_direction_sign_x_*(mocap_position_[0]-hybrid_last_x_)/sample_dt;
+      hybrid_speed_=.7*hybrid_speed_+.3*action_c_direction_sign_x_*(locomotion_position[0]-hybrid_last_x_)/sample_dt;
     else hybrid_speed_=0.;
-    hybrid_last_stamp_=mocap_stamp_.toSec();hybrid_last_x_=mocap_position_[0];
+    hybrid_last_stamp_=mocap_stamp_.toSec();hybrid_last_x_=locomotion_position[0];
   }
-  hybrid_position_window_.add(mocap_stamp_.toSec(),mocap_position_[0]);
+  hybrid_position_window_.add(mocap_stamp_.toSec(),locomotion_position[0]);
   const bool speed_valid=hybrid_position_window_.ready(clock);
   s.speed=speed_valid?action_c_direction_sign_x_*hybrid_position_window_.speed():0.;
   const bool powered_regrip=hybrid_phase_==2 &&
@@ -338,12 +344,30 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
   }
   const bool straight_identification=hybrid_phase_==1 &&
       hybrid_single_.phase==SinglePass::Lift && !hybrid_single_.calibrated;
+  const bool preparing_straight_identification=hybrid_phase_==1 &&
+      hybrid_single_.phase==SinglePass::VentFront &&
+      !hybrid_single_.calibrated;
+  const double measured_roll_rate=body_angular_velocity_[0];
+  const bool roll_rate_over_limit=
+      std::abs(measured_roll_rate)>=hybrid_config_.roll_rate_limit;
+  if(roll_rate_over_limit) {
+    if(hybrid_roll_rate_limit_since_<0.)
+      hybrid_roll_rate_limit_since_=clock;
+  } else {
+    // Confirmation is continuous: a single over-limit IMU sample must not be
+    // remembered and combined with a later unrelated sample.
+    hybrid_roll_rate_limit_since_=-1.;
+  }
+  const bool roll_rate_limit_confirmed=roll_rate_over_limit &&
+      hybrid_roll_rate_limit_since_>=0. &&
+      clock-hybrid_roll_rate_limit_since_>=hybrid_roll_rate_confirm_sec_;
   if(std::abs(s.roll)>=hybrid_config_.roll_limit ||
-      std::abs(body_angular_velocity_[0])>=hybrid_config_.roll_rate_limit) {
+      roll_rate_limit_confirmed) {
+    hybrid_roll_rate_limit_since_=-1.;
     requestActionCPostureRecovery(now,"hybrid hard roll/rate limit");return;
   }
   if(!hybrid_terminal_settle_ && hybrid_run_start_>=0 &&
-     action_c_direction_sign_x_*(mocap_position_[0]-hybrid_run_x_)<=-action_c_abort_reverse_travel_m_) {
+     action_c_direction_sign_x_*(locomotion_position[0]-hybrid_run_x_)<=-action_c_abort_reverse_travel_m_) {
     beginHybridTerminalSettle(now,"hybrid reverse-travel limit; score retained endpoint and retry");return;
   }
   if(!pressure_pending) hybrid_planner_.model.observe(s,hybrid_config_,equilibrium);
@@ -364,11 +388,10 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
     // flexing). Pressure release is likewise not a powered excursion. Keep
     // the absolute hard bend/rate/pitch/roll/freshness limits, but do not
     // classify either preparation boundary as a new powered extension.
-    // SlipProbe/Slide instead target an absolute 90-deg horizontal pose. A
-    // contact-dependent 110--135-deg starting bend may need more than the
-    // ordinary 20-deg Action-C excursion to reach it, so those phases retain
-    // the absolute bend/floor, rate, roll and pitch guards but do not compare
-    // against their arbitrary starting contact angle.
+    // SlipProbe/Slide use their own smaller per-arm extension bound relative
+    // to the measured contact pose. SinglePass enforces that bound while this
+    // adapter retains the absolute bend/floor, rate, roll and pitch guards;
+    // do not apply the ordinary Action-C excursion a second time here.
     safety_state.start_bend=s.bend;
     if(stopping_after_slip || unpowered_preparation)
       safety_state.floor.fill(std::max(hybrid_config_.bend_min,action_c_hard_min_bend_rad_));
@@ -377,23 +400,34 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
       hybrid_single_.identifying_straight && hybrid_single_.calibrated &&
       (hybrid_single_.phase==SinglePass::Pull ||
        hybrid_single_.phase==SinglePass::FrontCatch);
-  if(straight_identification || returning_from_straight_identification) {
-    // The one-time identification intentionally covers the interval from the
-    // grasp bend to the near-straight mechanical coordinate.  Action C's
-    // ordinary 20-deg excursion and 30-deg pulse floor remain unchanged for
-    // all later strokes; applying them here made a straight identification
-    // impossible by construction.  Keep this envelope through the first
-    // pressure-driven return as well: re-enabling the ordinary 55-deg floor
-    // one tick after Lift -> Pull classified the deliberately extended
-    // 16/12-deg pose as a fault before pressure had any time to flex it.
+  const bool reused_absolute_motion=hybrid_phase_==1 &&
+      hybrid_single_.calibrated &&
+      std::isfinite(hybrid_single_.identified_bend_target[0]) &&
+      std::isfinite(hybrid_single_.identified_bend_target[1]) &&
+      (hybrid_single_.phase==SinglePass::VentFront ||
+       hybrid_single_.phase==SinglePass::Lift ||
+       hybrid_single_.phase==SinglePass::Pull ||
+       hybrid_single_.phase==SinglePass::FrontCatch);
+  if(straight_identification || preparing_straight_identification ||
+     returning_from_straight_identification || reused_absolute_motion) {
+    // The one-time identification covers the interval from the grasp bend to
+    // the configured absolute unloading pose. Action C's old fixed-relative
+    // excursion and pulse floor are incompatible with an absolute target when
+    // the next grasp angle changes. Keep that measured envelope through the
+    // pressure-driven return; bend-rate, roll, pitch, pressure and thrust
+    // guards remain active.
     safety_state.floor.fill(0.);
     safety_config.bend_min=0.;
     double required_identification_travel=0.;
-    for(size_t j=0;j<2;++j)
+    for(size_t j=0;j<2;++j) {
+      const double absolute_target=reused_absolute_motion?
+          hybrid_single_.identified_bend_target[j]:
+          hybrid_single_config_.identification_bend;
       required_identification_travel=std::max(required_identification_travel,
           std::max(0.,hybrid_single_.reference[j]-
-              hybrid_single_config_.identification_bend)+
+              absolute_target)+
               hybrid_single_config_.identification_tolerance+2.*M_PI/180.);
+    }
     safety_config.extension_limit=std::max(safety_config.extension_limit,
         std::max(hybrid_single_config_.identification_extension_limit,
                  required_identification_travel));
@@ -439,15 +473,28 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
   // The inflated preparation boundary is still settled before motion, but is
   // deliberately not used as the displacement origin.
   if(hybrid_phase_!=1 && all_pressure && off && quiet && bottom_ready) {
-    hybrid_settled_window_.add(mocap_stamp_.toSec(),mocap_position_[0]);
+    hybrid_settled_window_.add(mocap_stamp_.toSec(),locomotion_position[0]);
     hybrid_bottom_window_.add(measured_bottom_pressure_stamp_.toSec(),s.bottom);
     hybrid_endpoint_pitch_window_.add(imu_stamp_.toSec(),s.pitch);
   } else {hybrid_settled_window_.reset();hybrid_bottom_window_.reset();hybrid_endpoint_pitch_window_.reset();}
   const bool measurement_ready=hybrid_settled_window_.stable(clock) &&
       hybrid_bottom_window_.stable(clock,1.,1.) && hybrid_endpoint_pitch_window_.stable(clock,.004,.002);
   SinglePassInput input;input.s=s;input.dt=dt;input.x=action_c_direction_sign_x_*hybrid_position_window_.mean();
-  input.remaining=hybrid_result_.goal;
+  // Give the stride scheduler the full task remainder.  hybrid_result_.goal
+  // is only the current-stroke target and used to hide a 50-mm task behind a
+  // fixed 20-mm value, so the controller could not decide whether to repeat a
+  // proven 10-mm stroke or strengthen a final 8-mm stroke toward 12 mm.
+  const double endpoint_for_remaining=hybrid_start_mean_valid_?
+      hybrid_trial_x_:hybrid_position_window_.mean();
+  input.remaining=std::max(.0001,action_c_direction_sign_x_*(
+      action_c_absolute_target_x_m_-endpoint_for_remaining));
   input.nominal_stride=hybrid_config_.stroke;
+  input.goal_conditioning_start_ratio=
+      hybrid_single_config_.goal_conditioning_start_ratio;
+  input.goal_scale_min=hybrid_single_config_.goal_scale_min;
+  input.goal_progress_max_scale=
+      hybrid_single_config_.goal_progress_max_scale;
+  input.goal_preferred_stride=hybrid_single_config_.goal_preferred_stride;
   input.height=mocap_position_[2];input.pitch_rate=body_rate[1];
   input.directional_pitch=action_c_direction_sign_x_*s.pitch;
   input.base_pressure=base_pressure_kpa_;input.speed_valid=speed_valid;
@@ -483,10 +530,15 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
       } else {
         hybrid_result_.candidate.bottom=hybrid_single_config_.bottom_kpa;
         hybrid_result_.candidate.minimum_ratio=1.;
-        hybrid_phase_=1;hybrid_run_start_=clock;hybrid_run_x_=mocap_position_[0];
+        hybrid_phase_=1;hybrid_run_start_=clock;hybrid_run_x_=locomotion_position[0];
         hybrid_start_bend_=s.bend;hybrid_pitch_start_=pitch_;
         input.s.start_bend=s.bend;input.s.pitch_start=pitch_;
         hybrid_single_.begin(input);enterState(ACTION_C_HORIZONTAL_PULL,now);
+        // begin() has now combined the full remaining task distance with the
+        // measured retained stride. Freeze that planned distance for this
+        // stroke; it must not change with bladder rocking during the motion.
+        if(std::isfinite(hybrid_single_.desired_stride))
+          hybrid_result_.goal=hybrid_single_.desired_stride;
         ROS_INFO("Hybrid single-pass motion begins: pre-inflation x %.6f, inflated x %.6f; goal %.2f mm, predicted stride %.2f mm (%s), goal scale %.2f conditioned=%d; slip probes %u, lift probes %u",
             hybrid_trial_x_,hybrid_settled_window_.mean(),
             1000.*hybrid_result_.goal,
@@ -501,6 +553,8 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
     }
   } else if(hybrid_phase_==1 && !pressure_pending) {
     const auto previous_phase=hybrid_single_.phase;
+    const bool previous_onset_identified=hybrid_single_.onset_identified;
+    const bool previous_bend_calibrated=hybrid_single_.calibrated;
     const std::array<unsigned,2> previous_samples{{hybrid_single_.onset[0].samples,hybrid_single_.onset[1].samples}};
     command=hybrid_single_.update(input,hybrid_config_,hybrid_single_config_,hybrid_planner_.model,geometry);
     if(previous_phase==SinglePass::VentFront && hybrid_single_.phase==SinglePass::Lift)
@@ -527,8 +581,20 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
       ROS_INFO("Hybrid extension onset arm %zu: %.2f N at %.1f kPa, reference %.1f deg; samples %u, next approach margin %.2f N",
           arms[j],hybrid_single_.onset[j].thrust,hybrid_single_.onset[j].pressure,
           hybrid_single_.onset[j].bend*180./M_PI,hybrid_single_.onset[j].samples,hybrid_single_config_.onset_margin_n);
+    if(!previous_onset_identified && hybrid_single_.onset_identified)
+      ROS_INFO("Hybrid paired extension-onset identification complete: front arms [%zu %zu] %.2f/%.2f N; final bend trajectory calibration remains %s",
+          arms[0],arms[1],hybrid_single_.onset[0].thrust,
+          hybrid_single_.onset[1].thrust,
+          hybrid_single_.calibrated?"complete":"pending");
+    if(!previous_bend_calibrated && hybrid_single_.calibrated)
+      ROS_INFO("Hybrid final bend trajectory calibration complete: measured absolute targets [%.1f %.1f] deg, required peak thrust [%.2f %.2f] N; paired onset identification %s",
+          hybrid_single_.identified_bend_target[0]*180./M_PI,
+          hybrid_single_.identified_bend_target[1]*180./M_PI,
+          hybrid_single_.identified_extension_thrust[0],
+          hybrid_single_.identified_extension_thrust[1],
+          hybrid_single_.onset_identified?"complete":"pending");
     if(previous_phase!=hybrid_single_.phase)
-      ROS_INFO("Hybrid single-pass trajectory phase %d -> %d; slip probes %u lift probes %u; bend [%.1f %.1f] deg, Lift reference [%.1f %.1f] deg, current extension [%.1f %.1f] deg, extension target [%.1f %.1f] deg, bend target [%.1f %.1f] deg, straight identification %d, recorded extension %.1f deg, lift %.2f N, pull %.2f N",
+      ROS_INFO("Hybrid single-pass trajectory phase %d -> %d; slip probes %u lift probes %u; bend [%.1f %.1f] deg, Lift reference [%.1f %.1f] deg, current extension [%.1f %.1f] deg, extension target [%.1f %.1f] deg, bend target [%.1f %.1f] deg, straight identification %d (measured absolute target only), learned absolute bend [%.1f %.1f] deg, learned target thrust [%.2f %.2f] N, recorded extension min/per-arm %.1f/[%.1f %.1f] deg, lift %.2f N, pull %.2f N",
           int(previous_phase),int(hybrid_single_.phase),hybrid_single_.slip_entries,hybrid_single_.lift_probe_entries,
           s.bend[0]*180./M_PI,s.bend[1]*180./M_PI,
           hybrid_single_.reference[0]*180./M_PI,hybrid_single_.reference[1]*180./M_PI,
@@ -539,7 +605,14 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
           hybrid_single_.active_bend_target[0]*180./M_PI,
           hybrid_single_.active_bend_target[1]*180./M_PI,
           hybrid_single_.identifying_straight,
-          180./M_PI*hybrid_single_.observed_extension,hybrid_single_.lift_up,hybrid_single_.pull_forward);
+          180./M_PI*hybrid_single_.identified_bend_target[0],
+          180./M_PI*hybrid_single_.identified_bend_target[1],
+          hybrid_single_.identified_extension_thrust[0],
+          hybrid_single_.identified_extension_thrust[1],
+          180./M_PI*hybrid_single_.observed_extension,
+          180./M_PI*hybrid_single_.observed_extension_by_arm[0],
+          180./M_PI*hybrid_single_.observed_extension_by_arm[1],
+          hybrid_single_.lift_up,hybrid_single_.pull_forward);
     const double remaining=action_c_direction_sign_x_*(action_c_absolute_target_x_m_-hybrid_position_window_.mean());
     const double rocking=clamp(action_c_direction_sign_x_*std::max(0.,-hybrid_contact_position_[2])*
         (std::sin(s.pitch)-std::sin(hybrid_pitch_start_)),0.,.03);
@@ -616,7 +689,8 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
   publishPressureTarget(inchworm_pressure_,std::numeric_limits<double>::infinity());
   publishBottomTarget(s.bottom_command);
   publishCorrectionThrust(inchworm_thrust_);
-  // Versioned diagnostics: v2 is not the legacy MPC array.
+  // Versioned diagnostics: v3 replaces the obsolete contact-limited
+  // calibration flag with the two measured target-reach thrusts.
   std_msgs::Float32MultiArray debug;
   double rear_command=0.;for(size_t arm=0;arm<ARM_COUNT;++arm)
     if(!inchworm_front_[arm]) rear_command+=.5*inchworm_pressure_[arm];
@@ -625,7 +699,7 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
     fx+=std::max(0.,f.forward)*inchworm_thrust_[arms[j]];
     up+=std::max(0.,f.up)*inchworm_thrust_[arms[j]];
   }
-  debug.data={2.f,float(hybrid_phase_),float(hybrid_single_.phase),float(hybrid_single_.slip_entries),float(hybrid_single_.lift_probe_entries),
+  debug.data={3.f,float(hybrid_phase_),float(hybrid_single_.phase),float(hybrid_single_.slip_entries),float(hybrid_single_.lift_probe_entries),
       float(hybrid_single_.ramp),float(fx),float(up),float((fx+up)>1e-6?fx/(fx+up):1.),
       float(rear_command),float(hybrid_single_config_.bottom_kpa),float(s.speed),
       float(s.bend[0]),float(s.bend[1]),float(s.rate[0]),float(s.rate[1]),
@@ -663,7 +737,19 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
       float(hybrid_single_.goal_extension_scale),
       float(hybrid_single_.goal_pull_envelope),
       float(hybrid_single_.goal_conditioned),
-      float(hybrid_single_.stride_estimate_measured)};
+      float(hybrid_single_.stride_estimate_measured),
+      float(hybrid_single_.identified_extension_thrust[0]),
+      float(hybrid_single_.identified_extension_thrust[1]),
+      float(hybrid_single_.observed_extension_by_arm[0]),
+      float(hybrid_single_.observed_extension_by_arm[1]),
+      float(hybrid_single_.identified_bend_target[0]),
+      float(hybrid_single_.identified_bend_target[1]),
+      float(hybrid_single_.onset_identified),
+      float(hybrid_single_.onset_approach_ready[0]),
+      float(hybrid_single_.onset_approach_ready[1]),
+      float(hybrid_single_.roll_risk_time),
+      float(hybrid_roll_rate_limit_since_>=0. ?
+          clock-hybrid_roll_rate_limit_since_:0.)};
   hybrid_diagnostic_pub_.publish(debug);
   ROS_INFO_THROTTLE(.5,"Hybrid single-pass: phase=%d motion=%d T [%.2f %.2f] P [%.1f %.1f] rear cmd/measured %.1f/%.1f bottom %.1f, bend [%.1f %.1f] deg ref [%.1f %.1f] deg dExt [%.1f %.1f]/[%.1f %.1f] deg bendTarget [%.1f %.1f] deg identifyStraight=%d targetLatch=%d armLatch=[%d %d] slopeOverlap=%d prefill [%.1f %.1f] angleHoldP [%.1f %.1f] kPa dirPitch=%.1f deg rate [%.1f %.1f] deg/s, rear vent prediction %.2f/%.2f s, Fx %.2f Fup %.2f N; slip/lift probes %u/%u",
       hybrid_phase_,int(hybrid_single_.phase),inchworm_thrust_[arms[0]],inchworm_thrust_[arms[1]],
@@ -691,4 +777,24 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
       hybrid_single_.predicted_lift_completion_seconds,
       hybrid_single_.rear_vent_lead_seconds,
       fx,up,hybrid_single_.slip_entries,hybrid_single_.lift_probe_entries);
+  if(hybrid_single_.phase==hugmy::hybrid::SinglePass::Lift &&
+     hybrid_single_.identifying_straight)
+    ROS_INFO_THROTTLE(.5,
+        "Hybrid initial extension-rate FB: filtered [%.1f %.1f] deg/s, target %.1f +/- %.1f deg/s, thrust slew [%.2f %.2f] N/s",
+        hybrid_single_.identification_extension_rate_filtered[0]*180./M_PI,
+        hybrid_single_.identification_extension_rate_filtered[1]*180./M_PI,
+        hybrid_single_config_.extension_rate*180./M_PI,
+        hybrid_single_config_.identification_rate_deadband*180./M_PI,
+        hybrid_single_.identification_rate_command_slope[0],
+        hybrid_single_.identification_rate_command_slope[1]);
+  if(hybrid_single_.phase==hugmy::hybrid::SinglePass::SlipProbe)
+    ROS_INFO_THROTTLE(.5,
+        "Hybrid slip common ramp: scale %.2f pressure_wait=%d extension_brake=%d error [%.1f %.1f] kPa, extension remaining [%.1f %.1f] deg",
+        hybrid_single_.slip_ramp_scale,
+        hybrid_single_.slip_waiting_for_pressure,
+        hybrid_single_.slip_extension_braking,
+        hybrid_single_.slip_pressure_error[0],
+        hybrid_single_.slip_pressure_error[1],
+        hybrid_single_.slip_extension_remaining[0]*180./M_PI,
+        hybrid_single_.slip_extension_remaining[1]*180./M_PI);
 }

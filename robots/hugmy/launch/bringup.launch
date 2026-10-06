@@ -23,20 +23,26 @@
   <arg name="hybrid_rear_grasp_sec" default="1.0"/>
   <arg name="hybrid_rear_low_kpa" default="0.0"/>
   <arg name="hybrid_rear_vent_lead_margin_sec" default="0.10"/>
-  <arg name="hybrid_rear_vent_start_margin_rad" default="0.08726646259971647"/>
+  <arg name="hybrid_rear_vent_start_margin_rad" default="0.03490658503988659"/>
   <arg name="hybrid_locomotion_initial_m" default="1.0"/>
   <arg name="hybrid_locomotion_retain_grasp_pressure" default="false"/>
   <arg name="hybrid_locomotion_regrip_timeout_sec" default="20.0"/>
   <arg name="hybrid_lift_pressure_gain_kpa_s_rad" default="20.0"/>
-  <arg name="hybrid_lift_probe_sec" default="10.0"/>
+  <arg name="hybrid_slip_min_progress_m" default="0.002"/>
+  <arg name="hybrid_slip_min_speed_m_s" default="0.0015"/>
+  <arg name="hybrid_lift_probe_sec" default="15.0"/>
   <arg name="hybrid_lift_search_rate_n_s" default="0.7"/>
   <arg name="hybrid_reused_lift_rise_n_s" default="8.0"/>
   <arg name="hybrid_reused_lift_brake_margin_rad" default="0.06981317007977318"/>
   <arg name="hybrid_pull_min_sec" default="0.5"/>
   <arg name="hybrid_probe_extension_rad" default="0.13962634015954636"/>
-  <arg name="hybrid_lift_identification_bend_rad" default="0.3490658503988659"/>
-  <arg name="hybrid_lift_identification_tolerance_rad" default="0.017453292519943295"/>
+  <arg name="hybrid_lift_identification_bend_rad" default="0.7853981633974483"/>
+  <arg name="hybrid_lift_identification_tolerance_rad" default="0.03490658503988659"/>
   <arg name="hybrid_lift_identification_extension_limit_rad" default="1.3962634015954636"/>
+  <arg name="hybrid_lift_identification_rate_feedback_min_bend_rad" default="0.7853981633974483"/>
+  <arg name="hybrid_lift_identification_rate_filter_tau_sec" default="0.25"/>
+  <arg name="hybrid_lift_identification_rate_confirm_sec" default="0.15"/>
+  <arg name="hybrid_slip_probe_max_thrust_n" default="5.0"/>
   <arg name="hybrid_slip_probe_max_pressure_kpa" default="40.0"/>
   <!-- Arm pressure may reach 40 kPa during the horizontal slip test.  The
        bottom inflatable has its own independent 30-kPa limit. -->
@@ -63,6 +69,9 @@
   <arg name="flight_controller_port" default="/dev/flight_controller" />
   <arg name="start_spinal_bridge" default="true" />
   <arg name="start_mocap" default="true" />
+  <arg name="track_hand_mocap" default="false" />
+  <arg name="mocap_robot_rigid_body_id" default="1" />
+  <arg name="mocap_hand_rigid_body_id" default="2" />
   <arg name="robot_ns" value="quadrotor$(arg robot_id)" />
   <arg name="config_dir" default="$(find hugmy)/config" />
   <arg name="mujoco_model" default="$(find hugmy)/mujoco/hugmy2/robot.xml" />
@@ -176,6 +185,9 @@
     <arg name="flight_controller_port" value="$(arg flight_controller_port)" />
     <arg name="start_spinal_bridge" value="$(arg start_spinal_bridge)" />
     <arg name="start_mocap" value="$(arg start_mocap)" />
+    <arg name="track_hand_mocap" value="$(arg track_hand_mocap)" />
+    <arg name="mocap_robot_rigid_body_id" value="$(arg mocap_robot_rigid_body_id)" />
+    <arg name="mocap_hand_rigid_body_id" value="$(arg mocap_hand_rigid_body_id)" />
   </include >
   <!-- sensors.launch.xml loads the generic mocap defaults after Simulation.yaml.
        Restore the simulation startup grace so delayed first ground-truth data
@@ -236,6 +248,8 @@
     <arg name="hybrid_locomotion_retain_grasp_pressure" value="$(arg hybrid_locomotion_retain_grasp_pressure)"/>
     <arg name="hybrid_locomotion_regrip_timeout_sec" value="$(arg hybrid_locomotion_regrip_timeout_sec)"/>
     <arg name="hybrid_lift_pressure_gain_kpa_s_rad" value="$(arg hybrid_lift_pressure_gain_kpa_s_rad)"/>
+    <arg name="hybrid_slip_min_progress_m" value="$(arg hybrid_slip_min_progress_m)"/>
+    <arg name="hybrid_slip_min_speed_m_s" value="$(arg hybrid_slip_min_speed_m_s)"/>
     <arg name="hybrid_lift_probe_sec" value="$(arg hybrid_lift_probe_sec)"/>
     <arg name="hybrid_lift_search_rate_n_s" value="$(arg hybrid_lift_search_rate_n_s)"/>
     <arg name="hybrid_reused_lift_rise_n_s" value="$(arg hybrid_reused_lift_rise_n_s)"/>
@@ -245,6 +259,10 @@
     <arg name="hybrid_lift_identification_bend_rad" value="$(arg hybrid_lift_identification_bend_rad)"/>
     <arg name="hybrid_lift_identification_tolerance_rad" value="$(arg hybrid_lift_identification_tolerance_rad)"/>
     <arg name="hybrid_lift_identification_extension_limit_rad" value="$(arg hybrid_lift_identification_extension_limit_rad)"/>
+    <arg name="hybrid_lift_identification_rate_feedback_min_bend_rad" value="$(arg hybrid_lift_identification_rate_feedback_min_bend_rad)"/>
+    <arg name="hybrid_lift_identification_rate_filter_tau_sec" value="$(arg hybrid_lift_identification_rate_filter_tau_sec)"/>
+    <arg name="hybrid_lift_identification_rate_confirm_sec" value="$(arg hybrid_lift_identification_rate_confirm_sec)"/>
+    <arg name="hybrid_slip_probe_max_thrust_n" value="$(arg hybrid_slip_probe_max_thrust_n)"/>
     <arg name="hybrid_slip_probe_max_pressure_kpa" value="$(arg hybrid_slip_probe_max_pressure_kpa)"/>
     <arg name="maximum_pressure_kpa" value="$(arg maximum_pressure_kpa)"/>
     <arg name="correction_pair_reverse_spinal_mapping"

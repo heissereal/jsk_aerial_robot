@@ -1,0 +1,50 @@
+<launch>
+  <arg name="robot_ns" default="quadrotor" />
+  <arg name="start_joy" default="true" />
+  <arg name="joy_dev" default="/dev/input/js0" />
+  <arg name="enable_button" default="4" />
+  <arg name="disable_button" default="5" />
+  <arg name="forward_button" default="3" />
+  <arg name="stop_button" default="1" />
+  <arg name="forward_distance_m" default="0.100" />
+  <arg name="maximum_pressure_kpa" default="40.0" />
+  <arg name="bottom_pressure_kpa" default="30.0" />
+  <arg name="hybrid_locomotion_outer_enabled" default="false" />
+
+  <!-- ID 2 contributes XY translation only. The controller forces the target
+       attitude to [0, 0, 0] and retains Spinal as its attitude source. -->
+  <include file="$(find hugmy)/launch/attitude_pressure_controller.launch">
+    <arg name="robot_ns" value="$(arg robot_ns)" />
+    <arg name="inchworm_action_c" value="true" />
+    <arg name="hybrid_locomotion_outer_enabled"
+         value="$(arg hybrid_locomotion_outer_enabled)" />
+    <arg name="hybrid_locomotion_initial_bottom_kpa"
+         value="$(arg bottom_pressure_kpa)" />
+    <arg name="maximum_pressure_kpa" value="$(arg maximum_pressure_kpa)" />
+    <arg name="use_mocap_attitude_for_inchworm" value="false" />
+    <arg name="hand_relative_mocap_enabled" value="true" />
+    <arg name="hand_target_selects_direction" value="true" />
+  </include>
+
+  <group ns="$(arg robot_ns)">
+    <node if="$(arg start_joy)"
+          pkg="joy"
+          type="joy_node"
+          name="human_arm_joy_node"
+          output="screen">
+      <param name="dev" value="$(arg joy_dev)" />
+      <param name="coalesce_interval" value="0.025" />
+    </node>
+
+    <node pkg="hugmy"
+          type="joy_human_arm_locomotion_node"
+          name="joy_human_arm_locomotion"
+          output="screen">
+      <param name="enable_button" value="$(arg enable_button)" />
+      <param name="disable_button" value="$(arg disable_button)" />
+      <param name="forward_button" value="$(arg forward_button)" />
+      <param name="stop_button" value="$(arg stop_button)" />
+      <param name="forward_distance_m" value="$(arg forward_distance_m)" />
+    </node>
+  </group>
+</launch>

@@ -7,6 +7,9 @@
   <arg name="flight_controller_port" default="/dev/flight_controller" />
   <arg name="start_spinal_bridge" default="true" />
   <arg name="start_mocap" default="true" />
+  <arg name="track_hand_mocap" default="false" />
+  <arg name="mocap_robot_rigid_body_id" default="1" />
+  <arg name="mocap_hand_rigid_body_id" default="2" />
 
   <group ns="$(arg robot_ns)">
     <group if="$(arg real_machine)">
@@ -20,7 +23,14 @@
 
         <!-- mocap -->
         <include file="$(find aerial_robot_base)/launch/external_module/mocap.launch"
-                 if="$(arg start_mocap)" />
+                 if="$(eval arg('start_mocap') and not arg('track_hand_mocap'))">
+          <arg name="robot_id" value="$(arg mocap_robot_rigid_body_id)" />
+        </include>
+        <include file="$(find hugmy)/launch/includes/human_arm_mocap.launch.xml"
+                 if="$(eval arg('start_mocap') and arg('track_hand_mocap'))">
+          <arg name="robot_rigid_body_id" value="$(arg mocap_robot_rigid_body_id)" />
+          <arg name="hand_rigid_body_id" value="$(arg mocap_hand_rigid_body_id)" />
+        </include>
       </group>
     </group>
 

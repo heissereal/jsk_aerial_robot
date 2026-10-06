@@ -58,6 +58,9 @@ private:
   void mocapCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
   void rootMocapCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
   void updateMocap(const geometry_msgs::PoseStamped::ConstPtr& msg);
+  void handMocapCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
+  void rootHandMocapCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
+  void updateHandMocap(const geometry_msgs::PoseStamped::ConstPtr& msg);
   bool enableCallback(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res);
   void update(const ros::TimerEvent& event);
 
@@ -118,6 +121,9 @@ private:
                       bool neurons_fresh);
   bool pressureReached(const PressureArray& target) const;
   bool actionCPressureReady(const PressureArray& target, const ros::Time& now);
+  Vector3 locomotionPosition() const;
+  bool locomotionMocapReady() const;
+  bool locomotionMocapFresh(const ros::Time& now) const;
   double inchwormTravel() const;
 
   static Vector3 cross(const Vector3& lhs, const Vector3& rhs);
@@ -131,11 +137,13 @@ private:
   ros::Subscriber grip_state_sub_;
   ros::Subscriber bottom_pressure_sub_;
   ros::Subscriber inchworm_command_sub_, mocap_sub_, root_mocap_sub_;
+  ros::Subscriber hand_mocap_sub_, root_hand_mocap_sub_;
   ros::Publisher pressure_target_pub_, rpy_pub_, attitude_error_pub_;
   ros::Publisher bottom_target_pub_, bottom_direction_pub_;
   ros::Publisher arm_relative_angle_pub_, arm_target_relative_angle_pub_;
   ros::Publisher arm_shape_error_pub_, arm_shape_active_pub_;
   ros::Publisher arm_bend_angle_deg_pub_;
+  ros::Publisher hand_relative_position_pub_;
   ros::Publisher desired_moment_pub_, achieved_moment_pub_;
   ros::Publisher correction_thrust_pub_, root_correction_thrust_pub_;
   ros::Publisher pwm_test_pub_, root_pwm_test_pub_;
@@ -174,13 +182,14 @@ private:
   ros::Time imu_stamp_, thrust_stamp_;
   ros::Time state_start_, ready_start_, last_correction_end_, last_angle_progress_;
   ros::Time body_motion_last_seen_;
-  ros::Time mocap_stamp_;
+  ros::Time mocap_stamp_, hand_mocap_stamp_;
   ros::Time inchworm_rate_stamp_, inchworm_motion_last_seen_;
   ros::Time action_b_pulse_phase_start_;
   ros::Time action_b_shape_phase_start_;
   ros::Time action_b_limit_start_;
   ros::Time action_b_lift_settle_start_;
   Vector3 mocap_position_{{0.0, 0.0, 0.0}};
+  Vector3 hand_mocap_position_{{0.0, 0.0, 0.0}};
   Vector3 inchworm_start_position_{{0.0, 0.0, 0.0}};
   Vector3 inchworm_overall_start_position_{{0.0, 0.0, 0.0}};
   Vector2 inchworm_direction_body_{{1.0, 0.0}};
@@ -483,6 +492,11 @@ private:
   double hybrid_last_x_ = 0., hybrid_last_stamp_ = -1., hybrid_speed_ = 0.;
   double hybrid_pitch_start_ = 0., hybrid_recovery_start_ = -1., hybrid_pre_recovery_dx_ = 0.;
   double hybrid_recovery_x_ = 0.;
+  // Confirm a roll-rate violation before handing control to posture recovery.
+  // Absolute roll remains an immediate guard; this timer rejects a one-sample
+  // impact/IMU spike without weakening the configured angular-rate limit.
+  double hybrid_roll_rate_confirm_sec_ = 0.10;
+  double hybrid_roll_rate_limit_since_ = -1.;
   double hybrid_effort_stamp_ = -1.;
   PressureArray hybrid_sent_thrust_{};
   bool hybrid_trial_active_ = false;
@@ -564,6 +578,11 @@ private:
   uint8_t action_d_pulse_phase_ = 0;
   bool mocap_topic_route_initialized_ = false;
   bool use_root_mocap_topic_ = false;
+  bool hand_mocap_topic_route_initialized_ = false;
+  bool use_root_hand_mocap_topic_ = false;
+  bool hand_relative_mocap_enabled_ = false;
+  bool hand_target_selects_direction_ = false;
+  double hand_progress_direction_sign_x_ = 1.0;
   bool use_mocap_attitude_for_inchworm_ = false;
   double fixed_test_pressure_kpa_, fixed_test_thrust_n_;
   int fixed_test_arm_index_;
@@ -579,7 +598,8 @@ private:
   bool spinal_topic_route_initialized_ = false;
   bool gravity_compensation_, enabled_ = false;
   bool grasp_baseline_valid_ = false;
-  bool mocap_received_ = false, inchworm_active_ = false;
+  bool mocap_received_ = false, hand_mocap_received_ = false;
+  bool inchworm_active_ = false;
   bool inchworm_motion_detected_ = false;
   double inchworm_target_distance_m_ = 0.002;
   double inchworm_total_target_distance_m_ = 0.002;

@@ -7,6 +7,8 @@ import tempfile
 root=Path(__file__).resolve().parents[1]
 src=(root/'src/control/attitude_pressure_controller.cpp').read_text()
 hybrid=(root/'src/control/hybrid_locomotion.cpp').read_text()
+mpc=(root/'include/hugmy/control/hybrid_locomotion_mpc.h').read_text()
+config=(root/'config/attitude_pressure_controller.yaml').read_text()
 transfer=hybrid[hybrid.index('  if(hybrid_phase_==2) {'):hybrid.index('  publishPressureTarget(inchworm_pressure_',hybrid.index('  if(hybrid_phase_==2) {'))]
 assert 'verifiedPairRollMoments(transfer_moment)' in transfer
 assert 'transfer_roll_worsening?' in transfer
@@ -16,6 +18,13 @@ assert 'startInchwormCycle(now);return;' in transfer
 assert 'hybrid_terminal_retry_' in transfer
 assert 'beginHybridTerminalSettle(now,"hybrid measured bend/rate/tilt guard; score retained endpoint and retry")' in hybrid
 assert 'clock-hybrid_task_start_>hybrid_config_.task_timeout' not in hybrid
+# Hybrid C is an anytime controller. A completed recovery/retry must retain
+# the original distance goal indefinitely; only phase safety guards, hard
+# faults, target completion or an operator stop may terminate the task.
+for text in (src,hybrid,mpc,config):
+    assert 'hybrid_config_.task_timeout' not in text
+    assert 'hybrid_locomotion_task_timeout_sec' not in text
+assert 'task_timeout=' not in mpc
 begin=src.index('void AttitudePressureController::stopInchwormToGrasp(')
 stop=src[begin:src.index('void AttitudePressureController::requestActionCPostureRecovery(',begin)]
 code=r'''

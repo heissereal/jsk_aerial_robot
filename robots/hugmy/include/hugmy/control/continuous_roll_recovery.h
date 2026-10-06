@@ -21,7 +21,7 @@ inline double recoveryRollRate(double roll, double pitch,
 }
 struct RollRecoveryConfig {
   bool learn_response = true;
-  double angle_gain = 1.0; // (rad/s)/rad
+  double angle_gain = 0.65; // (rad/s)/rad; gentler final approach near the roll target
   double max_target_rate = 0.12; // rad/s; distinct from emergency limit
   double rate_kp = 4.0, rate_ki = 3.0; // N/(rad/s), N/rad
   double integral_rate = 0.30; // N/s; the ONE integrator's slew ceiling

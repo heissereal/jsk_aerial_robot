@@ -12,7 +12,7 @@ def main():
     source = (root / 'src/control/attitude_pressure_controller.cpp').read_text()
     config = (root / 'config/attitude_pressure_controller.yaml').read_text()
     for key, value in [('correction_trigger_angle_rad', math.radians(8)),
-                       ('action_c_posture_recovery_trigger_rad', math.radians(8)),
+                       ('action_c_posture_recovery_trigger_rad', math.radians(10)),
                        ('correction_stop_angle_rad', math.radians(5)),
                        ('action_c_posture_resume_rad', math.radians(3)),
                        ('correction_trigger_confirm_sec', .3)]:
@@ -44,7 +44,7 @@ struct Controller {
   bool stable_c_roll=false, c_recovery_requested=true, hard_roll=false;
   struct {bool worsening=true;} action_c_roll_trend_; // Legacy/non-C test fixture.
   double correction_trigger_angle_=8*M_PI/180.;
-  double action_c_posture_recovery_trigger_rad_=8*M_PI/180.;
+  double action_c_posture_recovery_trigger_rad_=10*M_PI/180.;
   double action_c_posture_resume_rad_=3*M_PI/180., correction_stop_angle_=5*M_PI/180.;
   double correction_trigger_confirm_sec_=.3;
   double action_c_pre_roll_rate_tolerance_rad_s_=10*M_PI/180.;
@@ -83,39 +83,41 @@ int main() {
   gate.reset(); assert(!gate.update(true,2.,.3));
   for (bool pending: {false,true}) {
     Controller c; c.action_c_resume_pending_=pending;
+    const double below=(pending?9.:7.)*deg;
+    const double above=(pending?11.:9.)*deg;
     assert(!c.entry(6.9*deg,{0.}));
-    assert(!c.entry(8*deg,{1.}));
-    assert(!c.entry(9*deg,{2.}));
-    assert(!c.entry(9*deg,{2.29}));
-    assert(c.entry(9*deg,{2.31}));
-    assert(!c.entry(7.9*deg,{2.32}));
-    assert(!c.entry(9*deg,{3.}));
+    assert(!c.entry(below,{1.}));
+    assert(!c.entry(above,{2.}));
+    assert(!c.entry(above,{2.29}));
+    assert(c.entry(above,{2.31}));
+    assert(!c.entry(below,{2.32}));
+    assert(!c.entry(above,{3.}));
     assert(!c.entry(7*deg,{3.2}));
-    assert(!c.entry(9*deg,{3.3})); // Short excursions never accumulate.
-    c.body_imu_fresh=false; assert(!c.entry(9*deg,{4.}));
-    c.body_imu_fresh=true; assert(!c.entry(9*deg,{5.}));
-    assert(c.entry(9*deg,{5.31}));
+    assert(!c.entry(above,{3.3})); // Short excursions never accumulate.
+    c.body_imu_fresh=false; assert(!c.entry(above,{4.}));
+    c.body_imu_fresh=true; assert(!c.entry(above,{5.}));
+    assert(c.entry(above,{5.31}));
     const double band=pending?c.action_c_posture_resume_rad_:c.correction_stop_angle_;
     assert(c.finished(band) && !c.finished(band+.1*deg));
   }
   Controller c;
   c.action_c_resume_pending_=true;
   c.recovery_bottom_ready=false; c.recovery_settled=false;
-  assert(!c.entry(9*deg,{.7}));
-  assert(!c.entry(9*deg,{1.1})); // No correction while bottom is exhausting.
+  assert(!c.entry(11*deg,{.7}));
+  assert(!c.entry(11*deg,{1.1})); // No correction while bottom is exhausting.
   assert(!c.resume(5*deg,0.,{.7}));
   assert(!c.resume(5*deg,0.,{1.1})); // No early reinflation, either.
   c.recovery_bottom_ready=true; c.recovery_settled=true;
   assert(!c.resume(5.8*deg,0.,{1.}));
   assert(c.resume(5.8*deg,0.,{1.31})); // Regrasp rebound is not a deadlock.
-  assert(!c.resume(8.1*deg,0.,{2.}));
+  assert(c.resume(8.1*deg,0.,{2.})); // stable offset below the new 10-deg trigger
   assert(!c.resume(5*deg,.2,{3.})); // Wait for settled gyro, too.
   assert(!c.resume(5*deg,0.,{4.}));
   c.grasp_pressure_ready=false; assert(!c.resume(5*deg,0.,{4.31}));
   c.grasp_pressure_ready=true; assert(!c.resume(5*deg,0.,{5.}));
   assert(c.resume(5*deg,0.,{5.31}));
   c.action_c_resume_pending_=false; assert(!c.resume(5*deg,0.,{6.}));
-  // New C gate must be consistent at GRASP: stable >8 deg can resume,
+  // New C gate must be consistent at GRASP: stable >10 deg can resume,
   // whereas worsening roll still enters correction. A/B/D keep legacy mode.
   Controller stable;stable.action_c_resume_pending_=true;
   stable.stable_c_roll=true;stable.c_recovery_requested=false;
@@ -154,7 +156,7 @@ int main() {
   assisted.recovery_pressure_fresh=false;assert(!assisted.resume(0.,0.,{1.3}));
   assisted.recovery_pressure_fresh=true;assisted.continuous_recovery_waiting_for_settle_=false;
   assert(!assisted.resume(0.,0.,{3.})); // hard fault remains blocked, not auto-rearmed
-  std::puts("PASS: 8-deg entry, C 3-deg success, soft-timeout stable wait/resume, hard-fault block and fresh sensor gates");
+  std::puts("PASS: legacy 8-deg/C 10-deg entry, C 3-deg success, stable wait/resume, hard-fault block and fresh sensor gates");
 }
 '''
     for key, value in {
