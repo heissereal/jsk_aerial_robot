@@ -35,7 +35,7 @@ hybrid_slip_seed_pull_max_n: 3.0        # failed static-slip endpoint is not cop
 # comparable retained measurement replaces it online. Breakaway thrust is
 # unchanged; motion 2 uses a shorter reach and motion 3 tapers its common
 # impulse while pressure regrips.
-hybrid_goal_scale_min: 0.25
+hybrid_goal_scale_min: 0.30 # final correction: keep enough pull to avoid repeated ineffective weak strokes
 # Repeat the proven full stroke until only a genuinely short final correction
 # remains. With a nominal 20-mm stride, 16--17 mm remaining should take one
 # full stroke (minimum cycle count), not shrink early into repeated 1-mm steps.

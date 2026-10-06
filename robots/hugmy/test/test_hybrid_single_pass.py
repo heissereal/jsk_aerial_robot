@@ -78,7 +78,9 @@ int main(){
  nominal_goal.begin(nominal_input);
  assert(nominal_goal.goal_conditioned &&
         !nominal_goal.stride_estimate_measured &&
-        std::abs(nominal_goal.predicted_stride-.020)<1e-9);
+        std::abs(nominal_goal.predicted_stride-.020)<1e-9 &&
+        std::abs(nominal_goal.desired_stride-.005)<1e-9 &&
+        std::abs(nominal_goal.goal_scale-.30)<1e-9);
  // Stable endpoint noise must not turn an essentially nominal 20-mm stroke
  // into a final-goal special case, because special cases are intentionally
  // excluded from trajectory-candidate comparison.

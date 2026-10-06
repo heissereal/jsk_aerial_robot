@@ -159,8 +159,9 @@ Gaussian processによるBayesian最適化ではない。既存の圧力応答�
 両腕が実測目標へ到達したときの最大推力を保存し、2回目以降はその手前まで
 高速に接近してから角度・角速度FBへ接続する。初回同定ではbend 45度以上に限って
 角速度スパイクを検出した制御周期は推力増加を停止する。0.25秒で平滑化した伸展速度を
-0.20 rad/sへ追従させ、遅い間は最大0.7 N/sで探索、目標帯では保持する。高速伸展には
-まず最大0.7 N/sで減力し、0.15秒継続した場合は最大3 N/sまで許す。45度未満では角速度を推力整形に使わず、
+0.20 rad/sへ追従させ、遅い間は最大0.7 N/sで探索、目標帯および高速伸展中は推力を保持する。
+高速時に推力を減らして反動を作らず、独立したroll・絶対角・ハード角速度保護に安全停止を任せる。
+45度未満では角速度を推力整形に使わず、
 45度目標への実測到達だけを完了条件とする。
 
 ## 後方圧力と底面の設定
@@ -181,7 +182,8 @@ Gaussian processによるBayesian最適化ではない。既存の圧力応答�
 | `hybrid_slip_probe_max_pressure_kpa` | 40 kPa | 滑り試験中のアーム圧上限。全体アーム圧上限との小さい方を使用し、底面30 kPa上限とは独立 |
 | `hybrid_lift_probe_sec` | 15 s | 減圧後の安全な角速度FB伸展の最長時間 |
 | `hybrid_lift_identification_tracking_start_rad` | 0.1396 rad | 相対8度は伸展開始の検出だけに使い、motion 2完了には使わない |
-| `hybrid_goal_conditioning_start_ratio` | 0.90 | 予測strideの90%未満だけを短い最終strokeとして整形し、通常長の試行は最適化へ記録 |
+| `hybrid_goal_conditioning_start_ratio` | 0.55 | 予測strideの55%未満を短い終端strokeとして直接整形し、それ以上は残距離分割で必要回数を減らす |
+| `hybrid_goal_scale_min` | 0.30 | 終端strokeの最小倍率。20 mm基準なら6 mm相当を下限にして微弱反復を避ける |
 | `hybrid_goal_preferred_stride_m` | 0.010 m | 安定strideがこれ未満の場合に段階的に近づける効率基準。固定指令値ではない |
 | `hybrid_goal_progress_max_scale` | 1.5 | 実測strideから1回で変更できる比の上限。通常は残距離分割から1.0〜1.5未満を算出 |
 | `hybrid_front_vent_timeout_sec` | 30 s | 停止・減圧それぞれの待ち時間上限 |
@@ -195,10 +197,10 @@ Gaussian processによるBayesian最適化ではない。既存の圧力応答�
 | `hybrid_lift_search_rate_n_s` | 0.7 N/s | 初回同定の探索増加率 |
 | `hybrid_lift_identification_rate_feedback_min_bend_rad` | 0.7854 rad | 初回同定で角速度FBを使う最小bend角（45度） |
 | `hybrid_lift_identification_rate_filter_tau_sec` | 0.25 s | 初回同定の伸展角速度ローパス時定数 |
-| `hybrid_lift_identification_rate_confirm_sec` | 0.15 s | 継続高速時に3 N/sの減力上限を許す確認時間 |
+| `hybrid_lift_identification_rate_confirm_sec` | 0.15 s | 継続高速を確認して推力増加を保持へ切り替える時間 |
 | `hybrid_lift_identification_rate_deadband_rad_s` | 0.0349 rad/s | 目標伸展速度の保持帯（±2 deg/s） |
-| `hybrid_lift_identification_rate_control_gain_n_rad` | 1.5 N/rad | 伸展速度超過から推力減少率への変換ゲイン |
-| `hybrid_lift_identification_rate_control_fall_n_s` | 3.0 N/s | 初回速度FBによる最大推力減少率 |
+| `hybrid_lift_identification_rate_control_gain_n_rad` | 1.5 N/rad | 互換設定。通常の初回速度FBは高速時に推力を保持する |
+| `hybrid_lift_identification_rate_control_fall_n_s` | 3.0 N/s | 互換上限。通常の初回速度FBでは使用せず、安全保護は別系統で行う |
 | `hybrid_reused_lift_rise_n_s` | 8.0 N/s | 2回目以降のAction-C相当の増加率 |
 | `hybrid_reused_lift_hold_pressure_max_kpa` | 10 kPa | motion 2で伸展開始後の予測ブレーキと、個別目標へ到達したアームの角度保持圧上限 |
 | `hybrid_lift_approach_rate_n_s` | 2.0 N/s | 初回中に学習済み開始推力へ接近する場合の速度 |

@@ -92,7 +92,7 @@ struct SinglePassConfig {
   // replaced by a comparable retained measurement when available. Keep the
   // breakaway force intact, shorten the motion-2 reach, then taper the
   // motion-3 impulse while pressure completes the regrasp.
-  double goal_scale_min=.25, goal_conditioning_start_ratio=.55;
+  double goal_scale_min=.30, goal_conditioning_start_ratio=.55;
   // A known baseline stroke is repeated while the goal is far away.  Only
   // when the whole remaining distance fits in one bounded stronger stroke do
   // we scale up to finish it, e.g. 12 mm remaining after an 8-mm baseline.
@@ -375,7 +375,7 @@ struct SinglePassInput {
   double remaining=std::numeric_limits<double>::infinity();
   double nominal_stride=.02;
   double goal_conditioning_start_ratio=.55;
-  double goal_scale_min=.25, goal_progress_max_scale=1.5;
+  double goal_scale_min=.30, goal_progress_max_scale=1.5;
   double goal_preferred_stride=.010;
   // Positive is pitch in the requested travel direction.  A negative value
   // means the front direction is downhill in the body convention observed on

@@ -794,7 +794,7 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   pnh_.param("hybrid_slip_seed_pull_max_n",
       hybrid_single_config_.slip_seed_pull_max,3.0);
   pnh_.param("hybrid_goal_scale_min",
-      hybrid_single_config_.goal_scale_min,.25);
+      hybrid_single_config_.goal_scale_min,.30);
   pnh_.param("hybrid_goal_conditioning_start_ratio",
       hybrid_single_config_.goal_conditioning_start_ratio,.55);
   pnh_.param("hybrid_goal_progress_max_scale",
