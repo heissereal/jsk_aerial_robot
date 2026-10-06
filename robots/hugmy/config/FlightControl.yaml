@@ -8,7 +8,7 @@ controller:
   # First straighten the compliant arms with sub-hover thrust, then enter the
   # normal takeoff controller only after every rotor points sufficiently up.
   takeoff_pre_tension:
-    enabled: true
+    enabled: false
     thrust: 3.0
     min_rotor_normal_z: 0.6
     max_rotor_normal_z_spread: 0.1

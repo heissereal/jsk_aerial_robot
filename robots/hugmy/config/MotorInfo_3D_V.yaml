@@ -9,7 +9,7 @@ motor_info:
   positive_thrust_below_neutral: true
   # Normal flight allocation is positive-only. Reverse thrust remains
   # available exclusively through the direct PwmTest path.
-  min_thrust: 0.0
+  min_thrust: 0.5
   force_landing_thrust: 1.0
 
   # The stored coefficients describe F(PWM), so the controller uses the

@@ -133,7 +133,8 @@ add_custom_command(
     ${PROJECT_SOURCE_DIR}/urdf/mesh/long_cabble_carrier_and_moter_mount.stl
     ${PROJECT_SOURCE_DIR}/urdf/mesh/prop_5inch.dae
   WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
-add_custom_target(generate_hugmy_mujoco_model ALL DEPENDS ${HUGMY_MUJOCO_MODEL})
+# add_custom_target(generate_hugmy_mujoco_model ALL DEPENDS ${HUGMY_MUJOCO_MODEL})
+add_custom_target(generate_hugmy_mujoco_model DEPENDS ${HUGMY_MUJOCO_MODEL})
 
 install(DIRECTORY config launch plugins mujoco
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}

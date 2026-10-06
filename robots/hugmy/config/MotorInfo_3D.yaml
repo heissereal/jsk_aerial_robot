@@ -4,7 +4,7 @@ motor_info:
   neutral_pwm: 0.75
   max_pwm: 0.975
   bidirectional: true
-  min_thrust: -0.2
+  min_thrust: 0.2
   force_landing_thrust: 1.0
 
   # The stored coefficients describe F(PWM), so the controller uses the
