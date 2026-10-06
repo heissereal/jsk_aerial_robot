@@ -47,6 +47,10 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   pnh_.param("imu_timeout_sec", imu_timeout_sec_, 0.10);
   pnh_.param("thrust_timeout_sec", thrust_timeout_sec_, 0.20);
   pnh_.param("control_rate_hz", control_rate_hz_, 50.0);
+  pnh_.param("ppg_settle_sec", ppg_settle_sec_, 0.0);
+  if (!std::isfinite(ppg_settle_sec_) || ppg_settle_sec_ < 0.0 ||
+      ppg_settle_sec_ > 60.0)
+    throw std::runtime_error("ppg_settle_sec must be finite and in [0, 60] s");
   pnh_.param("allocation_iterations", allocation_iterations_, 6);
   pnh_.param("allocation_damping", allocation_damping_, 1e-5);
   pnh_.param("allocation_step_limit_kpa", allocation_step_limit_kpa_, 5.0);
@@ -1502,6 +1506,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
           action_c_recovery_gate_.reset();
           action_c_resume_gate_.reset();
           action_c_boundary_settle_gate_.reset();
+          action_c_ppg_settle_gate_.reset();
           action_c_pressure_ready_gate_.reset();
           action_c_rear_release_gate_.reset();
           action_c_roll_trend_.reset();
@@ -1708,7 +1713,17 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   ? std::min(0.05, action_c_pre_roll_rate_tolerance_rad_s_)
                   : action_c_pre_roll_rate_tolerance_rad_s_),
               now.toSec(), continuous_recovery_waiting_for_settle_ ? 1.0 : correction_trigger_confirm_sec_);
-          if (resume_ready)
+          // A human-arm trial needs a motion-free PPG interval after posture
+          // recovery.  Count only while the ordinary recovery completion
+          // conditions remain true. GRASP already commands zero rotor thrust,
+          // zero bottom pressure and the steady arm grasp above.
+          const bool ppg_resume_ready = action_c_ppg_settle_gate_.update(
+              resume_ready, now.toSec(), ppg_settle_sec_);
+          if (action_c_resume_pending_ && resume_ready && !ppg_resume_ready)
+            ROS_INFO_THROTTLE(1.0,
+                "Action C PPG settle after posture recovery: holding bottom 0 kPa and thrust 0 for %.1f s",
+                ppg_settle_sec_);
+          if (ppg_resume_ready)
             {
               if (resumeActionCAfterRecovery(now)) break;
             }
@@ -3037,6 +3052,7 @@ void AttitudePressureController::enterState(uint8_t state, const ros::Time& now)
   action_c_resume_gate_.reset();
   action_c_recovery_gate_.reset();
   action_c_boundary_settle_gate_.reset();
+  action_c_ppg_settle_gate_.reset();
   action_c_pressure_ready_gate_.reset();
   action_c_roll_trend_.reset();
 

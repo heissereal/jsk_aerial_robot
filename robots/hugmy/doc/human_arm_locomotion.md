@@ -20,6 +20,23 @@ Start Action C and the joystick interface (this does not enable actuation):
 roslaunch hugmy human_arm_locomotion.launch
 ```
 
+Start the PPG serial node in another terminal:
+
+```bash
+rosrun rosserial_python serial_node.py _port:=/dev/ttyUSB1 _baud:=115200
+rostopic echo /ppg/data
+```
+
+`/ppg/data.data[0]` is the pulse waveform and `data[1]` is the heart-rate
+estimate. After every completed gait segment and every posture recovery, the
+human-arm launch keeps arm grasp pressure, commands all rotor thrust to zero,
+commands the bottom bladder to 0 kPa, and waits for 10 continuous seconds at a
+stable deflated endpoint before continuing. The wait is a quiet measurement
+window; it intentionally does not require a finite heart-rate estimate, so a
+temporary PPG `nan` or a disconnected serial node cannot deadlock locomotion.
+Override it with `ppg_settle_sec:=SECONDS`; ordinary and MuJoCo launches keep
+the feature disabled by default (`0.0`).
+
 Before pressing the enable button, verify both streams and the relative
 position:
 

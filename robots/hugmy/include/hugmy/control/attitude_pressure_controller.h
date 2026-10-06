@@ -280,6 +280,12 @@ private:
   hugmy::PostureRecoveryGate correction_entry_gate_, action_c_recovery_gate_;
   hugmy::PostureRecoveryGate action_c_resume_gate_;
   hugmy::PostureRecoveryGate action_c_boundary_settle_gate_;
+  // Optional motion-free window for acquiring PPG after a gait or posture
+  // recovery.  Separate gates prevent the gait endpoint and recovery handoff
+  // from sharing elapsed time.
+  hugmy::PostureRecoveryGate hybrid_ppg_settle_gate_;
+  hugmy::PostureRecoveryGate action_c_ppg_settle_gate_;
+  double ppg_settle_sec_ = 0.0;
   double action_c_posture_settle_sec_ = 0.5;
   double correction_max_angular_rate_, correction_thrust_duration_;
   double prepare_timeout_, prepare_stable_duration_, recover_timeout_, cooldown_duration_;

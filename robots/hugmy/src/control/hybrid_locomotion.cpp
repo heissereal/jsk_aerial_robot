@@ -105,6 +105,7 @@ void AttitudePressureController::startHybridLocomotion(const ros::Time& now)
       std::max(.0001,action_c_direction_sign_x_*(action_c_absolute_target_x_m_-relative_x)));
   hybrid_planner_.beginRun();hybrid_planner_.hold_thrust_search=false;hybrid_planner_.model.newWindow();
   action_c_recovery_gate_.reset();action_c_boundary_settle_gate_.reset();
+  hybrid_ppg_settle_gate_.reset();
   action_c_roll_trend_.reset();
   for(auto& rate:hybrid_sim_rate_) rate=hugmy::hybrid::BendCoordinateRate();
   inchworm_pressure_=hybrid_grasp_pressure_;inchworm_thrust_.fill(0.);
@@ -137,6 +138,7 @@ void AttitudePressureController::beginHybridRegrip(const ros::Time& now,bool pre
   hybrid_phase_=2;hybrid_ready_since_=-1.;
   hybrid_pressure_ready_gate_.reset();
   hybrid_settled_window_.reset();hybrid_bottom_window_.reset();
+  hybrid_ppg_settle_gate_.reset();
   action_c_recovery_gate_.reset();action_c_boundary_settle_gate_.reset();action_c_roll_trend_.reset();
   enterState(ACTION_C_REGRIP,now);
   ROS_INFO("Hybrid C/D regrip: prediction_limited=%d; retaining goal x %.4f and search %.2f N/rotor for automatic continuation",
@@ -651,7 +653,17 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
         transfer_thrust;
     for(size_t j=0;j<2;++j)
       inchworm_thrust_[arms[j]]=slew(transfer_thrust[j],balanced[j],0.,2.,dt);
-    if(measurement_ready) {
+    // The endpoint is already regrasped and motionless here. For human-arm
+    // trials, retain that exact state long enough to acquire an undisturbed
+    // PPG sample: bottom 0 kPa, all rotor thrust zero, grasp pressure held.
+    // Any loss of the endpoint conditions restarts the continuous wait.
+    const bool ppg_settle_ready=hybrid_ppg_settle_gate_.update(
+        measurement_ready,clock,ppg_settle_sec_);
+    if(measurement_ready && !ppg_settle_ready)
+      ROS_INFO_THROTTLE(1.0,
+          "Hybrid PPG settle after motion: holding bottom 0 kPa and thrust 0 for %.1f s",
+          ppg_settle_sec_);
+    if(ppg_settle_ready) {
       hybrid_end_mean_x_=hybrid_settled_window_.mean();hybrid_end_mean_valid_=true;
       const bool terminal=hybrid_terminal_settle_;
       const bool retry=hybrid_terminal_retry_;
@@ -682,7 +694,9 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
           1000.*remaining,hybrid_single_.slip_entries,hybrid_single_.lift_probe_entries);
       startInchwormCycle(now);return;
     }
-    if((now-state_start_).toSec()>hybrid_config_.regrip_timeout) {
+    // ppg_settle_sec_ is deliberate measurement time and must not consume the
+    // pneumatic regrip timeout budget.
+    if((now-state_start_).toSec()>hybrid_config_.regrip_timeout+ppg_settle_sec_) {
       stopInchwormToGrasp(now,"hybrid regrip timeout");return;
     }
   }

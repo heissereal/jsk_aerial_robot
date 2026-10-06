@@ -1,4 +1,8 @@
 control_rate_hz: 50.0
+# Disabled for ordinary/MuJoCo operation. human_arm_locomotion.launch
+# overrides this to 10 s so PPG is sampled after motion has stopped, with the
+# bottom bladder empty, rotor thrust zero, and arm grasp pressure maintained.
+ppg_settle_sec: 0.0
 hybrid_locomotion_outer_enabled: true
 hybrid_locomotion_initial_bottom_kpa: 30.0
 # One continuous slip probe, then at most one lift probe per operator task.

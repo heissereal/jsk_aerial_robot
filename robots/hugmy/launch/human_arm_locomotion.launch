@@ -9,6 +9,7 @@
   <arg name="forward_distance_m" default="0.100" />
   <arg name="maximum_pressure_kpa" default="40.0" />
   <arg name="bottom_pressure_kpa" default="30.0" />
+  <arg name="ppg_settle_sec" default="10.0" />
   <arg name="hybrid_locomotion_outer_enabled" default="false" />
 
   <!-- ID 2 contributes XY translation only. The controller forces the target
@@ -21,6 +22,7 @@
     <arg name="hybrid_locomotion_initial_bottom_kpa"
          value="$(arg bottom_pressure_kpa)" />
     <arg name="maximum_pressure_kpa" value="$(arg maximum_pressure_kpa)" />
+    <arg name="ppg_settle_sec" value="$(arg ppg_settle_sec)" />
     <arg name="use_mocap_attitude_for_inchworm" value="false" />
     <arg name="hand_relative_mocap_enabled" value="true" />
     <arg name="hand_target_selects_direction" value="true" />
