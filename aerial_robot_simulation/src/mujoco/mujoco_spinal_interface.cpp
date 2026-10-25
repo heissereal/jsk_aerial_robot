@@ -10,7 +10,11 @@ namespace hardware_interface
   bool MujocoSpinalInterface::init(ros::NodeHandle& nh, int motor_num)
   {
     motor_num_ = motor_num;
-    force_.resize(motor_num_);
+    force_.assign(motor_num_, 0.0);
+    double neutral_pwm = 0.5;
+    nh.param("motor_info/neutral_pwm", neutral_pwm, neutral_pwm);
+    nh.param("simulation/physical_imu_on_ground", physical_imu_on_ground_, false);
+    pwm_.assign(motor_num_, neutral_pwm);
     spinal_state_estimator_.init(&nh);
     return true;
   }
@@ -18,7 +22,10 @@ namespace hardware_interface
 
   void MujocoSpinalInterface::stateEstimate()
   {
-    if(on_ground_)
+    // Perching/PWM-test motion occurs without entering flight mode.  When
+    // requested, retain the actual MuJoCo IMU instead of replacing it with a
+    // stationary measurement merely because the flight controller is idle.
+    if(on_ground_ && !physical_imu_on_ground_)
       {
         /* assume the robot is static, acc: [0, 0, g] */
         setImuValue(0, 0, aerial_robot_estimation::G, 0, 0, 0);

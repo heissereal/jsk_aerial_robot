@@ -6,8 +6,8 @@
   <arg name="mujoco_model" default="" />
   <arg name="initial_joint_states" default=""/>
   <arg name="use_spinal" default="true"/>
-  <arg name="hw_sim_type" value="mujoco_ros_control/AerialRobotHWSim" if="$(arg use_spinal)"/>
-  <arg name="hw_sim_type" value="mujoco_ros_control/DefaultAerialRobotHWSim" unless="$(arg use_spinal)"/>
+  <arg name="hw_sim_type" default="mujoco_ros_control/AerialRobotHWSim" if="$(arg use_spinal)"/>
+  <arg name="hw_sim_type" default="mujoco_ros_control/DefaultAerialRobotHWSim" unless="$(arg use_spinal)"/>
   <arg name="mujoco_threads" default="1"/>
 
   <group ns="$(arg robot_ns)">

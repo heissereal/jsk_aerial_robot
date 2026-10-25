@@ -34,6 +34,7 @@
 
 
 #include <ros/ros.h>
+#include <utility>
 #include <urdf_model/joint.h>
 #include <tf/LinearMath/Vector3.h>
 #include <aerial_robot_simulation/noise_model.h>
@@ -63,6 +64,20 @@ namespace hardware_interface
 
 
       ros::NodeHandle motor_nh(nh, "motor_info");
+      ros::NodeHandle reverse_motor_nh(motor_nh, "reverse");
+      negative_m_f_rate_ = m_f_rate_;
+      int reverse_reference_count = 0;
+      reverse_motor_nh.param("vel_ref_num", reverse_reference_count, 0);
+      if(reverse_reference_count > 0)
+        {
+          motor_nh.param("m_f_rate", m_f_rate_, m_f_rate_);
+          reverse_motor_nh.param("m_f_rate", negative_m_f_rate_, m_f_rate_);
+          double high_pwm_max_thrust = 0.0;
+          motor_nh.param("ref1/max_thrust", high_pwm_max_thrust, 0.0);
+          // Map high/low PWM calibration to the sign of the applied force.
+          if(high_pwm_max_thrust < 0.0)
+            std::swap(m_f_rate_, negative_m_f_rate_);
+        }
       motor_nh.param("rotor_damping_rate", rotor_damping_rate_, 1.0); // s
       if(rotor_damping_rate_ > 1.0)
         {
@@ -99,7 +114,8 @@ namespace hardware_interface
 
     inline tf::Vector3 getTorque()   const
     {
-      return tf::Vector3(gazebo::gaussianKernel(dual_rotor_moment_noise_), 0, getForce() * direction_ * m_f_rate_);
+      const double m_f_rate = getForce() < 0.0 ? negative_m_f_rate_ : m_f_rate_;
+      return tf::Vector3(gazebo::gaussianKernel(dual_rotor_moment_noise_), 0, getForce() * direction_ * m_f_rate);
     }
     inline void setCommand(double command); //no implement here
 
@@ -115,6 +131,7 @@ namespace hardware_interface
     double f_pwm_rate_;
     double f_pwm_offset_;
     double m_f_rate_;
+    double negative_m_f_rate_;
     double speed_rate_;
     double pwm_rate_;
     double max_pwm_;

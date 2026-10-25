@@ -1,5 +1,8 @@
 #include <aerial_robot_simulation/mujoco/mujoco_aerial_robot_hw_sim.h>
 
+#include <algorithm>
+#include <cmath>
+
 namespace mujoco_ros::control
 {
 bool AerialRobotHWSim::InitSim(const mjModel* m_ptr, mjData* d_ptr, mujoco_ros::MujocoEnv* mujoco_env_ptr,
@@ -19,7 +22,7 @@ bool AerialRobotHWSim::InitSim(const mjModel* m_ptr, mjData* d_ptr, mujoco_ros::
     bool is_rotor = false;
     for (const auto& hw_iface : trans.actuators_[0].hardware_interfaces_)
     {
-      if (hw_iface == "RotorInterface")
+      if (hw_iface == "RotorInterface" || hw_iface == "hardware_interface/RotorInterface")
       {
         is_rotor = true;
         break;
@@ -48,6 +51,53 @@ bool AerialRobotHWSim::InitSim(const mjModel* m_ptr, mjData* d_ptr, mujoco_ros::
     mass += m_ptr_->body_mass[i];
   }
   ROS_INFO_STREAM("[mujoco] robot mass is " << mass);
+
+  ros::NodeHandle motor_nh(model_nh, "motor_info");
+  ros::NodeHandle motor_sim_nh(motor_nh, "simulation");
+  ros::NodeHandle reverse_motor_nh(motor_nh, "reverse");
+  motor_sim_nh.param("use_pwm_model", use_pwm_motor_model_, false);
+  motor_nh.param("min_pwm", motor_min_pwm_, motor_min_pwm_);
+  motor_nh.param("neutral_pwm", motor_neutral_pwm_, motor_neutral_pwm_);
+  motor_nh.param("max_pwm", motor_max_pwm_, motor_max_pwm_);
+  motor_nh.param("positive_thrust_below_neutral",
+                 positive_thrust_below_neutral_, false);
+  motor_nh.param("m_f_rate", forward_m_f_rate_, forward_m_f_rate_);
+  reverse_motor_nh.param("m_f_rate", reverse_m_f_rate_, forward_m_f_rate_);
+  motor_nh.param("pwm_conversion_mode", pwm_conversion_mode_, pwm_conversion_mode_);
+  motor_sim_nh.param("voltage", motor_sim_voltage_, motor_sim_voltage_);
+  motor_sim_nh.param("neutral_deadband", motor_neutral_deadband_, motor_neutral_deadband_);
+
+  int forward_reference_count = 0;
+  int reverse_reference_count = 0;
+  motor_nh.param("vel_ref_num", forward_reference_count, forward_reference_count);
+  reverse_motor_nh.param("vel_ref_num", reverse_reference_count, forward_reference_count);
+  forward_motor_curve_ = loadMotorCurve(motor_nh, forward_reference_count);
+  reverse_motor_curve_ = loadMotorCurve(reverse_motor_nh, reverse_reference_count);
+  if (forward_motor_curve_.empty() || reverse_motor_curve_.empty())
+  {
+    ROS_ERROR("mujoco: PWM-test support requires both forward and reverse motor curves");
+    return false;
+  }
+  if (motor_sim_voltage_ <= 0.0)
+    motor_sim_voltage_ = forward_motor_curve_.front().voltage;
+
+  rotor_direction_signs_.reserve(rotor_list_.size());
+  const double forward_m_f_sign = forward_m_f_rate_ < 0.0 ? -1.0 : 1.0;
+  for (const auto& rotor_name : rotor_list_)
+  {
+    const int actuator_id = mj_name2id(m_ptr_, mjOBJ_ACTUATOR, rotor_name.c_str());
+    if (actuator_id < 0)
+    {
+      ROS_ERROR("mujoco: rotor actuator '%s' does not exist", rotor_name.c_str());
+      return false;
+    }
+    const double torque_gear = m_ptr_->actuator_gear[6 * actuator_id + 5];
+    const double torque_gear_sign = torque_gear < 0.0 ? -1.0 : 1.0;
+    rotor_direction_signs_.push_back(torque_gear_sign * forward_m_f_sign);
+  }
+  ROS_INFO("[mujoco] bidirectional PWM motor model: %.3f--%.3f, neutral %.3f, voltage %.1f V, positive thrust on %s side",
+           motor_min_pwm_, motor_max_pwm_, motor_neutral_pwm_, motor_sim_voltage_,
+           positive_thrust_below_neutral_ ? "low-PWM" : "high-PWM");
 
   /* Initialize spinal interface */
   spinal_interface_.init(model_nh, rotor_list_.size());
@@ -169,9 +219,84 @@ void AerialRobotHWSim::WriteSim(ros::Time time, ros::Duration period)
   {
     int rotor_id = mj_name2id(m_ptr_, mjOBJ_ACTUATOR, rotor_list_.at(i).c_str());
     double rotor_force = spinal_interface_.getForce(i);
+    if (use_pwm_motor_model_ || spinal_interface_.getPwmTestMode())
+    {
+      const double pwm = std::max(
+          motor_min_pwm_, std::min(motor_max_pwm_, spinal_interface_.getPwm(i)));
+      const bool low_pwm_branch = pwm < motor_neutral_pwm_;
+      rotor_force = forceFromPwm(pwm, low_pwm_branch);
+      const double m_f_rate = low_pwm_branch ? reverse_m_f_rate_
+                                             : forward_m_f_rate_;
+      m_ptr_->actuator_gear[6 * rotor_id + 5] =
+          rotor_direction_signs_.at(i) * m_f_rate;
+    }
+    else
+    {
+      m_ptr_->actuator_gear[6 * rotor_id + 5] =
+          rotor_direction_signs_.at(i) * forward_m_f_rate_;
+    }
     if (std::isfinite(rotor_force))
       d_ptr_->ctrl[rotor_id] = rotor_force;
   }
+}
+
+std::vector<AerialRobotHWSim::MotorCurveReference>
+AerialRobotHWSim::loadMotorCurve(
+    const ros::NodeHandle& motor_nh, int reference_count) const
+{
+  std::vector<MotorCurveReference> result;
+  result.reserve(std::max(0, reference_count));
+  for (int i = 0; i < reference_count; ++i)
+  {
+    const ros::NodeHandle reference_nh(
+        motor_nh, "ref" + std::to_string(i + 1));
+    MotorCurveReference reference;
+    if (!reference_nh.getParam("voltage", reference.voltage))
+      continue;
+    reference_nh.param("max_thrust", reference.max_thrust, 0.0);
+    for (size_t coefficient = 0; coefficient < reference.polynomial.size(); ++coefficient)
+      reference_nh.param(
+          "polynominal" + std::to_string(coefficient),
+          reference.polynomial[coefficient], 0.0);
+    result.push_back(reference);
+  }
+  return result;
+}
+
+double AerialRobotHWSim::forceFromPwm(
+    double pwm, bool low_pwm_branch) const
+{
+  if (std::abs(pwm - motor_neutral_pwm_) <= motor_neutral_deadband_)
+    return 0.0;
+  const auto& curve = low_pwm_branch ? reverse_motor_curve_
+                                     : forward_motor_curve_;
+  if (curve.empty())
+  {
+    ROS_ERROR_THROTTLE(1.0,
+        "mujoco: no motor curve for the selected PWM-test direction");
+    return 0.0;
+  }
+  const auto reference = std::min_element(
+      curve.begin(), curve.end(), [this](const auto& lhs, const auto& rhs)
+      {
+        return std::abs(lhs.voltage - motor_sim_voltage_) <
+               std::abs(rhs.voltage - motor_sim_voltage_);
+      });
+  const double pwm_percent = 100.0 * pwm;
+  const double reference_force = reference->polynomial[0] +
+      (reference->polynomial[1] * pwm_percent +
+       reference->polynomial[2] * pwm_percent * pwm_percent) / 10.0;
+  double scaled_force = reference_force;
+  if (reference->voltage > 0.0 && motor_sim_voltage_ > 0.0)
+  {
+    const double voltage_ratio = motor_sim_voltage_ / reference->voltage;
+    const double exponent = pwm_conversion_mode_ == 1 ? 1.5 : 2.0;
+    scaled_force *= std::pow(voltage_ratio, exponent);
+  }
+  const bool positive_thrust = positive_thrust_below_neutral_
+      ? low_pwm_branch : !low_pwm_branch;
+  return positive_thrust ? std::abs(scaled_force)
+                         : -std::abs(scaled_force);
 }
 
 }  // namespace mujoco_ros::control
