@@ -10,8 +10,63 @@ import xml.etree.ElementTree as ET
 ARM_COUNT = 4
 JOINT_COUNT = 5
 
+# AIST Japanese anthropometric database 1991--92, young adult men.
+# Forearm length C8: 251.6 mm, maximum breadth D14: 92.6 mm,
+# maximum circumference F26: 259.2 mm, minimum circumference F27: 167.7 mm.
+# The depths below are the ellipse depths obtained from those circumferences
+# while retaining the measured maximum breadth / inferred depth aspect ratio.
+AIST_FOREARM_LENGTH_M = 0.2516
+AIST_FOREARM_PROXIMAL_WIDTH_M = 0.0926
+AIST_FOREARM_PROXIMAL_DEPTH_M = 0.07175
+AIST_FOREARM_DISTAL_WIDTH_M = 0.0599
+AIST_FOREARM_DISTAL_DEPTH_M = 0.0464
+# A conservative rigid test fixture uses the mean of the proximal and distal
+# AIST sections.  Removing the taper prevents a pressure-normal force from
+# acquiring an axial component and being mistaken for gait progress.
+AIST_FOREARM_MEAN_WIDTH_M = 0.5 * (
+    AIST_FOREARM_PROXIMAL_WIDTH_M + AIST_FOREARM_DISTAL_WIDTH_M)
+AIST_FOREARM_MEAN_DEPTH_M = 0.5 * (
+    AIST_FOREARM_PROXIMAL_DEPTH_M + AIST_FOREARM_DISTAL_DEPTH_M)
 
-def finalize(model_path):
+
+def tapered_elliptic_forearm_mesh(length=AIST_FOREARM_LENGTH_M,
+                                  proximal_width=AIST_FOREARM_PROXIMAL_WIDTH_M,
+                                  proximal_depth=AIST_FOREARM_PROXIMAL_DEPTH_M,
+                                  distal_width=AIST_FOREARM_DISTAL_WIDTH_M,
+                                  distal_depth=AIST_FOREARM_DISTAL_DEPTH_M,
+                                  segments=32):
+    """Return MJCF inline mesh strings for a convex tapered forearm.
+
+    Local +x points from elbow to wrist.  Width is local y and depth is local
+    z.  The two end rings describe a convex elliptic frustum, which gives
+    MuJoCo a stable collision hull without approximating the arm by a round
+    cylinder.
+    """
+    half = 0.5 * length
+    vertices = []
+    for x, width, depth in ((-half, proximal_width, proximal_depth),
+                            (half, distal_width, distal_depth)):
+        for index in range(segments):
+            angle = 2.0 * math.pi * index / segments
+            vertices.extend((x, 0.5 * width * math.cos(angle),
+                             0.5 * depth * math.sin(angle)))
+    vertices.extend((-half, 0.0, 0.0, half, 0.0, 0.0))
+    proximal_center = 2 * segments
+    distal_center = proximal_center + 1
+    faces = []
+    for index in range(segments):
+        following = (index + 1) % segments
+        # Side surface, then proximal and distal caps.  The winding is chosen
+        # to keep the visual normals outward; collision uses the convex hull.
+        faces.extend((index, segments + index, segments + following,
+                      index, segments + following, following,
+                      proximal_center, following, index,
+                      distal_center, segments + index, segments + following))
+    return (" ".join("{:.8g}".format(value) for value in vertices),
+            " ".join(str(value) for value in faces))
+
+
+def finalize(model_path, forearm_profile="tapered"):
     tree = ET.parse(model_path)
     root = tree.getroot()
 
@@ -128,24 +183,50 @@ def finalize(model_path):
     worldbody = root.find("worldbody")
     if worldbody is None:
         raise RuntimeError("generated MJCF has no worldbody")
+    asset = root.find("asset")
+    if asset is None:
+        asset = ET.SubElement(root, "asset")
+    forearm_mesh = next((mesh for mesh in asset.findall("mesh")
+                         if mesh.get("name") == "hugmy_aist_male_forearm"), None)
+    if forearm_mesh is None:
+        forearm_mesh = ET.SubElement(asset, "mesh", name="hugmy_aist_male_forearm")
+    if forearm_profile == "uniform":
+        vertices, faces = tapered_elliptic_forearm_mesh(
+            AIST_FOREARM_LENGTH_M,
+            AIST_FOREARM_MEAN_WIDTH_M,
+            AIST_FOREARM_MEAN_DEPTH_M,
+            AIST_FOREARM_MEAN_WIDTH_M,
+            AIST_FOREARM_MEAN_DEPTH_M)
+    else:
+        vertices, faces = tapered_elliptic_forearm_mesh()
+    forearm_mesh.set("vertex", vertices)
+    forearm_mesh.set("face", faces)
+
     if not any(body.get("name") == "hugmy_human_arm" for body in worldbody.findall("body")):
         human = ET.SubElement(worldbody, "body", name="hugmy_human_arm", pos="0 0 0.05")
         ET.SubElement(
             human,
             "geom",
             name="hugmy_human_arm_forearm",
-            # MuJoCo cylinders are aligned with local z by default.  fromto
-            # gives the dummy forearm the same local-x longitudinal axis used
-            # by the pneumatic contact model and gait controller.
-            type="cylinder",
-            fromto="-0.25 0 0 0.25 0 0",
-            size="0.05",
+            type="mesh",
+            mesh="hugmy_aist_male_forearm",
             rgba="0.9 0.58 0.42 1",
             mass="0",
             contype="1",
             conaffinity="1",
             friction="2.5 0.05 0.01",
         )
+    else:
+        human = next(body for body in worldbody.findall("body")
+                     if body.get("name") == "hugmy_human_arm")
+        geom = next((item for item in human.findall("geom")
+                     if item.get("name") == "hugmy_human_arm_forearm"), None)
+        if geom is None:
+            raise RuntimeError("hugmy_human_arm has no forearm geom")
+        geom.attrib.pop("fromto", None)
+        geom.attrib.pop("size", None)
+        geom.set("type", "mesh")
+        geom.set("mesh", "hugmy_aist_male_forearm")
 
     tree.write(model_path, encoding="unicode", xml_declaration=True)
 
@@ -153,8 +234,12 @@ def finalize(model_path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("model", help="generated articulated Hugmy MJCF (robot.xml)")
+    parser.add_argument(
+        "--forearm-profile", choices=("tapered", "uniform"), default="tapered",
+        help=("tapered keeps the measured AIST end sections; uniform uses their "
+              "mean ellipse as a conservative no-wedge locomotion fixture"))
     args = parser.parse_args()
-    finalize(args.model)
+    finalize(args.model, args.forearm_profile)
 
 
 if __name__ == "__main__":

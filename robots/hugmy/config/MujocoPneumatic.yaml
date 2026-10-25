@@ -30,7 +30,9 @@ simulation:
     # The pressure controller settles within about 1 kPa of a zero target.
     # Treat that residual as an open chamber instead of a permanent 0.08 N
     # virtual attachment.
-    grip_min_pressure: 1.5
+    # Same measured boundary used by action_c_rear_release_max_kpa.  Pressure
+    # below it changes arm shape but does not retain an old axial contact.
+    grip_min_pressure: 8.0
     grip_friction_coefficient: 1.2
     grip_tangential_damping: 4.0
     # Elastic shear supplies static friction; capped by mu * normal_force.
@@ -38,19 +40,26 @@ simulation:
     grip_tangential_stiffness: 180.0  # N/m, provisional contact compliance
     grip_marker_scale: 0.025
     grip_marker_rate: 30.0
-    # Finite cylinder aligned with the local x axis.  The optimizer randomizes
-    # its radius between trials to avoid learning one exact arm diameter.
-    human_arm_half_length: 0.25
+    # AIST Japanese anthropometric database 1991--92, young-adult male mean.
+    # The fixture is a tapered elliptic forearm aligned with local x: elbow at
+    # -x, wrist at +x.  Breadth is local y and depth is local z.  The legacy
+    # radius is retained only for loading an old cylinder MJCF.
+    human_arm_half_length: 0.1258
+    human_arm_proximal_width: 0.0926
+    human_arm_proximal_depth: 0.07175
+    human_arm_distal_width: 0.0599
+    human_arm_distal_depth: 0.0464
     human_arm_radius: 0.05
     # Main-body origin above the cylinder top BEFORE settling. Applied only
     # with spawn_human=true; 0 preserves the MJCF free-flight spawn height.
-    # 50-mm centre + 50-mm radius + 65-mm clearance = body z 0.165 m,
-    # then the common robot/cylinder height offset is added as before.
+    # The plugin computes the local surface height from the tapered ellipse,
+    # then adds this clearance and the common robot/forearm height offset.
     perching_initial_clearance: 0.065
     human_arm_roll: 0.0
     human_arm_pitch: 0.0
     human_arm_yaw: 0.0
     thrust_scale: 1.0
+    maximum_reverse_thrust: 6.0
 
     # Disabled for normal bringup. The Gym launch enables this gate so every
     # policy action advances one 0.1 s MuJoCo interval in headless mode.
@@ -69,6 +78,18 @@ simulation:
     bottom_lever_arm: 0.0            # centred in main_body x/y
     bottom_point_z: -0.050           # m in main_body
     bottom_contact_range: 0.080      # m from the artificial forearm
+    # Finite-width pressure patch for the single central bladder. The total
+    # force remains bottom_force_per_pressure * pressure; only its lateral
+    # distribution changes, reproducing passive roll support on an ellipse.
+    bottom_contact_half_width: 0.030 # m, centre to each lateral patch
+    # Passive roll support of the finite bladder contact on the flat side of
+    # the tapered ellipse. It scales to zero with bottom pressure and does not
+    # add commanded pitch or translational force.
+    bottom_roll_support_enabled: true
+    bottom_roll_support_reference_pressure: 30.0 # kPa
+    bottom_roll_support_stiffness: 1.2            # N m/rad at reference pressure
+    bottom_roll_support_damping: 0.12             # N m s/rad
+    bottom_roll_support_max_torque: 0.35           # N m
     bottom_visual_base_height: 0.003
     bottom_visual_height_per_pressure: 0.00025
     bottom_virtual_tilt_enabled: false

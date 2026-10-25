@@ -10,10 +10,11 @@
 
 namespace
 {
-struct CylinderProjection
+struct ForearmProjection
 {
   std::array<double, 3> closest{};
   std::array<double, 3> point_to_surface{};
+  std::array<double, 3> outward_normal{{0.0, 0.0, 1.0}};
   double distance = 0.0;
   double azimuth = 0.0;
 };
@@ -22,10 +23,10 @@ struct CylinderProjection
 // whose longitudinal axis is local x.  Contacts used by this experiment are
 // on the curved surface; clamping x also gives a stable rim projection if a
 // candidate reaches beyond the dummy forearm ends.
-CylinderProjection projectToCylinder(const std::array<double, 3>& point,
-                                     double half_length, double radius)
+ForearmProjection projectToCylinder(const std::array<double, 3>& point,
+                                    double half_length, double radius)
 {
-  CylinderProjection result;
+  ForearmProjection result;
   result.closest[0] = std::max(-half_length, std::min(half_length, point[0]));
   const double radial_norm = std::hypot(point[1], point[2]);
   if (radial_norm > 1.0e-9)
@@ -45,19 +46,124 @@ CylinderProjection projectToCylinder(const std::array<double, 3>& point,
       result.point_to_surface[1] * result.point_to_surface[1] +
       result.point_to_surface[2] * result.point_to_surface[2]);
   result.azimuth = std::atan2(result.closest[2], result.closest[1]);
+  const double normal_norm = std::hypot(result.closest[1], result.closest[2]);
+  if (normal_norm > 1.0e-9)
+    {
+      result.outward_normal[1] = result.closest[1] / normal_norm;
+      result.outward_normal[2] = result.closest[2] / normal_norm;
+    }
   return result;
+}
+
+// Project onto a convex elliptic frustum.  The two measured ellipse axes vary
+// linearly from elbow (-x) to wrist (+x).  Minimising over x is inexpensive
+// (four contacts plus the bottom bladder) and avoids the false radial contact
+// of the former cylinder model on the sloped forearm surface.
+ForearmProjection projectToTaperedEllipse(
+    const std::array<double, 3>& point, double half_length,
+    double proximal_y_radius, double proximal_z_radius,
+    double distal_y_radius, double distal_z_radius)
+{
+  auto section = [&](double x) {
+    ForearmProjection result;
+    result.closest[0] = std::max(-half_length, std::min(half_length, x));
+    const double fraction = half_length > 1.0e-9
+        ? (result.closest[0] + half_length) / (2.0 * half_length) : 0.5;
+    const double ry = proximal_y_radius +
+        fraction * (distal_y_radius - proximal_y_radius);
+    const double rz = proximal_z_radius +
+        fraction * (distal_z_radius - proximal_z_radius);
+    const double metric = point[1] * point[1] / (ry * ry) +
+                          point[2] * point[2] / (rz * rz);
+    if (metric > 1.0e-12)
+      {
+        const double scale = 1.0 / std::sqrt(metric);
+        result.closest[1] = scale * point[1];
+        result.closest[2] = scale * point[2];
+      }
+    else
+      {
+        result.closest[1] = 0.0;
+        result.closest[2] = rz;
+      }
+    for (size_t axis = 0; axis < 3; ++axis)
+      result.point_to_surface[axis] = result.closest[axis] - point[axis];
+    const double distance_squared =
+        result.point_to_surface[0] * result.point_to_surface[0] +
+        result.point_to_surface[1] * result.point_to_surface[1] +
+        result.point_to_surface[2] * result.point_to_surface[2];
+    result.distance = std::sqrt(distance_squared);
+    result.azimuth = std::atan2(result.closest[2] / rz,
+                                result.closest[1] / ry);
+    const double dry_dx = (distal_y_radius - proximal_y_radius) /
+        std::max(2.0 * half_length, 1.0e-9);
+    const double drz_dx = (distal_z_radius - proximal_z_radius) /
+        std::max(2.0 * half_length, 1.0e-9);
+    result.outward_normal = {{
+        -2.0 * result.closest[1] * result.closest[1] * dry_dx /
+            (ry * ry * ry) -
+        2.0 * result.closest[2] * result.closest[2] * drz_dx /
+            (rz * rz * rz),
+        2.0 * result.closest[1] / (ry * ry),
+        2.0 * result.closest[2] / (rz * rz)}};
+    const double normal_norm = std::sqrt(
+        result.outward_normal[0] * result.outward_normal[0] +
+        result.outward_normal[1] * result.outward_normal[1] +
+        result.outward_normal[2] * result.outward_normal[2]);
+    if (normal_norm > 1.0e-9)
+      for (double& value : result.outward_normal) value /= normal_norm;
+    return result;
+  };
+
+  // Golden-section minimisation of the ray-projected surface distance.  The
+  // frustum is convex, so one short bounded search is sufficient.
+  double lo = -half_length;
+  double hi = half_length;
+  constexpr double ratio = 0.6180339887498949;
+  double x1 = hi - ratio * (hi - lo);
+  double x2 = lo + ratio * (hi - lo);
+  ForearmProjection p1 = section(x1);
+  ForearmProjection p2 = section(x2);
+  for (unsigned iteration = 0; iteration < 18; ++iteration)
+    {
+      if (p1.distance < p2.distance)
+        {
+          hi = x2;
+          x2 = x1;
+          p2 = p1;
+          x1 = hi - ratio * (hi - lo);
+          p1 = section(x1);
+        }
+      else
+        {
+          lo = x1;
+          x1 = x2;
+          p1 = p2;
+          x2 = lo + ratio * (hi - lo);
+          p2 = section(x2);
+        }
+    }
+  ForearmProjection best = p1.distance < p2.distance ? p1 : p2;
+  // Explicitly include the longitudinally aligned section.  It is exact for
+  // a non-tapered ellipse and improves numerical behaviour near the centre.
+  const ForearmProjection aligned = section(point[0]);
+  if (aligned.distance < best.distance) best = aligned;
+  return best;
 }
 }  // namespace
 
 namespace hugmy
 {
-bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
-                               ros::NodeHandle model_nh,
-                               mjModel* mujoco_model,
-                               mjData* mujoco_data)
+bool HugmyPneumaticHWSim::InitSim(
+    const mjModel* m_ptr, mjData* d_ptr, mujoco_ros::MujocoEnv* mujoco_env_ptr,
+    const std::string& robot_namespace, ros::NodeHandle model_nh,
+    const urdf::Model* const urdf_model,
+    std::vector<transmission_interface::TransmissionInfo> transmissions,
+    bool ignore_actuators)
 {
-  if (!mujoco_ros_control::AerialRobotHWSim::init(
-          robot_namespace, model_nh, mujoco_model, mujoco_data))
+  if (!mujoco_ros::control::AerialRobotHWSim::InitSim(
+          m_ptr, d_ptr, mujoco_env_ptr, robot_namespace, model_nh,
+          urdf_model, transmissions, ignore_actuators))
     return false;
 
   ros::NodeHandle pneumatic_nh(model_nh, "simulation/pneumatic");
@@ -80,6 +186,8 @@ bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
   pneumatic_nh.param("bag_damping", bag_damping_nms_rad_, bag_damping_nms_rad_);
   pneumatic_nh.param("thrust_offset", thrust_offset_n_, thrust_offset_n_);
   pneumatic_nh.param("thrust_scale", thrust_scale_, thrust_scale_);
+  pneumatic_nh.param("maximum_reverse_thrust", maximum_reverse_thrust_n_,
+                     maximum_reverse_thrust_n_);
   pneumatic_nh.param("command_timeout", command_timeout_s_, command_timeout_s_);
   pneumatic_nh.param("pressure_noise", pressure_noise_kpa_, pressure_noise_kpa_);
   pneumatic_nh.param("imu_acceleration_noise", imu_acc_noise_ms2_, imu_acc_noise_ms2_);
@@ -94,6 +202,14 @@ bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
                      human_arm_half_length_m_);
   pneumatic_nh.param("human_arm_radius", human_arm_radius_m_,
                      human_arm_radius_m_);
+  pneumatic_nh.param("human_arm_proximal_width", human_arm_proximal_width_m_,
+                     human_arm_proximal_width_m_);
+  pneumatic_nh.param("human_arm_proximal_depth", human_arm_proximal_depth_m_,
+                     human_arm_proximal_depth_m_);
+  pneumatic_nh.param("human_arm_distal_width", human_arm_distal_width_m_,
+                     human_arm_distal_width_m_);
+  pneumatic_nh.param("human_arm_distal_depth", human_arm_distal_depth_m_,
+                     human_arm_distal_depth_m_);
   pneumatic_nh.param("human_arm_roll", human_arm_roll_rad_,
                      human_arm_roll_rad_);
   pneumatic_nh.param("human_arm_pitch", human_arm_pitch_rad_,
@@ -121,6 +237,22 @@ bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
   pneumatic_nh.param("bottom_point_z", bottom_point_z_m_, bottom_point_z_m_);
   pneumatic_nh.param("bottom_contact_range", bottom_contact_range_m_,
                      bottom_contact_range_m_);
+  pneumatic_nh.param("bottom_contact_half_width", bottom_contact_half_width_m_,
+                     bottom_contact_half_width_m_);
+  pneumatic_nh.param("bottom_roll_support_enabled", bottom_roll_support_enabled_,
+                     bottom_roll_support_enabled_);
+  pneumatic_nh.param("bottom_roll_support_reference_pressure",
+                     bottom_roll_support_reference_pressure_kpa_,
+                     bottom_roll_support_reference_pressure_kpa_);
+  pneumatic_nh.param("bottom_roll_support_stiffness",
+                     bottom_roll_support_stiffness_nm_rad_,
+                     bottom_roll_support_stiffness_nm_rad_);
+  pneumatic_nh.param("bottom_roll_support_damping",
+                     bottom_roll_support_damping_nms_rad_,
+                     bottom_roll_support_damping_nms_rad_);
+  pneumatic_nh.param("bottom_roll_support_max_torque",
+                     bottom_roll_support_max_torque_nm_,
+                     bottom_roll_support_max_torque_nm_);
   pneumatic_nh.param("bottom_visual_base_height", bottom_visual_base_height_m_,
                      bottom_visual_base_height_m_);
   pneumatic_nh.param("bottom_visual_height_per_pressure",
@@ -156,18 +288,18 @@ bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
       if (gym_physics_timestep_s_ > safe_timestep + 1.0e-12)
         ROS_WARN("Hugmy Gym physics timestep %.6f s capped at %.6f s for arm-stop stability",
                  gym_physics_timestep_s_, safe_timestep);
-      if (safe_timestep > mujoco_model_->opt.timestep)
+      if (safe_timestep > m_ptr_->opt.timestep)
         {
           ROS_INFO("Hugmy Gym physics timestep: %.6f -> %.6f s",
-                   mujoco_model_->opt.timestep, safe_timestep);
-          mujoco_model_->opt.timestep = safe_timestep;
+                   m_ptr_->opt.timestep, safe_timestep);
+          const_cast<mjModel*>(m_ptr_)->opt.timestep = safe_timestep;
         }
     }
   // read() observes state immediately before mj_step2 advances time. One
   // extra iteration guarantees the last observation reaches the policy time.
   gym_step_iterations_ = static_cast<size_t>(std::ceil(
-      std::max(mujoco_model_->opt.timestep, gym_step_duration_s_) /
-      mujoco_model_->opt.timestep)) + 1;
+      std::max(m_ptr_->opt.timestep, gym_step_duration_s_) /
+      m_ptr_->opt.timestep)) + 1;
 
   pressure_kpa_.fill(initial_pressure_kpa_);
   bottom_pressure_kpa_ = initial_bottom_pressure_kpa_;
@@ -179,13 +311,13 @@ bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
     {
       const std::string id = std::to_string(arm + 1);
       rotor_site_ids_[arm] = mj_name2id(
-          mujoco_model_, mjOBJ_SITE, ("rotor" + id).c_str());
+          m_ptr_, mjOBJ_SITE, ("rotor" + id).c_str());
       acc_sensor_ids_[arm] = mj_name2id(
-          mujoco_model_, mjOBJ_SENSOR, ("neuron_acc_" + id).c_str());
+          m_ptr_, mjOBJ_SENSOR, ("neuron_acc_" + id).c_str());
       gyro_sensor_ids_[arm] = mj_name2id(
-          mujoco_model_, mjOBJ_SENSOR, ("neuron_gyro_" + id).c_str());
+          m_ptr_, mjOBJ_SENSOR, ("neuron_gyro_" + id).c_str());
       grip_body_ids_[arm] = mj_name2id(
-          mujoco_model_, mjOBJ_BODY, ("link_" + id + "_end").c_str());
+          m_ptr_, mjOBJ_BODY, ("link_" + id + "_end").c_str());
       if (rotor_site_ids_[arm] < 0 || acc_sensor_ids_[arm] < 0 ||
           gyro_sensor_ids_[arm] < 0 || grip_body_ids_[arm] < 0)
         {
@@ -198,9 +330,9 @@ bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
           const std::string joint_name =
               "joint_" + id + "_" + std::to_string(joint + 1);
           joint_ids_[arm][joint] = mj_name2id(
-              mujoco_model_, mjOBJ_JOINT, joint_name.c_str());
+              m_ptr_, mjOBJ_JOINT, joint_name.c_str());
           actuator_ids_[arm][joint] = mj_name2id(
-              mujoco_model_, mjOBJ_ACTUATOR, joint_name.c_str());
+              m_ptr_, mjOBJ_ACTUATOR, joint_name.c_str());
           if (joint_ids_[arm][joint] < 0 || actuator_ids_[arm][joint] < 0)
             {
               ROS_ERROR("Hugmy MuJoCo pneumatic model is missing %s", joint_name.c_str());
@@ -209,68 +341,108 @@ bool HugmyPneumaticHWSim::init(const std::string& robot_namespace,
         }
     }
 
-  grip_target_body_id_ = mj_name2id(mujoco_model_, mjOBJ_BODY, "hugmy_human_arm");
+  grip_target_body_id_ = mj_name2id(m_ptr_, mjOBJ_BODY, "hugmy_human_arm");
   grip_target_geom_id_ = mj_name2id(
-      mujoco_model_, mjOBJ_GEOM, "hugmy_human_arm_forearm");
+      m_ptr_, mjOBJ_GEOM, "hugmy_human_arm_forearm");
   if (grip_target_body_id_ < 0 || grip_target_geom_id_ < 0)
     {
       ROS_ERROR("Hugmy MuJoCo model is missing the human-arm grip target");
       return false;
     }
-  main_body_id_ = mj_name2id(mujoco_model_, mjOBJ_BODY, "main_body");
+  main_body_id_ = mj_name2id(m_ptr_, mjOBJ_BODY, "main_body");
   bottom_inflatable_geom_id_ = mj_name2id(
-      mujoco_model_, mjOBJ_GEOM, "hugmy_bottom_inflatable");
+      m_ptr_, mjOBJ_GEOM, "hugmy_bottom_inflatable");
   if (main_body_id_ < 0)
     {
       ROS_ERROR("Hugmy MuJoCo model is missing main_body");
       return false;
     }
-  const int root_joint_id = mujoco_model_->body_jntadr[main_body_id_];
-  if (root_joint_id < 0 ||
-      mujoco_model_->jnt_type[root_joint_id] != mjJNT_FREE)
+  // The generated MJCF keeps the tiny URDF root body above main_body, and the
+  // free joint belongs to that ancestor.  Forces should still be applied to
+  // main_body, but initial placement must write the nearest ancestral free
+  // joint rather than requiring it to be owned directly by main_body.
+  int free_body_id = main_body_id_;
+  int root_joint_id = -1;
+  while (free_body_id > 0 && root_joint_id < 0)
     {
-      ROS_ERROR("Hugmy MuJoCo main_body must have a free joint");
+      const int first_joint = m_ptr_->body_jntadr[free_body_id];
+      const int joint_count = m_ptr_->body_jntnum[free_body_id];
+      for (int offset = 0; offset < joint_count; ++offset)
+        if (m_ptr_->jnt_type[first_joint + offset] == mjJNT_FREE)
+          {
+            root_joint_id = first_joint + offset;
+            break;
+          }
+      free_body_id = m_ptr_->body_parentid[free_body_id];
+    }
+  if (root_joint_id < 0)
+    {
+      ROS_ERROR("Hugmy MuJoCo main_body must descend from a free joint");
       return false;
     }
-  const int root_qpos_address = mujoco_model_->jnt_qposadr[root_joint_id];
+  const int root_qpos_address = m_ptr_->jnt_qposadr[root_joint_id];
   // Perching starts close to the fixture, not in a free-flight drop. Keep
   // flight/spawn_human=false and an explicit zero-clearance legacy mode intact.
+  human_arm_tapered_ellipse_ =
+      m_ptr_->geom_type[grip_target_geom_id_] == mjGEOM_MESH;
+  const double centre_surface_height = human_arm_tapered_ellipse_
+      ? 0.25 * (human_arm_proximal_depth_m_ + human_arm_distal_depth_m_)
+      : human_arm_radius_m_;
   if (spawn_human_ && perching_initial_clearance_m_ > 0.0)
-    mujoco_data_->qpos[root_qpos_address + 2] =
-        human_arm_center_z_ + human_arm_radius_m_ + perching_initial_clearance_m_;
-  mujoco_data_->qpos[root_qpos_address + 2] += initial_height_offset_m_;
-  ROS_INFO("Hugmy MuJoCo initial height offset %.3f m: robot and cylinder moved together",
+    d_ptr_->qpos[root_qpos_address + 2] =
+        human_arm_center_z_ + centre_surface_height + perching_initial_clearance_m_;
+  d_ptr_->qpos[root_qpos_address + 2] += initial_height_offset_m_;
+  ROS_INFO("Hugmy MuJoCo initial height offset %.3f m: robot and fixture moved together",
            initial_height_offset_m_);
   const double target_z = spawn_human_
       ? human_arm_center_z_ + initial_height_offset_m_ : -100.0;
-  mujoco_model_->body_pos[3 * grip_target_body_id_ + 0] = 0.0;
-  mujoco_model_->body_pos[3 * grip_target_body_id_ + 1] = 0.0;
-  mujoco_model_->body_pos[3 * grip_target_body_id_ + 2] = target_z;
-  if (mujoco_model_->geom_type[grip_target_geom_id_] != mjGEOM_CYLINDER)
+  m_ptr_->body_pos[3 * grip_target_body_id_ + 0] = 0.0;
+  m_ptr_->body_pos[3 * grip_target_body_id_ + 1] = 0.0;
+  m_ptr_->body_pos[3 * grip_target_body_id_ + 2] = target_z;
+  if (m_ptr_->geom_type[grip_target_geom_id_] != mjGEOM_CYLINDER &&
+      m_ptr_->geom_type[grip_target_geom_id_] != mjGEOM_MESH)
     {
-      ROS_ERROR("Hugmy MuJoCo grip target must be a cylinder");
+      ROS_ERROR("Hugmy MuJoCo grip target must be a cylinder or elliptic forearm mesh");
       return false;
     }
-  // MuJoCo stores cylinder radius and half-length in size[0] and size[1].
-  mujoco_model_->geom_size[3 * grip_target_geom_id_ + 0] =
-      std::max(0.005, human_arm_radius_m_);
-  mujoco_model_->geom_size[3 * grip_target_geom_id_ + 1] =
-      std::max(0.005, human_arm_half_length_m_);
+  if (!human_arm_tapered_ellipse_)
+    {
+      // MuJoCo stores cylinder radius and half-length in size[0] and size[1].
+      m_ptr_->geom_size[3 * grip_target_geom_id_ + 0] =
+          std::max(0.005, human_arm_radius_m_);
+      m_ptr_->geom_size[3 * grip_target_geom_id_ + 1] =
+          std::max(0.005, human_arm_half_length_m_);
+    }
+  const bool human_arm_uniform_ellipse = human_arm_tapered_ellipse_ &&
+      std::abs(human_arm_proximal_width_m_ - human_arm_distal_width_m_) < 1.0e-6 &&
+      std::abs(human_arm_proximal_depth_m_ - human_arm_distal_depth_m_) < 1.0e-6;
+  const char* fixture_description = !human_arm_tapered_ellipse_
+      ? "legacy cylinder"
+      : (human_arm_uniform_ellipse
+             ? "AIST-mean uniform elliptic forearm"
+             : "AIST male tapered elliptic forearm");
+  ROS_INFO("Hugmy MuJoCo fixture: %s, length %.1f mm, proximal %.1f x %.1f mm, distal %.1f x %.1f mm",
+           fixture_description,
+           2000.0 * human_arm_half_length_m_,
+           1000.0 * human_arm_proximal_width_m_,
+           1000.0 * human_arm_proximal_depth_m_,
+           1000.0 * human_arm_distal_width_m_,
+           1000.0 * human_arm_distal_depth_m_);
   reloadEpisodeParameters();
-  mujoco_model_->geom_rgba[4 * grip_target_geom_id_ + 3] = spawn_human_ ? 1.0 : 0.0;
-  mj_forward(mujoco_model_, mujoco_data_);
-  initial_qpos_.assign(mujoco_data_->qpos,
-                       mujoco_data_->qpos + mujoco_model_->nq);
-  initial_qvel_.assign(mujoco_data_->qvel,
-                       mujoco_data_->qvel + mujoco_model_->nv);
+  m_ptr_->geom_rgba[4 * grip_target_geom_id_ + 3] = spawn_human_ ? 1.0 : 0.0;
+  mj_forward(m_ptr_, d_ptr_);
+  initial_qpos_.assign(d_ptr_->qpos,
+                       d_ptr_->qpos + m_ptr_->nq);
+  initial_qvel_.assign(d_ptr_->qvel,
+                       d_ptr_->qvel + m_ptr_->nv);
   const mjtNum* initial_main_body_rotation =
-      mujoco_data_->xmat + 9 * main_body_id_;
+      d_ptr_->xmat + 9 * main_body_id_;
   std::copy(initial_main_body_rotation, initial_main_body_rotation + 9,
             bottom_reference_rotation_.begin());
   bottom_reference_initialized_ = true;
-  previous_grip_qfrc_.assign(mujoco_model_->nv, 0.0);
+  previous_grip_qfrc_.assign(m_ptr_->nv, 0.0);
   for (auto& contact : grip_friction_) contact.reset();
-  previous_bottom_qfrc_.assign(mujoco_model_->nv, 0.0);
+  previous_bottom_qfrc_.assign(m_ptr_->nv, 0.0);
 
   command_sub_ = model_nh.subscribe(
       "pneumatic/command", 1, &HugmyPneumaticHWSim::commandCallback, this);
@@ -331,7 +503,8 @@ void HugmyPneumaticHWSim::thrustCallback(const spinal::Thrust::ConstPtr& msg)
   std::lock_guard<std::mutex> lock(command_mutex_);
   for (size_t arm = 0; arm < ARM_COUNT; ++arm)
     if (std::isfinite(msg->thrust[arm]))
-      thrust_n_[arm] = std::max(0.0, static_cast<double>(msg->thrust[arm]));
+      thrust_n_[arm] = std::max(-maximum_reverse_thrust_n_,
+          static_cast<double>(msg->thrust[arm]));
 }
 
 void HugmyPneumaticHWSim::bottomDirectionCallback(
@@ -379,8 +552,18 @@ bool HugmyPneumaticHWSim::stepCallback(
 
 void HugmyPneumaticHWSim::reloadEpisodeParameters()
 {
+  ros::param::param(pneumatic_namespace_ + "/human_arm_half_length",
+                    human_arm_half_length_m_, human_arm_half_length_m_);
   ros::param::param(pneumatic_namespace_ + "/human_arm_radius",
                     human_arm_radius_m_, human_arm_radius_m_);
+  ros::param::param(pneumatic_namespace_ + "/human_arm_proximal_width",
+                    human_arm_proximal_width_m_, human_arm_proximal_width_m_);
+  ros::param::param(pneumatic_namespace_ + "/human_arm_proximal_depth",
+                    human_arm_proximal_depth_m_, human_arm_proximal_depth_m_);
+  ros::param::param(pneumatic_namespace_ + "/human_arm_distal_width",
+                    human_arm_distal_width_m_, human_arm_distal_width_m_);
+  ros::param::param(pneumatic_namespace_ + "/human_arm_distal_depth",
+                    human_arm_distal_depth_m_, human_arm_distal_depth_m_);
   ros::param::param(pneumatic_namespace_ + "/human_arm_roll",
                     human_arm_roll_rad_, human_arm_roll_rad_);
   ros::param::param(pneumatic_namespace_ + "/human_arm_pitch",
@@ -408,17 +591,23 @@ void HugmyPneumaticHWSim::reloadEpisodeParameters()
   ros::param::param(pneumatic_namespace_ + "/thrust_scale",
                     thrust_scale_, thrust_scale_);
   human_arm_radius_m_ = std::max(0.005, human_arm_radius_m_);
+  human_arm_half_length_m_ = std::max(0.025, human_arm_half_length_m_);
+  human_arm_proximal_width_m_ = std::max(0.02, human_arm_proximal_width_m_);
+  human_arm_proximal_depth_m_ = std::max(0.02, human_arm_proximal_depth_m_);
+  human_arm_distal_width_m_ = std::max(0.02, human_arm_distal_width_m_);
+  human_arm_distal_depth_m_ = std::max(0.02, human_arm_distal_depth_m_);
   grip_friction_coefficient_ = std::max(0.0, grip_friction_coefficient_);
   grip_force_per_kpa_n_ = std::max(0.0, grip_force_per_kpa_n_);
   thrust_scale_ = std::max(0.0, thrust_scale_);
-  mujoco_model_->geom_size[3 * grip_target_geom_id_ + 0] = human_arm_radius_m_;
+  if (!human_arm_tapered_ellipse_)
+    m_ptr_->geom_size[3 * grip_target_geom_id_ + 0] = human_arm_radius_m_;
   // Native mesh/cylinder sliding contact is separate from pneumatic gripping.
   // Preserve the MJCF value unless explicitly overridden for this fixture.
-  double sliding_friction = mujoco_model_->geom_friction[3 * grip_target_geom_id_];
+  double sliding_friction = m_ptr_->geom_friction[3 * grip_target_geom_id_];
   ros::param::param(pneumatic_namespace_ + "/human_arm_sliding_friction",
                     sliding_friction, sliding_friction);
   if (std::isfinite(sliding_friction) && sliding_friction >= 0.0)
-    mujoco_model_->geom_friction[3 * grip_target_geom_id_] = sliding_friction;
+    m_ptr_->geom_friction[3 * grip_target_geom_id_] = sliding_friction;
   else
     ROS_ERROR("Ignoring invalid human_arm_sliding_friction; keeping MJCF/current value");
   const double cr = std::cos(0.5 * human_arm_roll_rad_);
@@ -428,7 +617,7 @@ void HugmyPneumaticHWSim::reloadEpisodeParameters()
   const double cy = std::cos(0.5 * human_arm_yaw_rad_);
   const double sy = std::sin(0.5 * human_arm_yaw_rad_);
   mjtNum* target_quaternion =
-      mujoco_model_->body_quat + 4 * grip_target_body_id_;
+      m_ptr_->body_quat + 4 * grip_target_body_id_;
   target_quaternion[0] = cr * cp * cy + sr * sp * sy;
   target_quaternion[1] = sr * cp * cy - cr * sp * sy;
   target_quaternion[2] = cr * sp * cy + sr * cp * sy;
@@ -442,21 +631,23 @@ void HugmyPneumaticHWSim::processReset(const ros::Time& time)
     permitted_iterations_ = 0;
   }
   reloadEpisodeParameters();
-  std::copy(initial_qpos_.begin(), initial_qpos_.end(), mujoco_data_->qpos);
-  std::copy(initial_qvel_.begin(), initial_qvel_.end(), mujoco_data_->qvel);
-  std::fill(mujoco_data_->qacc,
-            mujoco_data_->qacc + mujoco_model_->nv, 0.0);
-  std::fill(mujoco_data_->qacc_warmstart,
-            mujoco_data_->qacc_warmstart + mujoco_model_->nv, 0.0);
-  std::fill(mujoco_data_->qfrc_applied,
-            mujoco_data_->qfrc_applied + mujoco_model_->nv, 0.0);
-  if (mujoco_model_->na > 0)
-    std::fill(mujoco_data_->act,
-              mujoco_data_->act + mujoco_model_->na, 0.0);
-  if (mujoco_model_->nu > 0)
-    std::fill(mujoco_data_->ctrl,
-              mujoco_data_->ctrl + mujoco_model_->nu, 0.0);
-  control_input_.assign(control_input_.size(), 0.0);
+  std::copy(initial_qpos_.begin(), initial_qpos_.end(), d_ptr_->qpos);
+  std::copy(initial_qvel_.begin(), initial_qvel_.end(), d_ptr_->qvel);
+  std::fill(d_ptr_->qacc,
+            d_ptr_->qacc + m_ptr_->nv, 0.0);
+  std::fill(d_ptr_->qacc_warmstart,
+            d_ptr_->qacc_warmstart + m_ptr_->nv, 0.0);
+  std::fill(d_ptr_->qfrc_applied,
+            d_ptr_->qfrc_applied + m_ptr_->nv, 0.0);
+  if (m_ptr_->na > 0)
+    std::fill(d_ptr_->act,
+              d_ptr_->act + m_ptr_->na, 0.0);
+  if (m_ptr_->nu > 0)
+    std::fill(d_ptr_->ctrl,
+              d_ptr_->ctrl + m_ptr_->nu, 0.0);
+  std::fill(joint_effort_command_.begin(), joint_effort_command_.end(), 0.0);
+  for (int motor = 0; motor < spinal_interface_.getMotorNum(); ++motor)
+    spinal_interface_.setForce(motor, 0.0);
   pressure_kpa_.fill(initial_pressure_kpa_);
   bottom_pressure_kpa_ = initial_bottom_pressure_kpa_;
   thrust_n_.fill(0.0);
@@ -464,12 +655,13 @@ void HugmyPneumaticHWSim::processReset(const ros::Time& time)
   previous_model_thrust_.fill(0.0);
   pressure_trend_.fill(BendTrend::NEUTRAL);
   thrust_trend_.fill(BendTrend::NEUTRAL);
-  previous_grip_qfrc_.assign(mujoco_model_->nv, 0.0);
+  previous_grip_qfrc_.assign(m_ptr_->nv, 0.0);
   for (auto& contact : grip_friction_) contact.reset();
-  previous_bottom_qfrc_.assign(mujoco_model_->nv, 0.0);
+  previous_bottom_qfrc_.assign(m_ptr_->nv, 0.0);
   bottom_tilt_target_rad_ = 0.0;
   bottom_tilt_measured_rad_ = 0.0;
   bottom_virtual_torque_nm_ = 0.0;
+  bottom_roll_support_torque_nm_ = 0.0;
   bottom_reference_initialized_ = false;
   {
     std::lock_guard<std::mutex> lock(command_mutex_);
@@ -480,8 +672,8 @@ void HugmyPneumaticHWSim::processReset(const ros::Time& time)
   last_pressure_time_ = time;
   last_sensor_time_ = ros::Time(0);
   last_grip_marker_time_ = ros::Time(0);
-  mj_forward(mujoco_model_, mujoco_data_);
-  const mjtNum* rotation = mujoco_data_->xmat + 9 * main_body_id_;
+  mj_forward(m_ptr_, d_ptr_);
+  const mjtNum* rotation = d_ptr_->xmat + 9 * main_body_id_;
   std::copy(rotation, rotation + 9, bottom_reference_rotation_.begin());
   bottom_reference_initialized_ = true;
   std_msgs::UInt32 reset_count;
@@ -490,8 +682,7 @@ void HugmyPneumaticHWSim::processReset(const ros::Time& time)
   ROS_INFO("Hugmy MuJoCo state reset for Gym episode %u", reset_count_);
 }
 
-void HugmyPneumaticHWSim::read(const ros::Time& time,
-                               const ros::Duration& period)
+void HugmyPneumaticHWSim::ReadSim(ros::Time time, ros::Duration period)
 {
   bool policy_interval_complete = false;
   while (true)
@@ -522,7 +713,7 @@ void HugmyPneumaticHWSim::read(const ros::Time& time,
       // Loop so a reset received while the gate is closed is applied before
       // waiting for the next step permission.
     }
-  mujoco_ros_control::AerialRobotHWSim::read(time, period);
+  mujoco_ros::control::AerialRobotHWSim::ReadSim(time, period);
   if ((time - last_sensor_time_).toSec() >= 1.0 / std::max(1.0, sensor_rate_hz_))
     {
       publishSensors(time);
@@ -536,8 +727,7 @@ void HugmyPneumaticHWSim::read(const ros::Time& time,
     }
 }
 
-void HugmyPneumaticHWSim::write(const ros::Time& time,
-                                const ros::Duration& period)
+void HugmyPneumaticHWSim::WriteSim(ros::Time time, ros::Duration period)
 {
   spinal::PneumaticCommand command;
   std::array<double, ARM_COUNT> thrust;
@@ -550,21 +740,22 @@ void HugmyPneumaticHWSim::write(const ros::Time& time,
     command_fresh = command_received_ && age >= 0.0 && age <= command_timeout_s_;
   }
 
-  // Use the force actually requested from each rotor, including PwmTest.
-  // The gait drives PwmTest directly, whereas target_thrust only carries the
-  // normal flight-controller request. Without this bridge the pressure spring
-  // did not compensate the follower-force moment and a positive 6 N command
-  // bent the arm farther, opposite to the measured pressure/thrust table.
-  if (use_pwm_motor_model_ || spinal_interface_.getPwmTestMode())
-    for (size_t arm = 0; arm < ARM_COUNT &&
-                         arm < static_cast<size_t>(spinal_interface_.getMotorNum());
-         ++arm)
-      {
-        const double pwm = std::max(motor_min_pwm_, std::min(
-            motor_max_pwm_, spinal_interface_.getPwm(arm)));
-        const bool low_pwm_branch = pwm < motor_neutral_pwm_;
-        thrust[arm] = thrust_scale_ * forceFromPwm(pwm, low_pwm_branch);
-      }
+  // Match the force actually applied by AerialRobotHWSim.  PWM-test commands
+  // bypass spinal_interface_.getForce(); using that value alone made the arm
+  // equilibrium model and actuator telemetry report zero thrust while MuJoCo
+  // was applying a non-zero rotor force.
+  for (size_t arm = 0; arm < ARM_COUNT &&
+                       arm < static_cast<size_t>(spinal_interface_.getMotorNum()); ++arm)
+    {
+      double applied = spinal_interface_.getForce(arm);
+      if (use_pwm_motor_model_ || spinal_interface_.getPwmTestMode())
+        {
+          const double pwm = std::max(motor_min_pwm_,
+              std::min(motor_max_pwm_, spinal_interface_.getPwm(arm)));
+          applied = forceFromPwm(pwm, pwm < motor_neutral_pwm_);
+        }
+      thrust[arm] = thrust_scale_ * applied;
+    }
 
   const double pressure_period = 1.0 / std::max(1.0, pressure_rate_hz_);
   const double elapsed = (time - last_pressure_time_).toSec();
@@ -582,7 +773,11 @@ void HugmyPneumaticHWSim::write(const ros::Time& time,
       publishActuatorVisualization(time, thrust);
       last_actuator_marker_time_ = time;
     }
-  mujoco_ros_control::AerialRobotHWSim::write(time, period);
+  mujoco_ros::control::AerialRobotHWSim::WriteSim(time, period);
+  // The pneumatic joints use passive springs instead of servo effort.
+  for (const auto& arm_actuators : actuator_ids_)
+    for (const int actuator : arm_actuators)
+      d_ptr_->ctrl[actuator] = 0.0;
 }
 
 void HugmyPneumaticHWSim::publishActuatorVisualization(
@@ -598,9 +793,9 @@ void HugmyPneumaticHWSim::publishActuatorVisualization(
       state.data[arm] = static_cast<float>(pressure_kpa_[arm]);
       state.data[ARM_COUNT + arm] = static_cast<float>(thrust[arm]);
       const mjtNum* position =
-          mujoco_data_->site_xpos + 3 * rotor_site_ids_[arm];
+          d_ptr_->site_xpos + 3 * rotor_site_ids_[arm];
       const mjtNum* rotation =
-          mujoco_data_->site_xmat + 9 * rotor_site_ids_[arm];
+          d_ptr_->site_xmat + 9 * rotor_site_ids_[arm];
 
       visualization_msgs::Marker arrow;
       arrow.header.frame_id = "world";
@@ -663,7 +858,7 @@ void HugmyPneumaticHWSim::publishActuatorVisualization(
   bottom_text.id = 0;
   bottom_text.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
   bottom_text.action = visualization_msgs::Marker::ADD;
-  const mjtNum* body_position = mujoco_data_->xpos + 3 * main_body_id_;
+  const mjtNum* body_position = d_ptr_->xpos + 3 * main_body_id_;
   bottom_text.pose.position.x = body_position[0];
   bottom_text.pose.position.y = body_position[1];
   bottom_text.pose.position.z = body_position[2] + 0.11;
@@ -717,9 +912,9 @@ void HugmyPneumaticHWSim::updatePressure(
 
 void HugmyPneumaticHWSim::applyBottomInflatable()
 {
-  for (int dof = 0; dof < mujoco_model_->nv; ++dof)
+  for (int dof = 0; dof < m_ptr_->nv; ++dof)
     {
-      mujoco_data_->qfrc_applied[dof] -= previous_bottom_qfrc_[dof];
+      d_ptr_->qfrc_applied[dof] -= previous_bottom_qfrc_[dof];
       previous_bottom_qfrc_[dof] = 0.0;
     }
 
@@ -733,12 +928,12 @@ void HugmyPneumaticHWSim::applyBottomInflatable()
       -bottom_lever_arm_m_ * direction[1], bottom_point_z_m_};
   if (bottom_inflatable_geom_id_ >= 0)
     {
-      mujoco_model_->geom_pos[3 * bottom_inflatable_geom_id_ + 0] = local_point[0];
-      mujoco_model_->geom_pos[3 * bottom_inflatable_geom_id_ + 1] = local_point[1];
-      mujoco_model_->geom_size[3 * bottom_inflatable_geom_id_ + 2] =
+      m_ptr_->geom_pos[3 * bottom_inflatable_geom_id_ + 0] = local_point[0];
+      m_ptr_->geom_pos[3 * bottom_inflatable_geom_id_ + 1] = local_point[1];
+      m_ptr_->geom_size[3 * bottom_inflatable_geom_id_ + 2] =
           bottom_visual_base_height_m_ +
           bottom_visual_height_per_kpa_m_ * bottom_pressure_kpa_;
-      mujoco_model_->geom_rgba[4 * bottom_inflatable_geom_id_ + 3] =
+      m_ptr_->geom_rgba[4 * bottom_inflatable_geom_id_ + 3] =
           std::min(0.85, 0.15 + bottom_pressure_kpa_ /
                                       std::max(1.0, maximum_pressure_kpa_));
     }
@@ -747,8 +942,8 @@ void HugmyPneumaticHWSim::applyBottomInflatable()
   bottom_virtual_torque_nm_ = 0.0;
   if (!spawn_human_) return;
 
-  const mjtNum* body_position = mujoco_data_->xpos + 3 * main_body_id_;
-  const mjtNum* body_rotation = mujoco_data_->xmat + 9 * main_body_id_;
+  const mjtNum* body_position = d_ptr_->xpos + 3 * main_body_id_;
+  const mjtNum* body_rotation = d_ptr_->xmat + 9 * main_body_id_;
   if (!bottom_reference_initialized_ ||
       bottom_pressure_kpa_ <= bottom_tilt_reference_reset_pressure_kpa_)
     {
@@ -757,52 +952,67 @@ void HugmyPneumaticHWSim::applyBottomInflatable()
       bottom_reference_initialized_ = true;
     }
   if (bottom_pressure_kpa_ <= 0.0) return;
-  mjtNum world_point[3];
-  for (size_t axis = 0; axis < 3; ++axis)
-    world_point[axis] = body_position[axis] +
-        body_rotation[3 * axis + 0] * local_point[0] +
-        body_rotation[3 * axis + 1] * local_point[1] +
-        body_rotation[3 * axis + 2] * local_point[2];
-
-  const mjtNum* target_position = mujoco_data_->xpos + 3 * grip_target_body_id_;
-  const mjtNum* target_rotation = mujoco_data_->xmat + 9 * grip_target_body_id_;
-  const double delta_world[3] = {
-      world_point[0] - target_position[0],
-      world_point[1] - target_position[1],
-      world_point[2] - target_position[2]};
-  std::array<double, 3> target_local{};
-  for (size_t axis = 0; axis < 3; ++axis)
-    target_local[axis] = target_rotation[axis] * delta_world[0] +
-                         target_rotation[3 + axis] * delta_world[1] +
-                         target_rotation[6 + axis] * delta_world[2];
-  const CylinderProjection bottom_projection = projectToCylinder(
-      target_local, human_arm_half_length_m_, human_arm_radius_m_);
-  const bool physical_contact =
-      bottom_projection.distance <= bottom_contact_range_m_;
-  // The bottom bladder pushes away from the curved surface.  Use the radial
-  // outward direction even for small numerical penetration of the visual
-  // cylinder, rather than reversing the force at its centerline.
-  std::array<double, 3> normal_local{{0.0, target_local[1], target_local[2]}};
-  double radial_norm = std::hypot(normal_local[1], normal_local[2]);
-  if (radial_norm < 1.0e-9)
+  const mjtNum* target_position = d_ptr_->xpos + 3 * grip_target_body_id_;
+  const mjtNum* target_rotation = d_ptr_->xmat + 9 * grip_target_body_id_;
+  struct BottomPatch
+  {
+    std::array<mjtNum, 3> world_point{};
+    std::array<mjtNum, 3> normal_world{};
+    double nominal_weight = 0.0;
+    bool contact = false;
+  };
+  // Centre carries half of the load; the two shoulders share the remainder.
+  // Forces remain pressure controlled, but their separated application
+  // points and elliptic surface normals create the roll support that a broad
+  // compliant contact produces on a human forearm.
+  constexpr std::array<double, 3> patch_offsets{{-1.0, 0.0, 1.0}};
+  constexpr std::array<double, 3> patch_weights{{0.25, 0.50, 0.25}};
+  std::array<BottomPatch, 3> patches{};
+  double active_weight = 0.0;
+  for (size_t patch_index = 0; patch_index < patches.size(); ++patch_index)
     {
-      normal_local[1] = 0.0;
-      normal_local[2] = 1.0;
-      radial_norm = 1.0;
+      BottomPatch& patch = patches[patch_index];
+      const double patch_local[3] = {
+          local_point[0],
+          local_point[1] + patch_offsets[patch_index] *
+              bottom_contact_half_width_m_,
+          local_point[2]};
+      for (size_t axis = 0; axis < 3; ++axis)
+        patch.world_point[axis] = body_position[axis] +
+            body_rotation[3 * axis + 0] * patch_local[0] +
+            body_rotation[3 * axis + 1] * patch_local[1] +
+            body_rotation[3 * axis + 2] * patch_local[2];
+      const double delta_world[3] = {
+          patch.world_point[0] - target_position[0],
+          patch.world_point[1] - target_position[1],
+          patch.world_point[2] - target_position[2]};
+      std::array<double, 3> target_local{};
+      for (size_t axis = 0; axis < 3; ++axis)
+        target_local[axis] = target_rotation[axis] * delta_world[0] +
+                             target_rotation[3 + axis] * delta_world[1] +
+                             target_rotation[6 + axis] * delta_world[2];
+      const ForearmProjection projection = human_arm_tapered_ellipse_
+          ? projectToTaperedEllipse(target_local, human_arm_half_length_m_,
+                0.5 * human_arm_proximal_width_m_,
+                0.5 * human_arm_proximal_depth_m_,
+                0.5 * human_arm_distal_width_m_,
+                0.5 * human_arm_distal_depth_m_)
+          : projectToCylinder(target_local, human_arm_half_length_m_,
+                              human_arm_radius_m_);
+      patch.contact = projection.distance <= bottom_contact_range_m_;
+      patch.nominal_weight = patch_weights[patch_index];
+      if (!patch.contact) continue;
+      active_weight += patch.nominal_weight;
+      for (size_t axis = 0; axis < 3; ++axis)
+        patch.normal_world[axis] =
+            target_rotation[3 * axis + 0] * projection.outward_normal[0] +
+            target_rotation[3 * axis + 1] * projection.outward_normal[1] +
+            target_rotation[3 * axis + 2] * projection.outward_normal[2];
     }
-  normal_local[1] /= radial_norm;
-  normal_local[2] /= radial_norm;
-  mjtNum normal_world[3] = {0.0, 0.0, 0.0};
-  for (size_t axis = 0; axis < 3; ++axis)
-    normal_world[axis] = target_rotation[3 * axis + 0] * normal_local[0] +
-                         target_rotation[3 * axis + 1] * normal_local[1] +
-                         target_rotation[3 * axis + 2] * normal_local[2];
 
-  const double magnitude = physical_contact
-      ? bottom_force_per_kpa_n_ * bottom_pressure_kpa_ : 0.0;
-  const mjtNum force[3] = {
-      magnitude * normal_world[0], magnitude * normal_world[1],
-      magnitude * normal_world[2]};
+  // The centre location remains the reference for the optional pitch-only
+  // virtual torque and for diagnostics.
+  const mjtNum* world_point = patches[1].world_point.data();
   mjtNum torque[3] = {0.0, 0.0, 0.0};
 
   if (bottom_virtual_tilt_enabled_ && bottom_reference_initialized_ &&
@@ -858,7 +1068,7 @@ void HugmyPneumaticHWSim::applyBottomInflatable()
             bottom_reference_rotation_[3 * world_axis + 1] *
                 rocking_axis_body[1];
       mjtNum body_velocity[6]{};
-      mj_objectVelocity(mujoco_model_, mujoco_data_, mjOBJ_BODY,
+      mj_objectVelocity(m_ptr_, d_ptr_, mjOBJ_BODY,
                         main_body_id_, body_velocity, 0);
       const double rocking_rate =
           body_velocity[0] * rocking_axis_world[0] +
@@ -873,10 +1083,76 @@ void HugmyPneumaticHWSim::applyBottomInflatable()
       for (size_t axis = 0; axis < 3; ++axis)
         torque[axis] = bottom_virtual_torque_nm_ * rocking_axis_world[axis];
     }
-  mj_applyFT(mujoco_model_, mujoco_data_, force, torque, world_point,
-             main_body_id_, previous_bottom_qfrc_.data());
-  for (int dof = 0; dof < mujoco_model_->nv; ++dof)
-    mujoco_data_->qfrc_applied[dof] += previous_bottom_qfrc_[dof];
+  if (bottom_roll_support_enabled_ && human_arm_tapered_ellipse_ &&
+      active_weight > 1.0e-9 &&
+      bottom_roll_support_reference_pressure_kpa_ > 1.0e-6)
+    {
+      // A single point normal force has no roll footprint, even on an
+      // elliptic mesh.  The real bladder deforms over a finite-width patch:
+      // the lower side compresses more and produces a restoring moment.  A
+      // pressure-scaled rotational spring/damper is the reduced-order form of
+      // that distributed compliance.  It is passive (zero target roll in the
+      // fixed forearm frame), never commands pitch or translation, and
+      // vanishes as the bottom chamber exhausts.
+      double relative_rotation[9]{};
+      for (size_t row = 0; row < 3; ++row)
+        for (size_t column = 0; column < 3; ++column)
+          for (size_t world_axis = 0; world_axis < 3; ++world_axis)
+            relative_rotation[3 * row + column] +=
+                target_rotation[3 * world_axis + row] *
+                body_rotation[3 * world_axis + column];
+      const double relative_roll = std::atan2(
+          relative_rotation[7], relative_rotation[4]);
+      mjtNum body_velocity[6]{};
+      mj_objectVelocity(m_ptr_, d_ptr_, mjOBJ_BODY,
+                        main_body_id_, body_velocity, 0);
+      mjtNum forearm_axis_world[3] = {
+          target_rotation[0], target_rotation[3], target_rotation[6]};
+      const double roll_rate =
+          body_velocity[0] * forearm_axis_world[0] +
+          body_velocity[1] * forearm_axis_world[1] +
+          body_velocity[2] * forearm_axis_world[2];
+      const double pressure_scale = clamp01(
+          bottom_pressure_kpa_ /
+          bottom_roll_support_reference_pressure_kpa_);
+      const double requested = -pressure_scale *
+          (bottom_roll_support_stiffness_nm_rad_ * relative_roll +
+           bottom_roll_support_damping_nms_rad_ * roll_rate);
+      bottom_roll_support_torque_nm_ =
+          std::max(-bottom_roll_support_max_torque_nm_,
+              std::min(bottom_roll_support_max_torque_nm_, requested));
+      for (size_t axis = 0; axis < 3; ++axis)
+        torque[axis] += bottom_roll_support_torque_nm_ *
+            forearm_axis_world[axis];
+    }
+  if (active_weight > 1.0e-9)
+    {
+      const double total_magnitude =
+          bottom_force_per_kpa_n_ * bottom_pressure_kpa_;
+      for (const BottomPatch& patch : patches)
+        {
+          if (!patch.contact) continue;
+          const double magnitude = total_magnitude *
+              patch.nominal_weight / active_weight;
+          const mjtNum force[3] = {
+              magnitude * patch.normal_world[0],
+              magnitude * patch.normal_world[1],
+              magnitude * patch.normal_world[2]};
+          const mjtNum zero_torque[3] = {0.0, 0.0, 0.0};
+          mj_applyFT(m_ptr_, d_ptr_, force, zero_torque,
+                     patch.world_point.data(), main_body_id_,
+                     previous_bottom_qfrc_.data());
+        }
+    }
+  if (std::abs(torque[0]) > 0.0 || std::abs(torque[1]) > 0.0 ||
+      std::abs(torque[2]) > 0.0)
+    {
+      const mjtNum zero_force[3] = {0.0, 0.0, 0.0};
+      mj_applyFT(m_ptr_, d_ptr_, zero_force, torque, world_point,
+                 main_body_id_, previous_bottom_qfrc_.data());
+    }
+  for (int dof = 0; dof < m_ptr_->nv; ++dof)
+    d_ptr_->qfrc_applied[dof] += previous_bottom_qfrc_[dof];
 }
 
 void HugmyPneumaticHWSim::applyBagSprings(
@@ -903,8 +1179,8 @@ void HugmyPneumaticHWSim::applyBagSprings(
       const double total_stiffness = structural_stiffness_nm_rad_ + inflatable_stiffness;
       const double desired_joint_angle = total_angle / BAG_JOINT_COUNT;
       const int rotor_site = rotor_site_ids_[arm];
-      const mjtNum* rotor_position = mujoco_data_->site_xpos + 3 * rotor_site;
-      const mjtNum* rotor_rotation = mujoco_data_->site_xmat + 9 * rotor_site;
+      const mjtNum* rotor_position = d_ptr_->site_xpos + 3 * rotor_site;
+      const mjtNum* rotor_rotation = d_ptr_->site_xmat + 9 * rotor_site;
       const double thrust_force[3] = {
           rotor_rotation[2] * thrust[arm],
           rotor_rotation[5] * thrust[arm],
@@ -913,14 +1189,14 @@ void HugmyPneumaticHWSim::applyBagSprings(
       for (size_t joint = 0; joint < JOINT_COUNT; ++joint)
         {
           const int joint_id = joint_ids_[arm][joint];
-          const int qpos_address = mujoco_model_->jnt_qposadr[joint_id];
-          const int dof_address = mujoco_model_->jnt_dofadr[joint_id];
+          const int qpos_address = m_ptr_->jnt_qposadr[joint_id];
+          const int dof_address = m_ptr_->jnt_dofadr[joint_id];
           const bool has_bag = joint < BAG_JOINT_COUNT;
           double reference = 0.0;
           if (has_bag && inflatable_stiffness > 0.0 && total_stiffness > 0.0)
             {
-              const mjtNum* anchor = mujoco_data_->xanchor + 3 * joint_id;
-              const mjtNum* axis = mujoco_data_->xaxis + 3 * joint_id;
+              const mjtNum* anchor = d_ptr_->xanchor + 3 * joint_id;
+              const mjtNum* axis = d_ptr_->xaxis + 3 * joint_id;
               const double lever[3] = {
                   rotor_position[0] - anchor[0], rotor_position[1] - anchor[1],
                   rotor_position[2] - anchor[2]};
@@ -941,11 +1217,11 @@ void HugmyPneumaticHWSim::applyBagSprings(
           // implicitly by the integrator and remain stable for the very light
           // cable-carrier links; applying the same terms as explicit actuator
           // effort makes their acceleration numerically stiff.
-          mujoco_model_->jnt_stiffness[joint_id] = stiffness;
-          mujoco_model_->qpos_spring[qpos_address] = spring_reference;
-          mujoco_model_->dof_damping[dof_address] = bag_damping_nms_rad_;
-          control_input_.at(actuator_ids_[arm][joint]) = 0.0;
-          measured_bend_rad[arm] += mujoco_data_->qpos[qpos_address];
+          m_ptr_->jnt_stiffness[joint_id] = stiffness;
+          m_ptr_->qpos_spring[qpos_address] = spring_reference;
+          m_ptr_->dof_damping[dof_address] = bag_damping_nms_rad_;
+          d_ptr_->ctrl[actuator_ids_[arm][joint]] = 0.0;
+          measured_bend_rad[arm] += d_ptr_->qpos[qpos_address];
           spring_reference_bend_rad[arm] += spring_reference;
         }
     }
@@ -986,15 +1262,15 @@ void HugmyPneumaticHWSim::publishSensors(const ros::Time& time)
           0.0, std::min(4095.0, measured_pressure / maximum_pressure_kpa_ * 4095.0)));
       adc.voltage = 3.3 * static_cast<double>(adc.raw) / 4095.0;
 
-      const int acc_address = mujoco_model_->sensor_adr[acc_sensor_ids_[arm]];
-      const int gyro_address = mujoco_model_->sensor_adr[gyro_sensor_ids_[arm]];
+      const int acc_address = m_ptr_->sensor_adr[acc_sensor_ids_[arm]];
+      const int gyro_address = m_ptr_->sensor_adr[gyro_sensor_ids_[arm]];
       auto& imu = imu_states.imus[arm];
       imu.slave_id = static_cast<uint8_t>(arm + 1);
       for (size_t axis = 0; axis < 3; ++axis)
         {
-          imu.acc[axis] = mujoco_data_->sensordata[acc_address + axis] +
+          imu.acc[axis] = d_ptr_->sensordata[acc_address + axis] +
                           imu_acc_noise_ms2_ * normal_(random_engine_);
-          imu.gyro[axis] = mujoco_data_->sensordata[gyro_address + axis] +
+          imu.gyro[axis] = d_ptr_->sensordata[gyro_address + axis] +
                            imu_gyro_noise_rads_ * normal_(random_engine_);
         }
     }
@@ -1025,15 +1301,15 @@ void HugmyPneumaticHWSim::publishSensors(const ros::Time& time)
 
 void HugmyPneumaticHWSim::applyGripForces(const ros::Time& time, double dt)
 {
-  for (int dof = 0; dof < mujoco_model_->nv; ++dof)
+  for (int dof = 0; dof < m_ptr_->nv; ++dof)
     {
-      mujoco_data_->qfrc_applied[dof] -= previous_grip_qfrc_[dof];
+      d_ptr_->qfrc_applied[dof] -= previous_grip_qfrc_[dof];
       previous_grip_qfrc_[dof] = 0.0;
     }
   if (!spawn_human_) return;
 
-  const mjtNum* target_position = mujoco_data_->xpos + 3 * grip_target_body_id_;
-  const mjtNum* target_rotation = mujoco_data_->xmat + 9 * grip_target_body_id_;
+  const mjtNum* target_position = d_ptr_->xpos + 3 * grip_target_body_id_;
+  const mjtNum* target_rotation = d_ptr_->xmat + 9 * grip_target_body_id_;
   std::array<std::array<double, 3>, ARM_COUNT> points{};
   std::array<std::array<double, 3>, ARM_COUNT> forces{};
   std::array<double, ARM_COUNT> slip_ratios{};
@@ -1047,15 +1323,21 @@ void HugmyPneumaticHWSim::applyGripForces(const ros::Time& time, double dt)
   for (size_t arm = 0; arm < ARM_COUNT; ++arm)
     {
       const int body = grip_body_ids_[arm];
-      const mjtNum* grip_position = mujoco_data_->xpos + 3 * body;
+      const mjtNum* grip_position = d_ptr_->xpos + 3 * body;
       std::array<double, 3> local{};
       for (size_t axis = 0; axis < 3; ++axis)
         local[axis] = target_rotation[axis] * (grip_position[0] - target_position[0]) +
                       target_rotation[3 + axis] * (grip_position[1] - target_position[1]) +
                       target_rotation[6 + axis] * (grip_position[2] - target_position[2]);
 
-      const CylinderProjection projection = projectToCylinder(
-          local, human_arm_half_length_m_, human_arm_radius_m_);
+      const ForearmProjection projection = human_arm_tapered_ellipse_
+          ? projectToTaperedEllipse(local, human_arm_half_length_m_,
+                0.5 * human_arm_proximal_width_m_,
+                0.5 * human_arm_proximal_depth_m_,
+                0.5 * human_arm_distal_width_m_,
+                0.5 * human_arm_distal_depth_m_)
+          : projectToCylinder(local, human_arm_half_length_m_,
+                              human_arm_radius_m_);
       std::array<double, 3> closest = projection.closest;
       std::array<double, 3> delta_local = projection.point_to_surface;
       double delta_norm = projection.distance;
@@ -1067,8 +1349,9 @@ void HugmyPneumaticHWSim::applyGripForces(const ros::Time& time, double dt)
           // At exact surface contact, the closest-point delta is zero.  A
           // gripping chamber pulls radially inward into the cylinder instead
           // of losing its force direction for that sample.
-          delta_local = {{0.0, -closest[1], -closest[2]}};
-          delta_norm = std::hypot(delta_local[1], delta_local[2]);
+          for (size_t axis = 0; axis < 3; ++axis)
+            delta_local[axis] = -projection.outward_normal[axis];
+          delta_norm = 1.0;
         }
 
       std::array<double, 3> contact_position{};
@@ -1097,10 +1380,10 @@ void HugmyPneumaticHWSim::applyGripForces(const ros::Time& time, double dt)
       for (double& value : inward) value /= inward_norm;
 
       mjtNum velocity[6];
-      mj_objectVelocity(mujoco_model_, mujoco_data_, mjOBJ_BODY, body, velocity, 0);
+      mj_objectVelocity(m_ptr_, d_ptr_, mjOBJ_BODY, body, velocity, 0);
       // mjOBJ_BODY linear velocity is at its COM; the force is applied at
       // xpos (the link-end origin), not xipos. Include omega cross offset.
-      const mjtNum* com = mujoco_data_->xipos + 3 * body;
+      const mjtNum* com = d_ptr_->xipos + 3 * body;
       const double offset[3] = {grip_position[0]-com[0],
           grip_position[1]-com[1], grip_position[2]-com[2]};
       velocity[3] += velocity[1]*offset[2]-velocity[2]*offset[1];
@@ -1109,7 +1392,18 @@ void HugmyPneumaticHWSim::applyGripForces(const ros::Time& time, double dt)
       const double normal_speed = velocity[3] * inward[0] +
                                   velocity[4] * inward[1] +
                                   velocity[5] * inward[2];
-      const double pressure_limit = grip_force_per_kpa_n_ * pressure_kpa_[arm];
+      // A chamber just above the release threshold must not instantaneously
+      // regain the force of a fully pressurised anchor.  In the real gait the
+      // released rear arms flex and seek their new contact while pressure is
+      // rebuilding.  Using absolute pressure here left several newtons of
+      // simulated friction at the old rear contact even after the controller
+      // had measured it as released, pulling every completed stroke backward
+      // during regrasp.  Grow the available normal force continuously from
+      // the same measured release boundary.
+      const double effective_grip_pressure = std::max(
+          0.0, pressure_kpa_[arm] - grip_min_pressure_kpa_);
+      const double pressure_limit =
+          grip_force_per_kpa_n_ * effective_grip_pressure;
       const double normal_force = std::max(0.0, std::min(
           pressure_limit,
           grip_stiffness_n_m_ * (grip_range_m_ - distance) -
@@ -1136,14 +1430,14 @@ void HugmyPneumaticHWSim::applyGripForces(const ros::Time& time, double dt)
       active[arm] = true;
       const mjtNum force[3] = {forces[arm][0], forces[arm][1], forces[arm][2]};
       const mjtNum torque[3] = {0.0, 0.0, 0.0};
-      mj_applyFT(mujoco_model_, mujoco_data_, force, torque, grip_position,
+      mj_applyFT(m_ptr_, d_ptr_, force, torque, grip_position,
                  body, previous_grip_qfrc_.data());
     }
   // Detachment/venting must release stored shear: no hidden permanent weld.
   for (size_t arm=0;arm<ARM_COUNT;++arm)
     if (!active[arm]) grip_friction_[arm].reset();
-  for (int dof = 0; dof < mujoco_model_->nv; ++dof)
-    mujoco_data_->qfrc_applied[dof] += previous_grip_qfrc_[dof];
+  for (int dof = 0; dof < m_ptr_->nv; ++dof)
+    d_ptr_->qfrc_applied[dof] += previous_grip_qfrc_[dof];
 
   if ((time - last_grip_marker_time_).toSec() >=
       1.0 / std::max(1.0, grip_marker_rate_hz_))
@@ -1190,9 +1484,9 @@ void HugmyPneumaticHWSim::publishGripMarkers(
       double rotor_neuron_bend = 0.0;
       for (size_t joint = 0; joint < BAG_JOINT_COUNT; ++joint)
         {
-          const int qpos_address = mujoco_model_->jnt_qposadr[
+          const int qpos_address = m_ptr_->jnt_qposadr[
               joint_ids_[arm][joint]];
-          rotor_neuron_bend += mujoco_data_->qpos[qpos_address];
+          rotor_neuron_bend += d_ptr_->qpos[qpos_address];
         }
       grip_state.data[6 * ARM_COUNT + arm] =
           static_cast<float>(rotor_neuron_bend);
@@ -1244,4 +1538,4 @@ HugmyPneumaticHWSim::BendTrend HugmyPneumaticHWSim::updateTrend(
 }  // namespace hugmy
 
 PLUGINLIB_EXPORT_CLASS(hugmy::HugmyPneumaticHWSim,
-                       mujoco_ros_control::RobotHWSim)
+                       mujoco_ros::control::RobotHWSim)

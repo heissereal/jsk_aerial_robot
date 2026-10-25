@@ -284,8 +284,8 @@ class HugmyMujocoEnv(gym.Env):
         self._maximum_pwm = float(rospy.get_param(prefix + "/max_pwm", 0.975))
         self._motor_voltage = float(rospy.get_param(prefix + "/simulation/voltage", 21.2))
         self._pwm_conversion_mode = int(rospy.get_param(prefix + "/pwm_conversion_mode", 0))
-        self._positive_thrust_below_neutral = bool(rospy.get_param(
-            prefix + "/positive_thrust_below_neutral", False))
+        self._positive_thrust_below_neutral = (
+            float(rospy.get_param(prefix + "/ref1/max_thrust")) < 0.0)
 
         def closest_curve(branch: str) -> Tuple[float, Tuple[float, float, float]]:
             root = prefix + ("/reverse" if branch == "reverse" else "")

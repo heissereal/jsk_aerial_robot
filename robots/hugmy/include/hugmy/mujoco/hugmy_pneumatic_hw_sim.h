@@ -25,17 +25,20 @@
 
 namespace hugmy
 {
-class HugmyPneumaticHWSim : public mujoco_ros_control::AerialRobotHWSim
+class HugmyPneumaticHWSim : public mujoco_ros::control::AerialRobotHWSim
 {
 public:
   static constexpr size_t ARM_COUNT = 4;
   static constexpr size_t JOINT_COUNT = 5;
   static constexpr size_t BAG_JOINT_COUNT = 3;
 
-  bool init(const std::string& robot_namespace, ros::NodeHandle model_nh,
-            mjModel* mujoco_model, mjData* mujoco_data) override;
-  void read(const ros::Time& time, const ros::Duration& period) override;
-  void write(const ros::Time& time, const ros::Duration& period) override;
+  bool InitSim(const mjModel* m_ptr, mjData* d_ptr, mujoco_ros::MujocoEnv* mujoco_env_ptr,
+               const std::string& robot_namespace, ros::NodeHandle model_nh,
+               const urdf::Model* const urdf_model,
+               std::vector<transmission_interface::TransmissionInfo> transmissions,
+               bool ignore_actuators = false) override;
+  void ReadSim(ros::Time time, ros::Duration period) override;
+  void WriteSim(ros::Time time, ros::Duration period) override;
 
 private:
   using BendTrend = PressureThrustBendModel::Trend;
@@ -134,6 +137,7 @@ private:
   double bag_damping_nms_rad_ = 0.005;
   double thrust_offset_n_ = 1.8;
   double thrust_scale_ = 1.0;
+  double maximum_reverse_thrust_n_ = 6.0;
   double command_timeout_s_ = 0.25;
   double pressure_noise_kpa_ = 0.05;
   double imu_acc_noise_ms2_ = 0.017;
@@ -141,8 +145,15 @@ private:
   bool spawn_human_ = false;
   double human_arm_center_z_ = 0.05;
   double initial_height_offset_m_ = 0.0;
-  double human_arm_half_length_m_ = 0.25;
+  // AIST 1991--92 young-adult male mean forearm.  Local +x runs from elbow
+  // (proximal) to wrist (distal); y is breadth and z is depth.
+  double human_arm_half_length_m_ = 0.1258;
   double human_arm_radius_m_ = 0.05;
+  double human_arm_proximal_width_m_ = 0.0926;
+  double human_arm_proximal_depth_m_ = 0.07175;
+  double human_arm_distal_width_m_ = 0.0599;
+  double human_arm_distal_depth_m_ = 0.0464;
+  bool human_arm_tapered_ellipse_ = true;
   double human_arm_roll_rad_ = 0.0;
   double human_arm_pitch_rad_ = 0.0;
   double human_arm_yaw_rad_ = 0.0;
@@ -151,7 +162,11 @@ private:
   double grip_stiffness_n_m_ = 180.0;
   double grip_damping_ns_m_ = 2.0;
   double grip_force_per_kpa_n_ = 0.08;
-  double grip_min_pressure_kpa_ = 1.5;
+  // Match the controller's measured rear-release boundary.  Below this
+  // pressure the chamber may still be changing the passive arm shape, but it
+  // cannot be treated as an axial anchor.  The available normal force grows
+  // continuously from this boundary (see applyGripForces()).
+  double grip_min_pressure_kpa_ = 8.0;
   double grip_friction_coefficient_ = 1.2;
   double grip_tangent_damping_ns_m_ = 4.0;
   double grip_tangent_stiffness_n_m_ = 180.0;
@@ -167,6 +182,17 @@ private:
   double bottom_lever_arm_m_ = 0.0;
   double bottom_point_z_m_ = -0.050;
   double bottom_contact_range_m_ = 0.080;
+  // The real central bladder has a finite contact patch.  Three virtual
+  // pressure points across this half width reproduce the passive roll
+  // support of a broad bladder on an elliptic forearm while preserving the
+  // same total pressure force as the former single-point model.
+  double bottom_contact_half_width_m_ = 0.030;
+  bool bottom_roll_support_enabled_ = true;
+  double bottom_roll_support_reference_pressure_kpa_ = 30.0;
+  double bottom_roll_support_stiffness_nm_rad_ = 1.2;
+  double bottom_roll_support_damping_nms_rad_ = 0.12;
+  double bottom_roll_support_max_torque_nm_ = 0.35;
+  double bottom_roll_support_torque_nm_ = 0.0;
   double bottom_visual_base_height_m_ = 0.003;
   double bottom_visual_height_per_kpa_m_ = 0.00025;
   bool bottom_virtual_tilt_enabled_ = false;

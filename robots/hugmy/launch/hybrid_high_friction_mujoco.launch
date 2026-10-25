@@ -1,26 +1,42 @@
 <launch>
-  <!-- Simulation fixture only. Use a separate ROS master from hardware.
-       No motion command is sent automatically. This is a test fixture, not
-       a claim that repeated forward locomotion has passed validation. -->
+  <!-- Conservative human-arm proxy.  The AIST mean elliptic cross-section is
+       uniform along x, preventing the tapered surface normal from providing
+       artificial axial propulsion.  No motion command is sent automatically. -->
   <arg name="headless" default="false"/>
-  <arg name="cylinder_radius" default="0.075"/>
+  <arg name="mujoco_model" default="$(find hugmy)/mujoco/hugmy2/robot_high_friction.xml"/>
+  <arg name="forearm_half_length" default="0.1258"/>
+  <arg name="forearm_width" default="0.07625"/>
+  <arg name="forearm_depth" default="0.059075"/>
   <arg name="cylinder_pitch" default="0.0"/>
   <arg name="grip_friction" default="4.5"/>
   <arg name="surface_friction" default="4.0"/>
   <arg name="tangential_stiffness" default="1200.0"/>
   <arg name="lift_pressure_gain" default="20.0"/> <!-- legacy; early lift is zero, adverse slope may use bounded prefill -->
-  <!-- Validated high-friction profile (2026-10-01). Keep hardware defaults
-       separate until the same residual rear pressure is tested physically. -->
-  <arg name="pressure_limit" default="30.0"/>
-  <arg name="rear_pressure" default="5.0"/>
+  <!-- This profile intentionally rejects the low-thrust sliding solution.
+       Keep hardware defaults separate until the contact parameters have been
+       identified from a physical arm. -->
+  <arg name="pressure_limit" default="40.0"/>
+  <arg name="rear_pressure" default="0.0"/>
   <arg name="lift_seconds" default="15.0"/>
-  <arg name="lift_rate" default="1.0"/>
-  <arg name="pull_min_sec" default="1.5"/>
+  <arg name="lift_rate" default="0.7"/>
+  <arg name="windup_pitch" default="0.29670597283903605"/>
+  <arg name="windup_pitch_kp" default="3.0"/>
+  <arg name="windup_pitch_kd" default="1.0"/>
+  <arg name="windup_pitch_rate_max" default="0.25"/>
+  <arg name="windup_bottom" default="30.0"/>
+  <arg name="windup_extra_extension" default="1.0471975511965976"/>
+  <arg name="windup_hold_pressure" default="30.0"/>
+  <arg name="windup_pressure_slew" default="12.0"/>
+  <arg name="windup_rear_reverse_max" default="1.5"/>
+  <arg name="windup_rear_reverse_rise" default="0.75"/>
+  <arg name="pitch_change_limit" default="0.3490658503988659"/>
+  <arg name="pull_min_sec" default="0.5"/>
   <arg name="probe_extension_rad" default="0.13962634015954636"/>
   <include file="$(find hugmy)/launch/bringup.launch">
     <arg name="simulation" value="true"/>
     <arg name="real_machine" value="false"/>
     <arg name="mujoco" value="true"/>
+    <arg name="mujoco_model" value="$(arg mujoco_model)"/>
     <arg name="headless" value="$(arg headless)"/>
     <arg name="fixed_arms" value="false"/>
     <arg name="spawn_human" value="true"/>
@@ -29,7 +45,11 @@
     <arg name="inchworm_action_c" value="true"/>
     <arg name="mujoco_initial_arm_pressure" value="30.0"/>
     <arg name="mujoco_initial_bottom_pressure" value="0.0"/>
-    <arg name="mujoco_cylinder_radius" value="$(arg cylinder_radius)"/>
+    <arg name="mujoco_forearm_half_length" value="$(arg forearm_half_length)"/>
+    <arg name="mujoco_forearm_proximal_width" value="$(arg forearm_width)"/>
+    <arg name="mujoco_forearm_proximal_depth" value="$(arg forearm_depth)"/>
+    <arg name="mujoco_forearm_distal_width" value="$(arg forearm_width)"/>
+    <arg name="mujoco_forearm_distal_depth" value="$(arg forearm_depth)"/>
     <arg name="mujoco_cylinder_pitch" value="$(arg cylinder_pitch)"/>
     <arg name="mujoco_grip_friction" value="$(arg grip_friction)"/>
     <arg name="mujoco_surface_friction" value="$(arg surface_friction)"/>
@@ -42,6 +62,17 @@
     <arg name="hybrid_lift_pressure_gain_kpa_s_rad" value="$(arg lift_pressure_gain)"/>
     <arg name="hybrid_lift_probe_sec" value="$(arg lift_seconds)"/>
     <arg name="hybrid_lift_search_rate_n_s" value="$(arg lift_rate)"/>
+    <arg name="hybrid_trajectory_windup_pitch_rad" value="$(arg windup_pitch)"/>
+    <arg name="hybrid_trajectory_windup_pitch_kp_n_rad" value="$(arg windup_pitch_kp)"/>
+    <arg name="hybrid_trajectory_windup_pitch_kd_n_s_rad" value="$(arg windup_pitch_kd)"/>
+    <arg name="hybrid_trajectory_windup_pitch_rate_max_rad_s" value="$(arg windup_pitch_rate_max)"/>
+    <arg name="hybrid_trajectory_windup_bottom_kpa" value="$(arg windup_bottom)"/>
+    <arg name="hybrid_trajectory_windup_extra_extension_rad" value="$(arg windup_extra_extension)"/>
+    <arg name="hybrid_trajectory_windup_hold_pressure_kpa" value="$(arg windup_hold_pressure)"/>
+    <arg name="hybrid_trajectory_windup_pressure_slew_kpa_s" value="$(arg windup_pressure_slew)"/>
+    <arg name="hybrid_trajectory_windup_rear_reverse_max_n" value="$(arg windup_rear_reverse_max)"/>
+    <arg name="hybrid_trajectory_windup_rear_reverse_rise_n_s" value="$(arg windup_rear_reverse_rise)"/>
+    <arg name="hybrid_locomotion_pitch_change_limit_rad" value="$(arg pitch_change_limit)"/>
     <arg name="hybrid_pull_min_sec" value="$(arg pull_min_sec)"/>
     <arg name="hybrid_probe_extension_rad" value="$(arg probe_extension_rad)"/>
     <arg name="maximum_pressure_kpa" value="$(arg pressure_limit)"/>

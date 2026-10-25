@@ -2,7 +2,7 @@
   <class
       name="hugmy/HugmyPneumaticHWSim"
       type="hugmy::HugmyPneumaticHWSim"
-      base_class_type="mujoco_ros_control::RobotHWSim">
+      base_class_type="mujoco_ros::control::RobotHWSim">
     <description>
       Hugmy flight and pneumatic arm simulation interface for MuJoCo.
     </description>

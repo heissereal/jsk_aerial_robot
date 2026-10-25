@@ -105,8 +105,8 @@ class MotorModel:
         self.maximum_pwm = float(rospy.get_param(prefix + "/max_pwm"))
         self.voltage = float(rospy.get_param(prefix + "/simulation/voltage", 21.2))
         self.conversion_mode = int(rospy.get_param(prefix + "/pwm_conversion_mode", 0))
-        self.positive_below = bool(rospy.get_param(
-            prefix + "/positive_thrust_below_neutral", True))
+        self.positive_below = (
+            float(rospy.get_param(prefix + "/ref1/max_thrust")) < 0.0)
 
         def curve(root: str) -> Tuple[float, Tuple[float, float, float]]:
             count = int(rospy.get_param(root + "/vel_ref_num"))
@@ -124,8 +124,8 @@ class MotorModel:
             return reference_voltage, coefficients
 
         # MotorInfo_3D_V keeps the low-PWM branch under /reverse for file-format
-        # compatibility even though positive_thrust_below_neutral makes it the
-        # positive-force branch.
+        # compatibility, even though its negative high-PWM max_thrust means
+        # the low-PWM branch produces positive force.
         self.high_pwm_curve = curve(prefix)
         self.low_pwm_curve = curve(prefix + "/reverse")
 

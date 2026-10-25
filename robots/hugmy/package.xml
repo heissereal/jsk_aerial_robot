@@ -36,6 +36,8 @@
   <run_depend>geometry_msgs</run_depend>
   <run_depend>sensor_msgs</run_depend>
   <run_depend>mujoco_ros_control</run_depend>
+  <run_depend>mujoco_ros_utils</run_depend>
+  <run_depend>mujoco_ros</run_depend>
   <run_depend>nav_msgs</run_depend>
   <run_depend>python3-rospkg</run_depend>
   <run_depend>python3-yaml</run_depend>
