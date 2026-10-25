@@ -56,6 +56,10 @@ struct AttitudePressureController {
  bool hybrid_keep_bottom_between_strokes_=true;double ppg_settle_sec_=0.;
  bool continuous_recovery_waiting_for_settle_=true,inchworm_active_=true;
  bool action_c_resume_pending_=true,action_c_preserve_adaptation_on_start_=true;
+ bool recovery_candidate_reselect_pending_=false;
+ bool recovery_circle_event_locked_=false;
+ unsigned recovery_rejected_candidate_mask_=0;
+ int recovery_rejected_direction_sign_=0;
  double action_c_requested_recovery_trigger_rad_=std::numeric_limits<double>::quiet_NaN();
  struct Gate {void reset(){}} action_c_recovery_gate_;
  PressureArray hybrid_grasp_pressure_{{50,30,30,50}},inchworm_thrust_{},prepare_shape_thrust_{},output{};

@@ -28,7 +28,11 @@ struct AttitudePressureController {
  bool continuous_recovery_started_=true, continuous_recovery_waiting_for_settle_=true;
  bool continuous_recovery_use_opposite_pair_=false;
  bool continuous_recovery_retry_opposite_pending_=false;
+ bool recovery_candidate_reselect_pending_=false;
+ bool recovery_circle_event_locked_=false;
  unsigned continuous_recovery_pair_switches_=0;
+ unsigned recovery_rejected_candidate_mask_=0;
+ int recovery_rejected_direction_sign_=0;
  struct Gate {void reset(){}} action_c_recovery_gate_;
  bool action_c_resume_pending_=false;
  std::array<double,2> action_c_resume_direction_{}, inchworm_direction_body_{{1,0}};

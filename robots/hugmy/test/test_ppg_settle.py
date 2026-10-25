@@ -11,7 +11,11 @@ config = (root / 'config/attitude_pressure_controller.yaml').read_text()
 assert 'pnh_.param("ppg_settle_sec", ppg_settle_sec_, 0.0)' in controller
 assert 'resume_ready, now.toSec(), ppg_settle_sec_' in controller
 assert 'publishCorrectionThrust(zero_thrust);' in controller
-assert 'publishBottomTarget(action_c_resume_pending_ ? 0.0' in controller
+grasp = controller[controller.index('        case GRASP:'):
+                   controller.index('        case PREPARE:',
+                                    controller.index('        case GRASP:'))]
+assert 'action_c_resume_pending_ ||' in grasp
+assert 'recovery_candidate_reselect_pending_) ? 0.0' in grasp
 
 phase2 = hybrid[hybrid.index('  if(hybrid_phase_==2) {'):
                 hybrid.index('  publishPressureTarget(inchworm_pressure_',
