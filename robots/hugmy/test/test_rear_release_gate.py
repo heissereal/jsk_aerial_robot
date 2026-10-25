@@ -17,7 +17,7 @@ def main():
     assert 'hybrid rear release lost' not in adapter  # intentional periodic grasp is not a fault
     single=(root/'include/hugmy/control/hybrid_single_pass.h').read_text()
     assert 'release_seen=release_seen || in.rear_released' in single
-    assert 'if(!posture_brake)' in single
+    assert 'phase==SlipProbe && !posture_brake' in single
     assert 'pressure_target[j]=0.' in single
     assert 'in.rear_grasped' in single
     replay = ''

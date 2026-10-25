@@ -20,8 +20,10 @@ assert 'case ACTION_C_HORIZONTAL_PULL:' not in controller
 assert 'return inchworm_action_c_enabled_ && !inchworm_action_d_enabled_;' in adapter
 assert 'updateHybridLocomotion(now, dt);\n      return;' in controller
 assert 'startHybridLocomotion(now);\n      return;' in controller
-assert 'Hybrid pre-inflation endpoint measured' in adapter
-assert 'pre-inflation/post-deflation endpoint means used' in adapter
+assert 'Hybrid regrip complete:' in adapter
+assert 'Hybrid bottom deflation complete:' in adapter
+assert 'Hybrid endpoint fixed at x' in adapter
+assert 'comparable settled support endpoint means used' in adapter
 assert 'publishBottomTarget(s.bottom_command);' in adapter
 assert 'beginHybridTerminalSettle(now,' in adapter
 config=yaml.safe_load((root/'config/attitude_pressure_controller.yaml').read_text())

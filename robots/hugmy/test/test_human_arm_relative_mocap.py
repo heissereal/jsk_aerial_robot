@@ -62,11 +62,19 @@ args = {arg.get('name'): arg.get('default') for arg in human.findall('arg')}
 assert abs(float(args['forward_distance_m']) - .10) < 1e-12
 assert args['enable_button'] == '4' and args['disable_button'] == '5'
 assert args['forward_button'] == '3' and args['stop_button'] == '1'
-assert abs(float(args['ppg_settle_sec']) - 10.0) < 1e-12
+assert abs(float(args['ppg_settle_sec'])) < 1e-12
+assert abs(float(args['hybrid_lift_rear_release_start_ratio']) - .10) < 1e-12
+assert abs(float(args['hybrid_lift_rear_pressure_floor_kpa'])) < 1e-12
+assert abs(float(args['hybrid_regrip_rear_hold_pressure_kpa']) - 10.0) < 1e-12
+assert args['hybrid_locomotion_outer_enabled'] == 'true'
 include = human.find('include')
 forwarded = {arg.get('name'): arg.get('value') for arg in include.findall('arg')}
 assert forwarded['hand_relative_mocap_enabled'] == 'true'
 assert forwarded['hand_target_selects_direction'] == 'true'
 assert forwarded['use_mocap_attitude_for_inchworm'] == 'false'
 assert forwarded['ppg_settle_sec'] == '$(arg ppg_settle_sec)'
-print('PASS: ID2 position-only reference, rigid-motion rejection, 100-mm Joy goal, legacy fallback')
+assert forwarded['hybrid_locomotion_outer_enabled'] == '$(arg hybrid_locomotion_outer_enabled)'
+assert forwarded['hybrid_lift_rear_release_start_ratio'] == '$(arg hybrid_lift_rear_release_start_ratio)'
+assert forwarded['hybrid_lift_rear_pressure_floor_kpa'] == '$(arg hybrid_lift_rear_pressure_floor_kpa)'
+assert forwarded['hybrid_regrip_rear_hold_pressure_kpa'] == '$(arg hybrid_regrip_rear_hold_pressure_kpa)'
+print('PASS: ID2 position-only reference, rigid-motion rejection, 100-mm Joy goal, online optimization enabled')

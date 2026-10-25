@@ -15,6 +15,8 @@ def main():
     assert 'hybrid_single_.phase==SinglePass::VentFront' in adapter
     assert 'hybrid_single_.phase==SinglePass::StopForLift' in adapter
     assert 'safety_state.floor.fill(std::max(hybrid_config_.bend_min,action_c_hard_min_bend_rad_))' in adapter
+    assert 'if(returning_from_straight_identification)' in adapter
+    assert 'safety_state.start_bend=s.bend;' in adapter
     assert 'hybrid_start_bend_=s.bend' in adapter
     code = r'''
 #include <hugmy/control/arm_bend_limits.h>

@@ -26,10 +26,16 @@ struct AttitudePressureController {
  std::array<double,3> mocap_position_{{.2,0,0}};
  int action_c_posture_recovery_count_=0, action_c_max_posture_recoveries_=5;
  bool continuous_recovery_started_=true, continuous_recovery_waiting_for_settle_=true;
+ bool continuous_recovery_use_opposite_pair_=false;
+ bool continuous_recovery_retry_opposite_pending_=false;
+ unsigned continuous_recovery_pair_switches_=0;
  struct Gate {void reset(){}} action_c_recovery_gate_;
  bool action_c_resume_pending_=false;
  std::array<double,2> action_c_resume_direction_{}, inchworm_direction_body_{{1,0}};
  double base_pressure_kpa_=30.;
+ double action_c_requested_recovery_trigger_rad_=std::numeric_limits<double>::quiet_NaN();
+ double action_c_posture_recovery_trigger_rad_=0.2;
+ double action_c_absolute_target_x_m_=0.1;
  std::array<double,4> inchworm_thrust_{{3.,0.,0.,2.8}}, inchworm_pressure_{};
  bool inchworm_active_=true, stopped=false;
  enum {GRASP=1}; int state=0;
@@ -43,8 +49,10 @@ struct AttitudePressureController {
  }
  void publishBottomTarget(double p) {assert(p==0.);publications.push_back(2);}
  void enterState(int s,ros::Time){state=s;}
- void requestActionCPostureRecovery(const ros::Time&,const char*);
+ void requestActionCPostureRecovery(const ros::Time&,const char*,
+     double=std::numeric_limits<double>::quiet_NaN());
  void pauseHybridLocomotion(const ros::Time&) {} // isolated accounting hook
+ std::array<double,3> locomotionPosition() const {return mocap_position_;}
 };
 REQUEST
 int main() {

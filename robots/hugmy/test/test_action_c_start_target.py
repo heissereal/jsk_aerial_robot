@@ -12,6 +12,7 @@ code=r'''
 #include <array>
 #include <cmath>
 #include <cassert>
+#include <limits>
 #define ROS_ERROR(...) ((void)0)
 namespace ros {struct Time {static Time now(){return {};}};}
 namespace geometry_msgs {
@@ -30,6 +31,10 @@ struct AttitudePressureController {
  bool continuous_recovery_blocked_=false,continuous_recovery_started_=false;
  bool continuous_recovery_waiting_for_settle_=false,action_c_resume_pending_=false;
  bool action_c_preserve_adaptation_on_start_=false;
+ bool continuous_recovery_use_opposite_pair_=false;
+ bool continuous_recovery_retry_opposite_pending_=false;
+ unsigned continuous_recovery_pair_switches_=0;
+ double action_c_requested_recovery_trigger_rad_=std::numeric_limits<double>::quiet_NaN();
  int starts=0,stops=0;
  void stopInchwormToGrasp(ros::Time,const char*){++stops;}
  Vector2 last_direction{{0,0}};

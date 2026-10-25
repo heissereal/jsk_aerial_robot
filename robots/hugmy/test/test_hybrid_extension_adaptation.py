@@ -12,7 +12,7 @@ code=r'''
 using namespace hugmy::hybrid;
 int main() {
  Config c; SinglePassConfig k; Model model; model.reset(c);
- auto flat=[](size_t,double,double,double){Force f;f.forward=1.;return f;};
+ auto flat=[](size_t,double a,double,double){Force f;f.forward=1.;f.up=std::max(0.,std::cos(a));return f;};
  SinglePassInput s;s.s.fresh=true;s.s.bend={{1.6,1.6}};s.s.start_bend=s.s.bend;
  s.s.floor={{.7,.7}};s.s.command={{30.,30.}};s.s.pressure=s.s.command;
  s.s.thrust={{3.,3.}};s.rear_released=true;
@@ -78,15 +78,23 @@ int main() {
  advance.identification_hold_thrust={{1.4,1.5}};advance.lift_ramp=advance_in.s.thrust;
  advance_in.s.bend={{1.35,1.35}};
  auto advance_out=advance.update(advance_in,c,k,model,flat);
+ // The common gentle search first brings the lower-demand side up to the
+ // existing pair demand; it must increase total authority without lowering
+ // the arm that already carries the larger breakaway force.
  assert(advance_out.thrust[0]>advance_in.s.thrust[0] &&
-     advance_out.thrust[1]>advance_in.s.thrust[1]);
- // With no motion, the full 15-s identification interval can explore well
- // beyond the old 1--2 N plateau instead of repeatedly undoing the rise.
+     advance_out.thrust[1]>=advance_in.s.thrust[1] &&
+     advance_out.thrust[0]+advance_out.thrust[1]>
+         advance_in.s.thrust[0]+advance_in.s.thrust[1]);
+ // With no motion, the common pulse increases in discrete bounded steps
+ // instead of remaining permanently at the initial 2-N level.
  for(int i=0;i<400;++i) {
    advance_in.s.thrust=advance_out.thrust;
    advance_out=advance.update(advance_in,c,k,model,flat);
  }
- assert(advance_out.thrust[0]>5. && advance_out.thrust[1]>5.);
+ assert(advance_out.thrust[0]>k.initial_pulse_max-.2 &&
+     advance_out.thrust[1]>k.initial_pulse_max-.2 &&
+     advance_out.thrust[0]<=k.initial_pulse_max+1e-9 &&
+     advance_out.thrust[1]<=k.initial_pulse_max+1e-9);
  // A lower-target override still supports the generic below-45-deg path: even
  // a large sub-safety-limit rate sample is ignored until the measured terminal
  // zone. Production uses the safer 60-deg unloading target.
@@ -99,14 +107,17 @@ int main() {
  auto low_out=low_angle.update(low_input,c,low_target_k,model,flat);
  assert(low_out.thrust[0]>low_input.s.thrust[0] &&
      low_angle.identification_fast_rate_time[0]==0.);
- // The measured final four-degree corridor, rather than angular-rate
- // prediction, is the only normal first-pass reason to lower thrust.
+ // An artificial low absolute-angle target cannot replace the measured
+ // unloading event or chop the simultaneous pulse.
  SinglePass terminal=advance;auto terminal_input=advance_in;
  terminal_input.s.bend={{23.*M_PI/180.,23.*M_PI/180.}};
  terminal_input.s.thrust={{2.,2.}};terminal_input.s.rate={{0.,0.}};
  terminal.lift_ramp=terminal_input.s.thrust;
  auto terminal_out=terminal.update(terminal_input,c,low_target_k,model,flat);
- assert(terminal_out.thrust[0]<terminal_input.s.thrust[0]);
+ assert(terminal_out.thrust[0]>=terminal_input.s.thrust[0] &&
+     terminal_out.thrust[0]<=terminal_input.s.thrust[0]+
+         low_target_k.initial_pulse_rise*terminal_input.dt+1e-9 &&
+     terminal_out.pressure[0]==0. && terminal_out.pressure[1]==0.);
  // A realistic long first reach has more than ten seconds available and can
  // establish both absolute targets before handing directly to motion 3.
  SinglePass reaches;auto reach_in=s;reach_in.s.bend={{1.90,1.90}};
@@ -124,6 +135,14 @@ int main() {
        std::max(0.,reach_in.s.thrust[0]-.8)*.5);
    reach_in.s.rate={{-physical_rate,-physical_rate}};
    for(double& a:reach_in.s.bend)a+=reach_in.s.rate[0]*reach_in.dt;
+   // Motion 2 now ends on measured body unloading, not on a fixed bend.
+   // Emulate the small mocap rise produced once both released arms have made
+   // the minimum paired extension. The signed forward-pitch corroboration is
+   // part of the same measured load-relief event.
+   if(1.90-reach_in.s.bend[0]>=k.unload_min_extension) {
+     reach_in.height=.003;
+     reach_in.directional_pitch=k.unload_min_pitch+.01;
+   }
  }
  assert(reaches.phase==SinglePass::Pull && reaches.calibrated);
  assert(std::isfinite(reaches.identified_bend_target[0]));
@@ -135,24 +154,22 @@ int main() {
  assert(sliding.onset[0].samples==0 && !sliding.onset_identified);
  sliding.enter(SinglePass::Lift,slip);
  assert(!sliding.onset_this_stroke[0] && sliding.onset[0].samples==0);
- // New stroke reuses memory with the Action-C rise, never past the learned
- // onset margin. Rear release is deliberately not a prerequisite: motion 2
- // now keeps the rear pair grasped until the predicted pre-vent.
+ // An unfinished calibration restarts the simultaneous pulse. A stale onset
+ // hint must not bring back the slow one-arm approach.
  s.s.bend={{1.6,1.6}};s.s.rate={{0.,0.}};s.s.thrust={{0.,0.}};
  p.lift_tested=true;p.calibrated=false;p.observed_extension=.1;
  s.rear_released=false;p.begin(s);p.enter(SinglePass::Lift,s);
  auto fast=p.update(s,c,k,model,flat);
- assert(p.fast_approach[0] && p.fast_approach[1] &&
-     fast.thrust[0]>c.thrust_rise*s.dt);
- assert(fast.thrust[0]<=k.approach_rise*s.dt+1e-9);
+ assert(p.fast_approach[0] && p.fast_approach[1]);
+ assert(fast.thrust[0]<=k.initial_pulse_rise*s.dt+1e-9);
  for(int i=0;i<90;++i){s.s.thrust=fast.thrust;fast=p.update(s,c,k,model,flat);}
- // The onset is an approach hint, not a ceiling: if contact changed and no
- // extension occurs, the reused stroke continues its bounded fast search.
- assert(fast.thrust[0]>p.onset[0].thrust-k.onset_margin_n);
+ // If no extension occurs, discrete pulse-amplitude steps continue the
+ // bounded search instead of stopping below an old breakaway estimate.
+ assert(fast.thrust[0]>1. && fast.thrust[0]<=k.initial_pulse_max+1e-9);
  assert(fast.thrust[0]<=c.thrust_max+1e-9);
- // A reused stroke keeps the fast approach but brakes before the 8-deg
- // target.  Its demand must remain above the measured sub-breakaway hold;
- // braking to zero makes one arm rebound while rear pressure is exhausting.
+ // The old 8-deg event is now a pneumatic timing hint, not a completion or
+ // thrust-braking target.  Without fresh body unloading, a reused stroke must
+ // keep the bounded search alive instead of dropping thrust at that angle.
  SinglePass shaped;auto near=s;near.s.bend={{1.6,1.6}};
  near.s.start_bend=near.s.bend;near.s.floor={{.7,.7}};
  near.s.pressure={{0.,0.}};near.s.command={{0.,0.}};
@@ -164,9 +181,8 @@ int main() {
  near.s.bend={{1.6-k.extension_rad+M_PI/180.,
                1.6-k.extension_rad+M_PI/180.}};
  auto shaped_o=shaped.update(near,c,k,model,flat);
- const double measured_hold=3.-k.onset_margin_n;
- assert(shaped_o.thrust[0]<near.s.thrust[0]);
- assert(shaped_o.thrust[0]>=measured_hold-1e-9);
+ assert(shaped_o.thrust[0]>=near.s.thrust[0] &&
+        shaped_o.thrust[0]<=near.s.thrust[0]+k.reused_lift_rise*near.dt+1e-9);
  // Early motion overrides the fast shortcut, but a single rate sample no
  // longer removes thrust from the first identification pass.
  s.s.thrust=fast.thrust;s.s.bend={{1.58,1.58}};s.s.rate={{-.3,-.3}};
