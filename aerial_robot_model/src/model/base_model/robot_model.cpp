@@ -109,6 +109,7 @@ namespace aerial_robot_model {
     auto robot_model_xml = getRobotModelXml("robot_description");
 
     /* set rotor property */
+    m_f_rate_ = 0.0;
     TiXmlElement* m_f_rate_attr = robot_model_xml.FirstChildElement("robot")->FirstChildElement("m_f_rate");
     if(!m_f_rate_attr)
       ROS_ERROR("Can not get m_f_rate attribute from urdf model");
@@ -119,6 +120,14 @@ namespace aerial_robot_model {
     // URDF value as the fallback for robots which do not provide this YAML.
     ros::NodeHandle nh;
     nh.param("motor_info/m_f_rate", m_f_rate_, m_f_rate_);
+    double low_pwm_m_f_rate = m_f_rate_;
+    nh.param("motor_info/reverse/m_f_rate", low_pwm_m_f_rate, m_f_rate_);
+    double high_pwm_max_thrust = 0.0;
+    nh.param("motor_info/ref1/max_thrust", high_pwm_max_thrust, 0.0);
+    // Existing allocation matrices describe positive thrust.  On a motor
+    // whose high-PWM branch produces negative thrust, use the low-PWM rate.
+    if(high_pwm_max_thrust < 0.0)
+      m_f_rate_ = low_pwm_m_f_rate;
 
     std::vector<urdf::LinkSharedPtr> urdf_links;
     model_.getLinks(urdf_links);

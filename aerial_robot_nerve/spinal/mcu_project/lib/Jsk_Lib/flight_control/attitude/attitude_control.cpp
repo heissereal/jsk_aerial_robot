@@ -11,6 +11,37 @@
 
 #include "flight_control/attitude/attitude_control.h"
 
+#ifndef SIMULATION
+namespace
+{
+uint16_t pwmToDshot(float pwm)
+{
+  if(!std::isfinite(pwm) || pwm <= 0.0f)
+    return DSHOT_DISARM_THROTTLE;
+
+#if BIDIRECTIONAL
+  if(fabsf(pwm - DSHOT_NEUTRAL_DUTY) < 1.0e-4f)
+    return DSHOT_DISARM_THROTTLE;
+
+  const uint16_t reverse_max = DSHOT_MIN_THROTTLE + DSHOT_RANGE / 2;
+  const uint16_t forward_min = reverse_max + 1;
+  if(pwm < DSHOT_NEUTRAL_DUTY)
+    {
+      const float throttle = (DSHOT_NEUTRAL_DUTY - std::max(IDLE_DUTY, pwm)) /  (DSHOT_NEUTRAL_DUTY - IDLE_DUTY);
+      return static_cast<uint16_t>(DSHOT_MIN_THROTTLE + throttle * (reverse_max - DSHOT_MIN_THROTTLE));
+    }
+  const float throttle = (std::min(MAX_PWM, pwm) - DSHOT_NEUTRAL_DUTY) / (MAX_PWM - DSHOT_NEUTRAL_DUTY);
+  return static_cast<uint16_t>(forward_min + throttle * (DSHOT_MAX_THROTTLE - forward_min));
+#else
+  if(pwm <= IDLE_DUTY) return DSHOT_DISARM_THROTTLE;
+  if(pwm >= MAX_PWM) return DSHOT_MAX_THROTTLE;
+  return static_cast<uint16_t>((pwm - IDLE_DUTY) /
+    (MAX_PWM - IDLE_DUTY) * DSHOT_RANGE + DSHOT_MIN_THROTTLE);
+#endif
+}
+}
+#endif
+
 #ifdef SIMULATION
 #include <sensor_msgs/JointState.h>
 AttitudeController::AttitudeController(): DELTA_T(0), prev_time_(-1), sim_voltage_(0)
@@ -147,8 +178,8 @@ void AttitudeController::baseInit()
   max_duty_ = IDLE_DUTY; //should assign right value from PC(ros)
   neutral_duty_ = DSHOT_NEUTRAL_DUTY;
   bidirectional_ = false;
-  positive_thrust_below_neutral_ = false;
   min_thrust_ = 0;
+  idle_thrust_ = 0;
   force_landing_thrust_ = 0;
   pwm_pub_last_time_ = 0;
   pwm_test_flag_ = false;
@@ -157,10 +188,8 @@ void AttitudeController::baseInit()
   // voltage
   motor_info_.resize(0);
   reverse_motor_info_.resize(0);
-  motor_ref_index_ = 0;
-  reverse_motor_ref_index_ = 0;
   v_factor_ = 1.0f;
-  reverse_v_factor_ = 1.0f;
+  motor_ref_index_ = 0;
   voltage_update_last_time_ = 0;
 
   control_term_pub_last_time_ = 0;
@@ -240,48 +269,7 @@ void AttitudeController::pwmsControl(void)
       uint16_t motor_value[4] = { 0, 0, 0, 0 };
       for (int i = 0; i < 4; i++)
         {
-#if BIDIRECTIONAL
-          /* DShot 3D: 0.75 is stop; either side selects a direction. */
-          const uint16_t reverse_max =
-            (DSHOT_MIN_THROTTLE + DSHOT_MAX_THROTTLE) / 2;
-          const uint16_t forward_min = reverse_max + 1;
-          uint16_t motor_v = 0;
-
-          if (fabsf(target_pwm_[i] - DSHOT_NEUTRAL_DUTY) >= 1.0e-4f)
-            {
-              if (target_pwm_[i] < DSHOT_NEUTRAL_DUTY)
-                {
-                  const float pwm = std::max(IDLE_DUTY, target_pwm_[i]);
-                  const float throttle = (DSHOT_NEUTRAL_DUTY - pwm) /
-                    (DSHOT_NEUTRAL_DUTY - IDLE_DUTY);
-                  motor_v = static_cast<uint16_t>(DSHOT_MIN_THROTTLE +
-                    throttle * (reverse_max - DSHOT_MIN_THROTTLE));
-                }
-              else
-                {
-                  const float pwm = std::min(MAX_PWM, target_pwm_[i]);
-                  const float throttle = (pwm - DSHOT_NEUTRAL_DUTY) /
-                    (MAX_PWM - DSHOT_NEUTRAL_DUTY);
-                  motor_v = static_cast<uint16_t>(forward_min +
-                    throttle * (DSHOT_MAX_THROTTLE - forward_min));
-                }
-            }
-#else
-          // target_pwm_: 0.5 ~ 1.0
-          uint16_t motor_v = (uint16_t)((target_pwm_[i] - 0.5) / 0.5 * DSHOT_RANGE + DSHOT_MIN_THROTTLE);
-#endif
-
-          if (motor_v == 0)
-            {
-              motor_value[i] = 0;
-              continue;
-            }
-          else if (motor_v > DSHOT_MAX_THROTTLE)
-            motor_v = DSHOT_MAX_THROTTLE;
-          else if (motor_v < DSHOT_MIN_THROTTLE)
-            motor_v = DSHOT_MIN_THROTTLE;
-    
-          motor_value[i] = motor_v;
+          motor_value[i] = pwmToDshot(target_pwm_[i]);
         }
       dshot_->write(motor_value, dshot_->is_telemetry_);
 
@@ -361,7 +349,8 @@ void AttitudeController::update(void)
       rot.to_euler(&angles.x, &angles.y, &angles.z);
 
       /* failsafe 3: too large tile angle */
-      if(!force_landing_flag_  && (fabs(angles[X]) > MAX_TILT_ANGLE || fabs(angles[Y]) > MAX_TILT_ANGLE))
+      if(min_thrust_ >= 0 && !force_landing_flag_ &&
+         (fabs(angles[X]) > MAX_TILT_ANGLE || fabs(angles[Y]) > MAX_TILT_ANGLE))
         {
 #ifdef SIMULATION
           ROS_ERROR("failsafe: the roll pitch angles are too large, roll: %f (%f), pitch: %f (%f)",
@@ -473,10 +462,12 @@ void AttitudeController::update(void)
           /* average */
           float average_thrust = total_thrust / motor_number_;
 
-          if(average_thrust > force_landing_thrust_)
+          if(fabsf(average_thrust) > force_landing_thrust_)
             {
+              const float sign = average_thrust > 0.0f ? 1.0f : -1.0f;
               for(int i = 0; i < motor_number_; i++)
-                base_thrust_term_[i] -= (base_thrust_term_[i] / average_thrust * FORCE_LANDING_INTEGRAL);
+                base_thrust_term_[i] -= sign *
+                  (base_thrust_term_[i] / average_thrust * FORCE_LANDING_INTEGRAL);
             }
         }
     }
@@ -542,7 +533,7 @@ void AttitudeController::fourAxisCommandCallback( const spinal::FourAxisCommand 
 
 
   /* failsafe: if the pitch and roll angle is too big, start force landing */
-  if(fabs(cmd_msg.angles[0]) > MAX_TILT_ANGLE || fabs(cmd_msg.angles[1]) > MAX_TILT_ANGLE )
+  if(min_thrust_ >= 0 && (fabs(cmd_msg.angles[0]) > MAX_TILT_ANGLE || fabs(cmd_msg.angles[1]) > MAX_TILT_ANGLE))
     {
       setForceLandingFlag(true);
 #ifdef SIMULATION
@@ -573,7 +564,11 @@ void AttitudeController::fourAxisCommandCallback( const spinal::FourAxisCommand 
       float total_thrust = 0;
       for(int i = 0; i < motor_number_; i++) total_thrust += cmd_msg.base_thrust[i];
       float average_thrust = total_thrust / motor_number_;
-      if(average_thrust < force_landing_thrust_) return;
+      if(fabsf(average_thrust) < force_landing_thrust_) return;
+      float total_current = 0.0f;
+      for(int i = 0; i < motor_number_; i++)
+        total_current += base_thrust_term_[i];
+      if(fabsf(average_thrust) > fabsf(total_current / motor_number_)) return;
     }
 
 
@@ -589,19 +584,19 @@ void AttitudeController::fourAxisCommandCallback( const spinal::FourAxisCommand 
   target_angle_[X] = cmd_msg.angles[0];
   target_angle_[Y] = cmd_msg.angles[1];
 
-  int max_yaw_term_index = max_yaw_term_index_;
-  float max_yaw_thrust_d_gain = thrust_d_gain_[max_yaw_term_index_][Z];
-
   for(int i = 0; i < motor_number_; i++)
     {
       // base thrust is about the z control
-      base_thrust_term_[i] = cmd_msg.base_thrust[i];
+      if(!force_landing_flag_)
+        base_thrust_term_[i] = cmd_msg.base_thrust[i];
 
       // reconstruct the pi term for yaw (temporary measure for pwm saturation avoidance)
-      // if(max_yaw_term_index_ != -1)
-      //   extra_yaw_pi_term_[i] = cmd_msg.angles[Z] * thrust_d_gain_[i][Z] / thrust_d_gain_[max_yaw_term_index_][Z];
-      if(max_yaw_term_index != -1)
-        extra_yaw_pi_term_[i] = cmd_msg.angles[Z] * thrust_d_gain_[i][Z] / max_yaw_thrust_d_gain;
+      if(max_yaw_term_index_ >= 0 &&
+         fabsf(thrust_d_gain_[max_yaw_term_index_][Z]) > 1.0e-8f)
+        extra_yaw_pi_term_[i] = cmd_msg.angles[Z] * thrust_d_gain_[i][Z] /
+          thrust_d_gain_[max_yaw_term_index_][Z];
+      else
+        extra_yaw_pi_term_[i] = 0.0f;
     }
 
 #ifndef SIMULATION
@@ -622,25 +617,13 @@ void AttitudeController::pwmInfoCallback( const spinal::PwmInfo &info_msg)
   min_duty_ = info_msg.min_pwm;
   max_duty_ = info_msg.max_pwm;
   neutral_duty_ = info_msg.neutral_pwm;
-  bidirectional_ = info_msg.bidirectional;
-  positive_thrust_below_neutral_ =
-    info_msg.positive_thrust_below_neutral;
-  if(!bidirectional_ || neutral_duty_ <= min_duty_ ||
-     neutral_duty_ >= max_duty_)
-    {
-      bidirectional_ = false;
-      neutral_duty_ = min_duty_;
-    }
   pwm_conversion_mode_ = info_msg.pwm_conversion_mode;
 
-  min_thrust_ = info_msg.min_thrust; // make a variant min_duty_
+  min_thrust_ = info_msg.min_thrust;
+  idle_thrust_ = info_msg.idle_thrust;
 
   motor_info_.resize(0);
   reverse_motor_info_.resize(0);
-  motor_ref_index_ = 0;
-  reverse_motor_ref_index_ = 0;
-  v_factor_ = 1.0f;
-  reverse_v_factor_ = 1.0f;
 
 #ifdef SIMULATION
   for(int i = 0; i < info_msg.motor_info.size(); i++)
@@ -659,6 +642,11 @@ void AttitudeController::pwmInfoCallback( const spinal::PwmInfo &info_msg)
     {
       reverse_motor_info_.push_back(info_msg.reverse_motor_info[i]);
     }
+
+  if(motor_ref_index_ >= motor_info_.size()) motor_ref_index_ = 0;
+
+  bidirectional_ = !reverse_motor_info_.empty() && neutral_duty_ > min_duty_ && neutral_duty_ < max_duty_;
+  if(!bidirectional_) neutral_duty_ = min_duty_;
 
 #ifdef SIMULATION
   if(sim_voltage_ == 0 && motor_info_.size() > 0)
@@ -847,6 +835,11 @@ void AttitudeController::pwmTestCallback(const spinal::PwmTest& pwm_msg)
         pwm_test_last_command_ms_ = HAL_GetTick();
       for(int i = 0; i < pwm_msg.motor_index_length; i++){
         int motor_index = pwm_msg.motor_index[i];
+        if(motor_index >= MAX_MOTOR_NUMBER)
+          {
+            nh_->logerror("The motor index is out of range");
+            continue;
+          }
         /*fail safe*/
         if (motor_index < 4)
           {
@@ -1012,14 +1005,34 @@ void AttitudeController::offsetRotCallback(const spinal::DesireCoord& msg)
 bool AttitudeController::activated()
 {
   /* uav model check and motor property */
+#if BIDIRECTIONAL
+  if(!bidirectional_) return false;
+#endif
   const bool curves_ready = motor_info_.size() > 0 &&
-    (!bidirectional_ || reverse_motor_info_.size() > 0);
+    (!bidirectional_ || sharedVoltageReferences());
   if(motor_number_ > 0 && uav_model_ >= spinal::UavInfo::DRONE &&
      max_duty_ > min_duty_ && curves_ready) return true;
   else return false;
 }
 
-float AttitudeController::forceMagnitudeAtPwm(
+bool AttitudeController::sharedVoltageReferences() const
+{
+  // One reference index and voltage factor serve both PWM directions.
+  if(motor_info_.empty() || motor_info_.size() != reverse_motor_info_.size())
+    return false;
+  for(size_t i = 0; i < motor_info_.size(); ++i)
+    {
+      const float forward_voltage = motor_info_[i].voltage;
+      const float reverse_voltage = reverse_motor_info_[i].voltage;
+      if(!std::isfinite(forward_voltage) || forward_voltage <= 1.0e-3f ||
+         !std::isfinite(reverse_voltage) ||
+         fabsf(forward_voltage - reverse_voltage) > 1.0e-3f)
+        return false;
+    }
+  return true;
+}
+
+float AttitudeController::forceAtPwm(
   const spinal::MotorInfo& motor_info, float pwm) const
 {
   if(bidirectional_ && fabsf(pwm - neutral_duty_) <= 1.0e-5f)
@@ -1028,47 +1041,37 @@ float AttitudeController::forceMagnitudeAtPwm(
   const float force = motor_info.polynominal[0] +
     (motor_info.polynominal[1] * pwm_percent +
      motor_info.polynominal[2] * pwm_percent * pwm_percent) * 0.1f;
-  return fabsf(force);
+  return force;
 }
 
 void AttitudeController::updateMotorReference(float voltage)
 {
-  if(voltage <= 1.0e-3f) return;
+  if(voltage <= 1.0e-3f || motor_info_.empty()) return;
 
-  auto update_reference = [this, voltage](
-    const std::vector<spinal::MotorInfo>& infos,
-    uint8_t& reference_index, float& voltage_factor)
+  float minimum_voltage_difference = 1.0e6f;
+  for(size_t i = 0; i < motor_info_.size(); ++i)
     {
-      if(infos.size() == 0) return;
-      float minimum_voltage_difference = 1.0e6f;
-      for(size_t i = 0; i < infos.size(); ++i)
+      const float difference = fabsf(voltage - motor_info_[i].voltage);
+      if(difference < minimum_voltage_difference)
         {
-          const float difference = fabsf(voltage - infos[i].voltage);
-          if(difference < minimum_voltage_difference)
-            {
-              reference_index = static_cast<uint8_t>(i);
-              minimum_voltage_difference = difference;
-            }
+          motor_ref_index_ = static_cast<uint8_t>(i);
+          minimum_voltage_difference = difference;
         }
+    }
 
-      const float ratio = infos[reference_index].voltage / voltage;
-      switch(pwm_conversion_mode_)
-        {
-        case spinal::MotorInfo::SQRT_MODE:
-          voltage_factor = ratio * ratio;
-          break;
-        case spinal::MotorInfo::POLYNOMINAL_MODE:
-          voltage_factor = ratio * ap::inv_sqrt(1.0f / ratio);
-          break;
-        default:
-          voltage_factor = 1.0f;
-          break;
-        }
-    };
-
-  update_reference(motor_info_, motor_ref_index_, v_factor_);
-  update_reference(reverse_motor_info_, reverse_motor_ref_index_,
-                   reverse_v_factor_);
+  const float ratio = motor_info_[motor_ref_index_].voltage / voltage;
+  switch(pwm_conversion_mode_)
+    {
+    case spinal::MotorInfo::SQRT_MODE:
+      v_factor_ = ratio * ratio;
+      break;
+    case spinal::MotorInfo::POLYNOMINAL_MODE:
+      v_factor_ = ratio * ap::inv_sqrt(1.0f / ratio);
+      break;
+    default:
+      v_factor_ = 1.0f;
+      break;
+    }
 }
 
 float AttitudeController::convertThrustToPwm(float target_thrust) const
@@ -1115,48 +1118,51 @@ float AttitudeController::convertThrustToPwm(float target_thrust) const
   if(fabsf(thrust) <= 1.0e-4f) return neutral_duty_;
 
   const bool positive_thrust = thrust > 0.0f;
+  // motor_info_ describes the high-PWM branch; its signed limit gives the
+  // direction of thrust above neutral PWM.
   const bool low_pwm_branch =
-    positive_thrust == positive_thrust_below_neutral_;
+    positive_thrust == (motor_info_[0].max_thrust < 0.0f);
   const std::vector<spinal::MotorInfo>& infos =
     low_pwm_branch ? reverse_motor_info_ : motor_info_;
   if(infos.size() == 0) return neutral_duty_;
-  const size_t index = std::min(
-    static_cast<size_t>(low_pwm_branch ? reverse_motor_ref_index_
-                                       : motor_ref_index_),
-    infos.size() - 1);
-  const spinal::MotorInfo& info = infos[index];
-  const float voltage_factor = low_pwm_branch ? reverse_v_factor_ : v_factor_;
-  const float reference_thrust = voltage_factor * fabsf(thrust);
+  const spinal::MotorInfo& info = infos[motor_ref_index_];
+  const float reference_thrust = v_factor_ * fabsf(thrust);
   const float lower_pwm = low_pwm_branch ? min_duty_ : neutral_duty_;
   const float upper_pwm = low_pwm_branch ? neutral_duty_ : max_duty_;
   float target_pwm = neutral_duty_;
 
   if(pwm_conversion_mode_ == spinal::MotorInfo::SQRT_MODE)
     {
-      float lower = lower_pwm;
-      float upper = upper_pwm;
-      const float lower_force = forceMagnitudeAtPwm(info, lower);
-      const float upper_force = forceMagnitudeAtPwm(info, upper);
-      const bool increasing = upper_force >= lower_force;
+      const float lower_force = fabsf(forceAtPwm(info, lower_pwm));
+      const float upper_force = fabsf(forceAtPwm(info, upper_pwm));
       const float minimum_force = std::min(lower_force, upper_force);
       const float maximum_force = std::max(lower_force, upper_force);
       if(reference_thrust <= minimum_force)
-        target_pwm = lower_force <= upper_force ? lower : upper;
+        target_pwm = lower_force <= upper_force ? lower_pwm : upper_pwm;
       else if(reference_thrust >= maximum_force)
-        target_pwm = lower_force >= upper_force ? lower : upper;
+        target_pwm = lower_force >= upper_force ? lower_pwm : upper_pwm;
       else
         {
-          for(int iteration = 0; iteration < 24; ++iteration)
+          const float discriminant =
+            info.polynominal[1] * info.polynominal[1] -
+            40.0f * info.polynominal[2] *
+            (info.polynominal[0] -
+             copysignf(reference_thrust,
+               forceAtPwm(info, low_pwm_branch ? lower_pwm : upper_pwm)));
+          if(discriminant >= 0.0f && fabsf(info.polynominal[2]) > 1.0e-8f)
             {
-              const float middle = 0.5f * (lower + upper);
-              const float middle_force = forceMagnitudeAtPwm(info, middle);
-              if((increasing && middle_force < reference_thrust) ||
-                 (!increasing && middle_force > reference_thrust))
-                lower = middle;
-              else
-                upper = middle;
+              const float square_root = sqrtf(discriminant);
+              const float first_pwm =
+                0.01f * (-info.polynominal[1] + square_root) /
+                (2.0f * info.polynominal[2]);
+              const float second_pwm =
+                0.01f * (-info.polynominal[1] - square_root) /
+                (2.0f * info.polynominal[2]);
+              if(first_pwm >= lower_pwm && first_pwm <= upper_pwm)
+                target_pwm = first_pwm;
+              else if(second_pwm >= lower_pwm && second_pwm <= upper_pwm)
+                target_pwm = second_pwm;
             }
-          target_pwm = 0.5f * (lower + upper);
         }
     }
   else if(pwm_conversion_mode_ == spinal::MotorInfo::POLYNOMINAL_MODE)
@@ -1232,7 +1238,7 @@ void AttitudeController::pwmConversion()
     }
 
   bool motor_config_ready = motor_info_.size() > 0 &&
-    (!bidirectional_ || reverse_motor_info_.size() > 0);
+    (!bidirectional_ || sharedVoltageReferences());
 #if BIDIRECTIONAL
   // This firmware maps values around 0.75 to the two DShot 3D directions.  A
   // conventional/invalid runtime configuration must therefore never arm.
@@ -1255,8 +1261,8 @@ void AttitudeController::pwmConversion()
 
       updateMotorReference(voltage);
 
-      if(!bidirectional_ && min_thrust_ > 0)
-        min_duty_ = convert(min_thrust_);
+      if(!bidirectional_ && idle_thrust_ > 0)
+        min_duty_ = convert(idle_thrust_);
 
       voltage_update_last_time_ = HAL_GetTick();
     }
@@ -1265,23 +1271,18 @@ void AttitudeController::pwmConversion()
   /* get the decreasing rate for the thrust to avoid the divergence because of the pwm saturation */
   float base_thrust_decreasing_rate = 0;
   float yaw_decreasing_rate = 0;
-  const bool positive_low_pwm = bidirectional_ &&
-    positive_thrust_below_neutral_;
-  const std::vector<spinal::MotorInfo>& positive_motor_info =
-    positive_low_pwm ? reverse_motor_info_ : motor_info_;
-  const size_t positive_reference_index = std::min(
-    static_cast<size_t>(positive_low_pwm ? reverse_motor_ref_index_
-                                         : motor_ref_index_),
-    positive_motor_info.size() - 1);
-  const float positive_voltage_factor =
-    positive_low_pwm ? reverse_v_factor_ : v_factor_;
-  float thrust_limit = fabsf(
-    positive_motor_info[positive_reference_index].max_thrust) /
-    positive_voltage_factor;
+  const bool signed_thrust_control = bidirectional_ && min_thrust_ < 0.0f;
+  const float fixed_rotor_min_thrust = signed_thrust_control
+    ? min_thrust_ : std::max(std::max(0.0f, min_thrust_), idle_thrust_);
+  const bool positive_low_pwm = bidirectional_ && motor_info_[0].max_thrust < 0.0f;
+  const std::vector<spinal::MotorInfo>& positive_motor_info = positive_low_pwm ? reverse_motor_info_ : motor_info_;
+  float thrust_limit = fabsf(positive_motor_info[motor_ref_index_].max_thrust) /v_factor_;
 
   /* check saturation level 2: z control saturation */
   float max_thrust = 0;
   int max_thrust_index = 0;
+  float min_thrust_actual = 0;
+  int min_thrust_actual_index = 0;
   for(int i = 0; i < motor_number_ / rotor_coef_; i++)
     {
       float thrust;
@@ -1304,6 +1305,11 @@ void AttitudeController::pwmConversion()
           max_thrust = thrust;
           max_thrust_index = i;
         }
+      if(min_thrust_actual > thrust)
+        {
+          min_thrust_actual = thrust;
+          min_thrust_actual_index = i;
+        }
     }
   if(start_control_flag_)
     {
@@ -1316,7 +1322,24 @@ void AttitudeController::pwmConversion()
         }
       else
         {
-          if(max_yaw_term_index_ != -1 && fabs(base_thrust_term_[0]) > 0 )
+          bool neg_saturated = false;
+          if(signed_thrust_control)
+            {
+              const float residual_term_neg =
+                min_thrust_actual / rotor_devider_ - min_thrust_;
+              if(residual_term_neg < 0.0f &&
+                 base_thrust_term_[min_thrust_actual_index] < 0.0f)
+                {
+                  base_thrust_decreasing_rate = std::max(-1.0f,
+                    residual_term_neg /
+                    (fabsf(base_thrust_term_[min_thrust_actual_index]) /
+                     rotor_devider_));
+                  yaw_decreasing_rate = -1.0f;
+                  neg_saturated = true;
+                }
+            }
+          if(max_yaw_term_index_ != -1 &&
+             fabs(base_thrust_term_[0]) > 0 && !neg_saturated)
             {
               /* check saturation level1: yaw control saturation */
               max_thrust = 0;
@@ -1352,7 +1375,9 @@ void AttitudeController::pwmConversion()
                 }
 
               float residual_term_max =  thrust_limit - max_thrust / rotor_devider_;
-              float residual_term_min =  min_thrust / rotor_devider_ - min_thrust_;
+              const float lower_thrust_limit = gimbal_dof_ == 0
+                ? fixed_rotor_min_thrust : min_thrust_;
+              float residual_term_min =  min_thrust / rotor_devider_ - lower_thrust_limit;
               int thrust_index = 0;
               if (residual_term_min < residual_term_max)
                 {
@@ -1375,7 +1400,7 @@ void AttitudeController::pwmConversion()
             }
           else
             {
-              yaw_decreasing_rate = -1;
+              if(!neg_saturated) yaw_decreasing_rate = -1;
             }
         }
     }
@@ -1384,14 +1409,9 @@ void AttitudeController::pwmConversion()
   {
     target_thrust_[i] = roll_pitch_term_[i] + (1 + base_thrust_decreasing_rate) * base_thrust_term_[i] + (1 + yaw_decreasing_rate) * yaw_term_[i];
 
-    // A fixed rotor must never reverse in normal flight.  While armed, keep
-    // at least min_thrust_ on every fixed rotor so bidirectional ESCs retain
-    // the conventional low-speed arming idle.  The disarmed path returns
-    // earlier from pwmConversion() and therefore still sends neutral/stop.
-    // Reverse PWM remains reachable only through the PwmTest branch above.
     if(gimbal_dof_ == 0)
-      target_thrust_[i] = std::max(
-        std::max(0.0f, min_thrust_), target_thrust_[i]);
+      target_thrust_[i] = std::max(fixed_rotor_min_thrust,
+                                   target_thrust_[i]);
 
     /* for ros */
     thrust_msg_.thrust[i] = target_thrust_[i];
@@ -1430,6 +1450,21 @@ void AttitudeController::pwmConversion()
                 f_i.z = target_thrust_[i*2+1];
                 float gimbal_candidate = atan2f(-f_i.x, f_i.z);
                 target_thrust_[i] = ap::pythagorous2(f_i.x,f_i.z);
+                if(signed_thrust_control)
+                  {
+                    const float half_pi = 1.57079632679f;
+                    const float pi = 3.14159265359f;
+                    if(gimbal_candidate > half_pi)
+                      {
+                        gimbal_candidate -= pi;
+                        target_thrust_[i] *= -1.0f;
+                      }
+                    else if(gimbal_candidate < -half_pi)
+                      {
+                        gimbal_candidate += pi;
+                        target_thrust_[i] *= -1.0f;
+                      }
+                  }
 
                 /* simple lpf */
                 if(std::isfinite(gimbal_candidate)) target_gimbal_angles_[i] =(target_gimbal_angles_[i]+ gimbal_candidate)/2;

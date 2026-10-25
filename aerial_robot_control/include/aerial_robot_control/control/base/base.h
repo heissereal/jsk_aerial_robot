@@ -35,6 +35,7 @@
 
 #pragma once
 
+#include <algorithm>
 
 #include <aerial_robot_control/flight_navigation.h>
 #include <aerial_robot_estimation/state_estimation.h>
@@ -83,12 +84,9 @@ namespace aerial_robot_control
       getParam<double>(motor_nh, "max_pwm", max_pwm_, 0.0);
       getParam<double>(motor_nh, "min_pwm", min_pwm_, 0.0);
       getParam<double>(motor_nh, "neutral_pwm", neutral_pwm_, min_pwm_);
-      getParam<bool>(motor_nh, "bidirectional", bidirectional_, false);
-      getParam<bool>(motor_nh, "positive_thrust_below_neutral",
-                     positive_thrust_below_neutral_, false);
       getParam<double>(motor_nh, "min_thrust", min_thrust_, 0.0);
+      getParam<double>(motor_nh, "idle_thrust", idle_thrust_, std::max(0.0, min_thrust_));
       getParam<double>(motor_nh, "force_landing_thrust", force_landing_thrust_, 0.0);
-      getParam<double>(motor_nh, "m_f_rate", m_f_rate_, 0.0);
       getParam<int>(motor_nh, "pwm_conversion_mode", pwm_conversion_mode_, -1);
 
       int vel_ref_num;
@@ -174,10 +172,8 @@ namespace aerial_robot_control
           motor_info_msg.max_pwm = max_pwm_;
           motor_info_msg.min_pwm = min_pwm_;
           motor_info_msg.neutral_pwm = neutral_pwm_;
-          motor_info_msg.bidirectional = bidirectional_;
-          motor_info_msg.positive_thrust_below_neutral =
-              positive_thrust_below_neutral_;
           motor_info_msg.min_thrust = min_thrust_;
+          motor_info_msg.idle_thrust = idle_thrust_;
           motor_info_msg.force_landing_thrust = force_landing_thrust_;
           motor_info_msg.pwm_conversion_mode = pwm_conversion_mode_;
           motor_info_msg.motor_info.resize(0);
@@ -221,10 +217,9 @@ namespace aerial_robot_control
     int motor_num_;
     int uav_model_;
 
-    double m_f_rate_;
     double max_pwm_, min_pwm_, neutral_pwm_;
-    bool bidirectional_, positive_thrust_below_neutral_;
     double min_thrust_;
+    double idle_thrust_;
     std::vector<spinal::MotorInfo> motor_info_;
     std::vector<spinal::MotorInfo> reverse_motor_info_;
 

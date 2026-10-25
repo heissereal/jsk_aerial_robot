@@ -277,7 +277,7 @@ bool UnderActuatedLQIController::runTakeoffPreTension()
     {
       takeoff_pre_tension_start_ = now;
       ROS_INFO("Takeoff pre-tension started: %.2f -> %.2f N per rotor over %.2f s",
-               std::max(0.0, min_thrust_), takeoff_pre_tension_thrust_,
+               std::max(0.0, idle_thrust_), takeoff_pre_tension_thrust_,
                takeoff_pre_tension_thrust_ramp_duration_);
     }
 
@@ -288,7 +288,7 @@ bool UnderActuatedLQIController::runTakeoffPreTension()
   // Smoothstep avoids a thrust-rate step at both ends of the pre-tension ramp.
   const double smooth_thrust_ramp_ratio =
       thrust_ramp_ratio * thrust_ramp_ratio * (3.0 - 2.0 * thrust_ramp_ratio);
-  const double idle_thrust = std::max(0.0, min_thrust_);
+  const double idle_thrust = std::max(0.0, idle_thrust_);
   const double pre_tension_command =
       idle_thrust + smooth_thrust_ramp_ratio *
       (takeoff_pre_tension_thrust_ - idle_thrust);

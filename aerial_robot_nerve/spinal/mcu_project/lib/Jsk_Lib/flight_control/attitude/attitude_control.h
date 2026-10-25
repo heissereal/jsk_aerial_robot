@@ -242,17 +242,15 @@ private:
   float max_duty_;
   float neutral_duty_;
   bool bidirectional_;
-  bool positive_thrust_below_neutral_;
-  float min_thrust_; // max thrust is variant according to the voltage
+  float min_thrust_; // signed lower thrust limit
+  float idle_thrust_; // minimum thrust while armed
   float force_landing_thrust_;
   int8_t rotor_devider_;
   int8_t pwm_conversion_mode_;
   std::vector<spinal::MotorInfo> motor_info_;
   std::vector<spinal::MotorInfo> reverse_motor_info_;
   uint8_t motor_ref_index_;
-  uint8_t reverse_motor_ref_index_;
   float v_factor_;
-  float reverse_v_factor_;
   uint32_t voltage_update_last_time_;
   uint32_t control_term_pub_last_time_, control_feedback_state_pub_last_time_;
   uint32_t pwm_pub_last_time_;
@@ -274,9 +272,9 @@ private:
   void pwmConversion(void);
   void pwmsControl(void);
   void updateMotorReference(float voltage);
+  bool sharedVoltageReferences() const;
   float convertThrustToPwm(float target_thrust) const;
-  float forceMagnitudeAtPwm(const spinal::MotorInfo& motor_info,
-                            float pwm) const;
+  float forceAtPwm(const spinal::MotorInfo& motor_info, float pwm) const;
 
   void reset(void);
 

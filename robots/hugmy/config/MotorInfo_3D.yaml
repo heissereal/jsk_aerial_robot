@@ -3,7 +3,6 @@ motor_info:
   min_pwm: 0.5
   neutral_pwm: 0.75
   max_pwm: 0.975
-  bidirectional: true
   min_thrust: -0.2
   force_landing_thrust: 1.0
 

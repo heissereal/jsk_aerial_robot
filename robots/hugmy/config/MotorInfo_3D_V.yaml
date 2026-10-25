@@ -3,29 +3,17 @@ motor_info:
   min_pwm: 0.5
   neutral_pwm: 0.75
   max_pwm: 0.975
-  bidirectional: true
-  # This ESC/motor combination has the opposite polarity from the previous
-  # MotorInfo_3D model: commands below neutral generate positive thrust.
+  # The measured low-PWM branch produces the forward/positive thrust used to
+  # extend an arm.  Both the real PWM publisher and MuJoCo motor model read
+  # this polarity so the same signed thrust command has the same effect.
   positive_thrust_below_neutral: true
-  # Keep every rotor turning slowly after arming, as in the conventional ESC
-  # implementation. 0.2 N mapped to PWM 1499 on the real ESC and could not
-  # sustain rotation, so use the first practical idle point above stiction.
-  # Normal flight remains positive-only; reverse thrust is available
-  # exclusively through the direct PwmTest path.
-  min_thrust: 0.5
   force_landing_thrust: 1.0
-
-  # The stored coefficients describe F(PWM), so the controller uses the
-  # quadratic inverse (SQRT_MODE) to obtain PWM from target thrust.
   pwm_conversion_mode: 0
+  idle_thrust: 0.5
   m_f_rate: 0.0135
   vel_ref_num: 5
 
   simulation:
-    # Keep MuJoCo on the controller's ideal signed-thrust output.  The
-    # controller still computes/publishes the measured bidirectional PWM
-    # command, but feeding that PWM through another fitted curve in the
-    # physics backend causes a takeoff regression and adds no control fidelity.
     use_pwm_model: false
     voltage: 21.2
     neutral_deadband: 0.001

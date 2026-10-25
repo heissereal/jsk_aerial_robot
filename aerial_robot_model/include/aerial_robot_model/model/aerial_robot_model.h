@@ -203,7 +203,7 @@ namespace aerial_robot_model {
     // statics (static thrust, joint torque)
     Eigen::VectorXd gravity_;
     Eigen::VectorXd gravity_3d_;
-    double m_f_rate_; //moment / force rate
+    double m_f_rate_; // moment / force rate for positive thrust
     Eigen::MatrixXd q_mat_;
     std::map<int, int> rotor_direction_;
     Eigen::VectorXd static_thrust_;
