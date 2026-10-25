@@ -14,7 +14,12 @@ roslaunch hugmy bringup.launch \
   mocap_robot_rigid_body_id:=1 mocap_hand_rigid_body_id:=2
 ```
 
-Start Action C and the joystick interface (this does not enable actuation):
+Start Action C and the joystick interface (this does not enable actuation).
+Bounded online trajectory optimization is enabled by default: the first
+measured stroke supplies the contact-specific baseline, and subsequent
+comparable strokes explore unloading depth, pull magnitude/mix, and rear
+reverse assist.  Use `hybrid_locomotion_outer_enabled:=false` only when a
+fixed baseline trajectory is deliberately required:
 
 ```bash
 roslaunch hugmy human_arm_locomotion.launch
@@ -50,7 +55,8 @@ Default buttons are:
 
 - button 4: enable the attitude/locomotion controller and its pressure loop
 - button 5: disable both controllers
-- button 3: command 50 mm toward the hand
+- button 3: command 100 mm toward the hand and run the online search from its
+  first measured baseline
 - button 1: stop locomotion while leaving pressure enabled
 
 The button indices and distance are launch arguments. The target attitude is

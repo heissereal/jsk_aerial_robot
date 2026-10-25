@@ -1,0 +1,117 @@
+#ifndef HUGMY_CIRCULAR_GRASP_GEOMETRY_H
+#define HUGMY_CIRCULAR_GRASP_GEOMETRY_H
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
+#include <vector>
+
+namespace hugmy {
+
+// Cross-section geometry in the body y-z plane.  The model is intentionally
+// constrained rather than a free three-point circle fit: Hugmy's front/rear
+// arms are separated mainly along the cylinder axis, so they can provide only
+// two independent points in the cross-section.  The existing bottom-contact
+// point supplies the missing constraint and is treated as the top of the
+// grasped circle along the measured gravity direction.
+struct CircularGraspEstimate {
+  bool valid = false;
+  double radius = std::numeric_limits<double>::quiet_NaN();
+  double center_y = std::numeric_limits<double>::quiet_NaN();
+  double center_z = std::numeric_limits<double>::quiet_NaN();
+  double rms = std::numeric_limits<double>::infinity();
+  double confidence = 0.0;
+  unsigned samples = 0;
+  std::array<double, 4> depth_angle{{
+      std::numeric_limits<double>::quiet_NaN(),
+      std::numeric_limits<double>::quiet_NaN(),
+      std::numeric_limits<double>::quiet_NaN(),
+      std::numeric_limits<double>::quiet_NaN()}};
+};
+
+inline double circularClamp(double value, double low, double high) {
+  return std::max(low, std::min(high, value));
+}
+
+// depth_angle is zero at the circle top, pi/2 at its side and pi at its
+// underside.  Consequently depth_angle > pi/2 means that the contact lies
+// below the side of the object, without overloading the word "bend angle".
+inline CircularGraspEstimate estimateCircularGrasp(
+    const std::array<std::array<double, 2>, 4>& contact_yz,
+    const std::array<bool, 4>& contact_available,
+    const std::array<double, 2>& surface_yz,
+    const std::array<double, 2>& gravity_yz,
+    double minimum_radius, double maximum_radius, double maximum_rms) {
+  CircularGraspEstimate result;
+  if (!std::isfinite(minimum_radius) || !std::isfinite(maximum_radius) ||
+      !std::isfinite(maximum_rms) || minimum_radius <= 0.0 ||
+      maximum_radius <= minimum_radius || maximum_rms <= 0.0)
+    return result;
+  const double gravity_norm = std::hypot(gravity_yz[0], gravity_yz[1]);
+  if (!std::isfinite(gravity_norm) || gravity_norm < 1.0e-6) return result;
+  const std::array<double, 2> down{{gravity_yz[0] / gravity_norm,
+                                    gravity_yz[1] / gravity_norm}};
+  std::vector<double> radii;
+  radii.reserve(4);
+  bool positive_side = false, negative_side = false;
+  for (size_t arm = 0; arm < contact_yz.size(); ++arm) {
+    if (!contact_available[arm] || !std::isfinite(contact_yz[arm][0]) ||
+        !std::isfinite(contact_yz[arm][1])) continue;
+    const double dy = contact_yz[arm][0] - surface_yz[0];
+    const double dz = contact_yz[arm][1] - surface_yz[1];
+    const double inward = dy * down[0] + dz * down[1];
+    // A contact at or above the assumed top tangent does not constrain a
+    // circle below the body and is rejected instead of producing a negative
+    // or arbitrarily large radius.
+    if (!std::isfinite(inward) || inward <= 1.0e-4) continue;
+    const double radius = (dy * dy + dz * dz) / (2.0 * inward);
+    if (!std::isfinite(radius) || radius < minimum_radius ||
+        radius > maximum_radius) continue;
+    radii.push_back(radius);
+    const double lateral = dy * (-down[1]) + dz * down[0];
+    positive_side = positive_side || lateral > 1.0e-4;
+    negative_side = negative_side || lateral < -1.0e-4;
+  }
+  // Samples must cover both sides of the object.  Two front/rear samples on
+  // only one side are not independent evidence of diameter.
+  if (radii.size() < 2 || !positive_side || !negative_side) return result;
+  std::sort(radii.begin(), radii.end());
+  const size_t middle = radii.size() / 2;
+  result.radius = radii.size() % 2 ? radii[middle]
+      : 0.5 * (radii[middle - 1] + radii[middle]);
+  result.center_y = surface_yz[0] + result.radius * down[0];
+  result.center_z = surface_yz[1] + result.radius * down[1];
+  result.samples = static_cast<unsigned>(radii.size());
+
+  double squared_error = 0.0;
+  unsigned residual_count = 0;
+  for (size_t arm = 0; arm < contact_yz.size(); ++arm) {
+    if (!contact_available[arm] || !std::isfinite(contact_yz[arm][0]) ||
+        !std::isfinite(contact_yz[arm][1])) continue;
+    const double radial_y = contact_yz[arm][0] - result.center_y;
+    const double radial_z = contact_yz[arm][1] - result.center_z;
+    const double distance = std::hypot(radial_y, radial_z);
+    if (!std::isfinite(distance) || distance < 1.0e-6) continue;
+    const double residual = distance - result.radius;
+    squared_error += residual * residual;
+    ++residual_count;
+    const double top_projection =
+        (radial_y * -down[0] + radial_z * -down[1]) / distance;
+    result.depth_angle[arm] = std::acos(circularClamp(
+        top_projection, -1.0, 1.0));
+  }
+  if (residual_count < 2) return result;
+  result.rms = std::sqrt(squared_error / residual_count);
+  const double coverage = circularClamp((result.samples - 1.0) / 3.0, 0.0, 1.0);
+  const double residual_quality = circularClamp(
+      1.0 - result.rms / maximum_rms, 0.0, 1.0);
+  result.confidence = coverage * residual_quality;
+  result.valid = result.radius >= minimum_radius &&
+      result.radius <= maximum_radius && result.rms <= maximum_rms;
+  return result;
+}
+
+}  // namespace hugmy
+
+#endif

@@ -28,12 +28,33 @@ struct RollRecoveryConfig {
   double stop = 0.08726646, horizon = 0.20;
   double settle_rate = 0.05, settle_sec = 0.15;
   double stop_margin = 0.0174533; // 1 deg measurement/contact tolerance
+  // Multiplier used only for the rotor-to-pneumatic handoff boundary when no
+  // wider contact minimum is configured. A flexed contact may hand off early
+  // to avoid a lever-sign reversal; a released pair can set this to zero and
+  // use its large free-space lever all the way to the requested stop angle.
+  double capture_margin_factor = 2.0;
+  // Optional measured-contact equilibrium accepted after real improvement.
+  // Zero retains the legacy stop+2*margin rule. Action C sets this to 12 deg
+  // so it does not drive through a useful soft-contact lever merely to chase
+  // the nominal 8-deg resume band.
+  double contact_minimum_limit = 0.0;
   double limit = 4.0, rise = 1.5, fall = 6.0;
   double fallback_thrust = 0.5, min_lever = 0.015;
   double start_rate = 0.05, detect_thrust = 0.5;
   double confirm_sec = 0.15, confirm_angle = 0.0174533;
   double progress_angle = 0.00872665, stall_sec = 0.50;
   double progress_window = 1.0; // compare averaged ends of the recent window
+  // If a released pair produces no retained roll improvement under meaningful
+  // thrust, its contact lever/sign is not observable from geometry alone.
+  // Run down that pair and let the caller try the other pair once instead of
+  // spending the full global timeout at a static contact equilibrium.
+  double pair_retry_sec = 3.0;
+  // A pair is not "unresponsive" merely because static contact has not
+  // moved at the first small feed-forward command.  Start the retry dwell
+  // only after the command has reached this fraction of the configured safe
+  // limit.  This gives the rate PI enough authority to overcome an unknown
+  // contact breakaway moment without increasing the safety ceiling.
+  double pair_retry_thrust_fraction = 0.75;
   double abort_sec = 10.0, max_rate = 0.8; // controller overrides this with the configured 30-s timeout
   double response_delay = 0.20, response_window = 0.40;
   double stable_pressure = 1.0, stable_bend = 0.035;
@@ -73,53 +94,95 @@ struct ContinuousRollRecovery {
   bool integrating = false, model_valid = false, learned_response = false;
   bool rate_initialized = false;
   bool speed_braking = false, predicted_braking = false;
-  bool timed_out = false, feedforward_initialized = false;
+  bool timed_out = false, wrong_way = false, feedforward_initialized = false;
+  // The selected pair can only generate moment in one direction.  Crossing
+  // beyond the capture hysteresis therefore requires a fresh pair selection,
+  // even if the old rotor command has already reached zero.
+  bool target_crossed = false;
+  // A pair selected immediately after crossing the target first has to brake
+  // motion inherited from the previous pair.  The caller may raise this
+  // threshold for that one pass so residual velocity is not mistaken for a
+  // newly commanded wrong-sign moment at the ordinary low detection thrust.
+  double wrong_way_detection_thrust = 0.0;
+  double wrong_way_detection_until = -1.0;
+  bool unresponsive = false;
+  bool progress_observed = false;
+  bool capture_active = false;
+  double unresponsive_since = -1.0;
+  // Time at which a previously useful contact candidate first remained
+  // materially worse than its own best retained attitude.  This catches a
+  // lever which reverses into a limit cycle: a short progress window can
+  // alternate signs forever even though the long-term posture is lost.
+  double retained_reversal_since = -1.0;
   double running_feedforward = 0.0;
   std::array<double, 9> stable_context{};
   struct Sample { double time, command, rate; };
   std::deque<Sample> history;
-  struct ErrorSample { double time, error; };
+  // Keep the actuator history in the same window as the retained roll
+  // progress.  A useful contact often rebounds slightly while correction
+  // thrust is being removed.  That is actuator rundown, not evidence that
+  // the contact geometry has reversed its moment sign.  Conversely, roll
+  // which worsens while thrust is held or increased is direct evidence that
+  // the current pair/contact state is no longer useful.
+  struct ErrorSample { double time, error, thrust; };
   std::deque<ErrorSample> progress_history;
   double recent_progress = 0.0;
+  double recent_thrust_change = 0.0;
   // Pneumatic regrasp changes the arm bend and therefore the recovery lever.
-  // Speed/prediction braking is only a rotor-thrust decision: it may occur far
-  // from the attitude target and must not authorize a return to grasp pressure.
-  // Keep the selected pair released until recovery has actually completed or
-  // the controller is deliberately handing an abort/timeout to the grasp state.
-  bool pressureHandoffReady() const { return finished || timed_out || fault; }
+  // Speed/prediction braking alone may occur far from the target and must not
+  // authorize regrasp.  Once the angle capture is latched AND rotor force has
+  // run down, however, a small measured-pressure preload is useful damping:
+  // leaving the pair fully exhausted let the body coast through zero for more
+  // than two seconds and caused an opposite-pair limit cycle in MuJoCo.
+  bool pressureHandoffReady() const {
+    return finished || timed_out || fault || (capture_active && thrust <= 0.05);
+  }
   void reset(double error, double now) {
     *this = ContinuousRollRecovery(); best_error = std::abs(error);
     last_progress = last_update = now;
-    progress_history.push_back({now, error});
+    progress_history.push_back({now, std::abs(error), thrust});
   }
   void updateProgress(double error, double now, const RollRecoveryConfig& c) {
     // Keep best_error for diagnostics only: returning from a worse posture
     // is progress even before the initial/best-ever error is reached again.
     best_error = std::min(best_error, std::abs(error));
-    if (!progress_history.empty() && progress_history.back().time == now)
-      progress_history.back().error = error;
-    else progress_history.push_back({now, error});
+    const double magnitude = std::abs(error);
+    if (!progress_history.empty() && progress_history.back().time == now) {
+      progress_history.back().error = magnitude;
+      progress_history.back().thrust = thrust;
+    } else progress_history.push_back({now, magnitude, thrust});
     const double begin = now - c.progress_window;
     while (progress_history.size() > 1 && progress_history[1].time <= begin)
       progress_history.pop_front();
     recent_progress = 0.0;
+    recent_thrust_change = 0.0;
     if (progress_history.front().time > begin + 1.0e-9) return;
     // Average the first/last quarter instead of comparing two noisy IMU
     // samples. Repeated small jitter must not indefinitely renew the timer.
     double first = 0.0, last = 0.0;
+    double first_thrust = 0.0, last_thrust = 0.0;
     size_t first_count = 0, last_count = 0;
     for (const auto& sample : progress_history) {
       if (sample.time < begin - 1.0e-9) continue;
       if (sample.time <= begin + 0.25 * c.progress_window) {
-        first += sample.error; ++first_count;
+        first += sample.error;
+        first_thrust += sample.thrust;
+        ++first_count;
       }
       if (sample.time >= now - 0.25 * c.progress_window) {
-        last += sample.error; ++last_count;
+        last += sample.error;
+        last_thrust += sample.thrust;
+        ++last_count;
       }
     }
     if (!first_count || !last_count) return;
     recent_progress = first / first_count - last / last_count;
-    if (recent_progress >= c.progress_angle) last_progress = now;
+    recent_thrust_change =
+        last_thrust / last_count - first_thrust / first_count;
+    if (recent_progress >= c.progress_angle) {
+      last_progress = now;
+      progress_observed = true;
+    }
   }
   void observe(double now, const RollRecoveryModel& m, const RollRecoveryConfig& c,
                RollRecoveryResponse& response, bool allow_learning) {
@@ -169,7 +232,15 @@ struct ContinuousRollRecovery {
         std::abs(omega) >= c.max_rate || !std::isfinite(c.fall) || c.fall <= 0.0 ||
         !std::isfinite(c.max_target_rate) || c.max_target_rate <= 0.0 ||
         !std::isfinite(c.progress_window) || c.progress_window <= 0.0 ||
-        !std::isfinite(c.progress_angle) || c.progress_angle <= 0.0) {
+        !std::isfinite(c.progress_angle) || c.progress_angle <= 0.0 ||
+        !std::isfinite(c.contact_minimum_limit) ||
+        c.contact_minimum_limit < 0.0 ||
+        !std::isfinite(c.capture_margin_factor) ||
+        c.capture_margin_factor < 0.0 ||
+        !std::isfinite(c.pair_retry_sec) || c.pair_retry_sec <= c.stall_sec ||
+        !std::isfinite(c.pair_retry_thrust_fraction) ||
+        c.pair_retry_thrust_fraction < 0.0 ||
+        c.pair_retry_thrust_fraction > 1.0) {
       fault = true; boost = 0.0; return thrust = 0.0;
     }
     dt = std::min(0.1, dt); last_update = now;
@@ -185,17 +256,119 @@ struct ContinuousRollRecovery {
     // rebuilding.  Brake to zero and require a short low-rate dwell before
     // declaring success.  A crossed target outside the band is deliberately
     // not success; the caller may reselect the opposite correcting pair.
-    // Enter the capture state only after reaching the actual +/-stop target.
-    // The old stop+margin entry cut thrust at about 3.6--4 deg, erased the
-    // integral, and repeatedly rebounded to 6--12 deg.  The margin is now
-    // hysteresis after entry, not an early stopping threshold.
-    if (std::abs(error) <= c.stop ||
-        (stop_band_since >= 0.0 && std::abs(error) <= c.stop + c.stop_margin)) {
+    // Enter the capture state at the actual target, or inside its measurement
+    // margin once angular motion is already slow.  Waiting for an exact
+    // boundary caused the selected contact pair to pass through its useful
+    // moment geometry and reverse the roll direction at 3.2 deg.  Unlike the
+    // former open-loop handoff, the caller now restores pressure under roll
+    // feedback, so accepting this low-rate margin does not recreate the old
+    // regrasp rebound.
+    // Latch capture as soon as the measured error first enters the target
+    // band.  stop_band_since is also the hysteresis state: while rotor thrust
+    // is running down, a small contact rebound may leave `stop` but remain
+    // inside `stop + stop_margin`.  The previous code did not set this state
+    // until thrust was already zero, so an 8.0 -> 8.1-deg rebound immediately
+    // restarted PI, drove the arm through its useful moment geometry, and
+    // produced a 0/1-N limit cycle.
+    // `contact_minimum_limit` is an explicit opt-in escape hatch for a
+    // compliant contact which cannot reach the nominal target.  A zero value
+    // must not silently widen a +/-3-deg target to +/-5 deg: doing so handed
+    // control to pneumatic regrasp early, and the re-bending reaction drove
+    // the body back toward the recovery threshold.  Keep a small hysteresis
+    // for an already-latched capture, but require the real stop target for a
+    // new successful capture unless the caller configured a wider contact
+    // minimum deliberately.  The rotor-only phase is allowed to hand over
+    // within a small low-rate approach band: forcing an extended pneumatic
+    // arm through the final degree can pass its useful contact geometry and
+    // reverse the measured moment.  This is not the final recovery success
+    // criterion; the caller's closed-loop pressure handoff still requires
+    // the true `stop` angle after support has been restored.
+    const double capture_entry_limit = c.contact_minimum_limit > c.stop
+        ? c.contact_minimum_limit
+        : c.stop + c.capture_margin_factor * c.stop_margin;
+    const double capture_hysteresis_limit = std::max(
+        capture_entry_limit + c.stop_margin,
+        c.stop + 2.0 * c.stop_margin);
+    const double stable_contact_limit = c.contact_minimum_limit > c.stop
+        ? c.contact_minimum_limit : capture_hysteresis_limit;
+    if (capture_active && std::abs(error) > stable_contact_limit) {
+      capture_active = false;
+      stop_band_since = -1.0;
+    }
+    // Do not clear capture merely because a compliant contact settles just
+    // outside the entry boundary after rotor rundown.  The wider bound above
+    // is the explicit hysteresis for exactly that rebound; the caller keeps
+    // roll feedback active while rebuilding pressure and applies the strict
+    // final stop test after regrasp.
+    // The rotor-only pass hands over just outside the final target when the
+    // body is already slow.  RECOVER then closes the remaining error while
+    // pressure is restored.  This prevents the extended-arm moment from
+    // changing sign while trying to force the last fraction of a degree.
+    // This is only a handoff boundary; the caller still requires the true
+    // `stop` angle before declaring posture recovery complete.
+    const bool settled_at_numeric_boundary = progress_observed &&
+        std::abs(error) <= capture_entry_limit &&
+        std::abs(filtered_rate) <= c.settle_rate;
+    // A compliant contact can have a local reachable equilibrium before the
+    // nominal stop angle. Accept it only after real measured improvement and
+    // whole-body motion confirmation, and only when roll has nearly stopped
+    // inside the ordinary non-recovery band (8 deg stop + 2x1 deg margin in
+    // the current Action-C setup). This prevents the controller from driving
+    // through the useful contact geometry and reversing roll at 9--10 deg.
+    const bool settled_contact_minimum = c.contact_minimum_limit > c.stop &&
+        moving && progress_observed &&
+        recent_progress >= c.progress_angle &&
+        std::abs(error) <= c.contact_minimum_limit &&
+        std::abs(filtered_rate) <= c.settle_rate;
+    // A correcting rotor pair is one-directional.  Once the body has crossed
+    // the requested attitude and is still moving away from it, capture
+    // hysteresis must not keep the same contact state active until the full
+    // outer margin is consumed.  This is particularly important for a
+    // released pair on a small cylinder: chamber exhaust can carry the body
+    // through the target after rotor thrust has already reached zero.  Ask
+    // the caller to freeze the current contact pressure and reselect from the
+    // opposite error sign at the first measured crossing.
+    const bool moving_through_target = capture_active && error < 0.0 &&
+        filtered_rate > c.settle_rate;
+    if (moving_through_target) {
+      target_crossed = true;
+      timed_out = true;
+      target_rate = target_thrust = 0.0;
+      speed_braking = predicted_braking = true;
+      boost = 0.0;
+      thrust = std::max(0.0, thrust - c.fall * dt);
+      if (thrust <= 1.0e-6) fault = true;
+      return thrust;
+    }
+    if (std::abs(error) <= c.stop || settled_at_numeric_boundary ||
+        settled_contact_minimum ||
+        (capture_active && std::abs(error) <= stable_contact_limit)) {
+      capture_active = true;
       updateProgress(std::abs(error), now, c);
       target_rate = target_thrust = 0.0;
       speed_braking = predicted_braking = true;
       thrust = std::max(0.0, thrust - c.fall * dt);
-      if (std::abs(filtered_rate) <= c.settle_rate) {
+      // Do not hand pneumatic regrasp a nominally slow body while the rotor
+      // pair is still carrying correction force.  Removing that force and
+      // changing the contact stiffness at the same instant produced an
+      // immediate roll rebound in MuJoCo (8 -> 20 deg).  Completion therefore
+      // means angle, rate *and* actuator rundown have all settled.  If the
+      // error leaves the band during rundown, the ordinary controller below
+      // resumes without changing the contact pressure.
+      // `finished` ends only the rotor/contact-search phase.  The caller's
+      // monitored pneumatic handoff remains responsible for the true final
+      // +/-stop acceptance.  Once a useful pair has entered capture, run its
+      // thrust fully down and hand over anywhere inside the capture
+      // hysteresis.  Requiring it to remain inside the narrower entry
+      // boundary during rundown caused 70-mm contacts to bounce 4.9 -> 5.3
+      // deg, restart the high-authority rotor PI, and chatter there until the
+      // global timeout.  This keeps the same measured-good candidate and
+      // lets pressure-conditioned feedback close the last few degrees.
+      const bool final_angle_ready =
+          (capture_active && std::abs(error) <= stable_contact_limit) ||
+          settled_contact_minimum;
+      if (final_angle_ready && std::abs(filtered_rate) <= c.settle_rate &&
+          thrust <= 0.05) {
         if (stop_band_since < 0.0) stop_band_since = now;
         if (now - stop_band_since >= c.settle_sec) {
           finished = true;
@@ -204,6 +377,22 @@ struct ContinuousRollRecovery {
       } else stop_band_since = -1.0;
       return thrust;
     }
+    // Once the body has crossed through the target and left the capture
+    // hysteresis, this one-direction pair cannot brake it.  Waiting for the
+    // generic no-progress timeout leaves the released pair unsupported for
+    // many seconds.  Finish the normal thrust rundown immediately so the
+    // caller can choose the correcting pair for the newly measured sign.
+    if (error <= -stable_contact_limit) {
+      target_crossed = true;
+      timed_out = true;
+      target_rate = target_thrust = 0.0;
+      speed_braking = predicted_braking = true;
+      boost = 0.0;
+      thrust = std::max(0.0, thrust - c.fall * dt);
+      if (thrust <= 1.0e-6) fault = true;
+      return thrust;
+    }
+    capture_active = false;
     stop_band_since = -1.0;
     updateProgress(error, now, c);
     if (!moving) {
@@ -223,7 +412,89 @@ struct ContinuousRollRecovery {
         }
       } else candidate_start = -1.0;
     }
+    // The contact pivot can change as a released arm extends. A pair which
+    // initially corrected roll may then reverse its effective moment even
+    // though the kinematic lever estimate still has the old sign. Do not
+    // respond to a full-window measured deterioration by integrating harder.
+    // Smoothly remove thrust and regrasp; the outer state machine can retry
+    // from the newly measured contact condition.
+    // Do not require the breakaway detector to have latched before accepting
+    // a full-window deterioration. With a deformable contact, the selected
+    // pair can first reduce the error slowly and then reverse as its arm
+    // straightens. The full history window plus minimum applied thrust still
+    // rejects a single IMU spike at startup.
+    // A full-window deterioration under meaningful thrust is sufficient
+    // evidence that this contact/pair is moving the body the wrong way.  Do
+    // not wait for the positive-direction breakaway detector: an immediately
+    // wrong response can never satisfy that detector and previously continued
+    // integrating until the physical fall limit.
+    // Latch this evidence through the commanded rundown. Otherwise the flag
+    // became false again as soon as thrust fell below detect_thrust, and the
+    // caller could no longer distinguish a wrong-sign contact response from
+    // an ordinary no-progress timeout when it was finally safe to switch.
+    // A full-window deterioration under meaningful thrust plus even a small
+    // same-direction body rate is a whole-body observation. Requiring the
+    // full breakaway-rate threshold delayed rejection of a slow wrong-sign
+    // response until the body had accumulated tens of degrees of roll. Keep
+    // a tenth-threshold rate gate for a pair with no prior progress so a
+    // static external displacement is not blamed on the actuator.
+    // `recent_progress` uses averaged window ends and therefore rejects a
+    // single gyro spike or the short initial pneumatic transient.  Also
+    // require that correction thrust was not being deliberately run down
+    // during that window.  The latter distinguishes a normal compliant
+    // rebound after predictive braking from a true contact-moment reversal.
+    // A half-degree retained change is sufficient to renew useful progress,
+    // but it is too small to prove moment-sign reversal: pneumatic capture
+    // routinely rebounds by that amount. Reject a candidate only after at
+    // least twice that loss. The raised thrust threshold used for inherited
+    // motion is temporary; keeping it for the whole retry hid a genuine
+    // reversal until the new pair had climbed above 3 N.
+    const double wrong_way_thrust = now <= wrong_way_detection_until
+        ? std::max(c.detect_thrust, wrong_way_detection_thrust)
+        : c.detect_thrust;
+    const double wrong_way_progress = 2.0 * c.progress_angle;
+    const double pair_retry_thrust = std::max(c.detect_thrust,
+        recoveryClamp(c.pair_retry_thrust_fraction, 0.0, 1.0) * c.limit);
+    const bool correction_authority_not_decreasing =
+        recent_thrust_change >= -0.1;
+    wrong_way = wrong_way ||
+        ((moving || progress_observed ||
+          filtered_rate <= -0.1 * c.start_rate) &&
+         recent_progress <= -wrong_way_progress &&
+         correction_authority_not_decreasing &&
+         thrust >= wrong_way_thrust);
+    // A changed contact pivot can also create a bounded oscillation rather
+    // than a monotonic wrong-way response.  In that case consecutive
+    // one-second windows alternate between positive and negative progress,
+    // but the body never returns to the candidate's best achieved pose.  Do
+    // not let those local oscillations renew the candidate indefinitely:
+    // after one real improvement, require it to recover to within one
+    // progress quantum of that best pose.  Only reject after the larger
+    // two-quantum loss persists for the full loaded retry dwell.
+    const bool retained_reversal_loaded = progress_observed &&
+        std::abs(error) >= best_error + wrong_way_progress &&
+        thrust >= pair_retry_thrust;
+    if (retained_reversal_loaded && retained_reversal_since < 0.0)
+      retained_reversal_since = now;
+    else if (std::abs(error) <= best_error + c.progress_angle)
+      retained_reversal_since = -1.0;
+    if (retained_reversal_since >= 0.0 &&
+        now - retained_reversal_since >= c.pair_retry_sec &&
+        thrust >= pair_retry_thrust)
+      wrong_way = true;
+    if (wrong_way) timed_out = true;
     stalled = now - last_progress >= c.stall_sec && filtered_rate < c.start_rate;
+    const bool pair_retry_loaded = stalled &&
+        thrust >= pair_retry_thrust &&
+        std::abs(error) > stable_contact_limit;
+    if (pair_retry_loaded) {
+      if (unresponsive_since < 0.0) unresponsive_since = now;
+      unresponsive = unresponsive ||
+          now - unresponsive_since >= c.pair_retry_sec;
+    } else {
+      unresponsive_since = -1.0;
+    }
+    if (wrong_way || unresponsive) timed_out = true;
     if (timed_out || now - last_progress >= c.abort_sec) {
       // A no-progress timeout is a controlled handoff to pneumatic grasp, not
       // an emergency motor cut.  An instantaneous 2--4 N -> 0 N transition
@@ -242,14 +513,24 @@ struct ContinuousRollRecovery {
     // A fixed 0.2-s prediction missed up to 4/6=0.67 s of thrust rundown.
     // This is kinematic lookahead, not an identified stopping distance:
     // contact changes and rotor lag can still alter the motion.
-    const double helpful_rate = std::max(0.0, std::max(omega, filtered_rate));
+    // Normal braking follows the filtered whole-body roll rate.  The raw
+    // Spinal gyro contains short contact/arm impacts; treating every such
+    // sample as body overspeed repeatedly cut a 5-N target to about 3 N on
+    // the 100/130-mm fixtures although the retained roll angle had stopped
+    // improving.  Gross raw-rate safety is still enforced independently by
+    // the `abs(omega) >= max_rate` fault above.
+    const double helpful_rate = std::max(0.0, filtered_rate);
     braking_horizon = c.horizon + std::max(0.0, thrust) / c.fall;
     const double predicted = error - helpful_rate * braking_horizon;
     const double remaining = std::max(0.0, error - c.stop);
     // Prediction limits velocity smoothly instead of toggling between full
-    // speed and zero at the stop-band edge. Aim at zero; +/-stop is success.
-    const double approach_rate = std::max(0.0, error) / std::max(0.05, braking_horizon);
-    target_rate = std::min(c.max_target_rate, std::min(c.angle_gain * std::max(0.0, error), approach_rate));
+    // speed and zero at the stop-band edge. The controlled distance is the
+    // error remaining *outside* the accepted stop band. Using the full error
+    // here commanded about 0.10 rad/s at 8.9 deg for an 8-deg target, drove
+    // the released pair through its useful geometry, and reversed roll.
+    const double approach_rate = remaining / std::max(0.05, braking_horizon);
+    target_rate = std::min(c.max_target_rate,
+        std::min(c.angle_gain * remaining, approach_rate));
     speed_braking = helpful_rate > target_rate;
     predicted_braking = predicted <= 0.0;
     model_valid = m.valid && std::isfinite(m.moment) && std::isfinite(m.lever) && m.lever >= c.min_lever;
@@ -279,9 +560,27 @@ struct ContinuousRollRecovery {
     const double base = feedforward + effective_kp * rate_error;
     const double unclamped = base + boost;
     double delta = recoveryClamp(c.rate_ki * rate_error, -c.integral_rate, c.integral_rate) * dt;
+    // In a contact-limited plateau, alternating gyro/contact impulses are not
+    // retained roll progress.  They previously cancelled the integral and
+    // held 100/130-mm fixtures at only 1.5--2.4 N indefinitely.  While the
+    // full-window roll error is not improving, retain/increase breakaway
+    // authority; the independent overspeed path may still reduce the actual
+    // command immediately.  Genuine worsening is handled by `wrong_way`.
+    const bool retained_plateau = now - last_progress + 1.0e-9 >= c.stall_sec &&
+        recent_progress < c.progress_angle && !wrong_way;
+    if (retained_plateau) {
+      // A pre-plateau gyro impulse may have accumulated a small negative
+      // value before the retained-motion window closes.  Once the measured
+      // roll has demonstrably failed to improve, that value is not evidence
+      // for lowering the breakaway command.  Start the bounded extra
+      // authority from zero and only grow it while the plateau persists.
+      boost = std::max(0.0, boost);
+      delta = std::max(delta, c.integral_rate * dt);
+    }
     // Anti-windup for both amplitude and actuator slew saturation. This is
     // the ONLY integral: old fixed stall boosts are not superimposed.
-    if ((delta > 0.0 && (unclamped >= c.limit || unclamped > thrust + c.rise * dt)) ||
+    if ((delta > 0.0 && (unclamped >= c.limit ||
+                         (!retained_plateau && unclamped > thrust + c.rise * dt))) ||
         (delta < 0.0 && (unclamped <= 0.0 || unclamped < thrust - c.fall * dt))) delta = 0.0;
     // Predictive mode replaces the nominal FF+PI target, never adds to it.
     // Freeze the unused PI integral; all actual-rate/slew/fault guards below

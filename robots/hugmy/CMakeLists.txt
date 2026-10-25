@@ -38,7 +38,11 @@ include_directories(
 add_library(hugmy_pneumatic_mujoco_hw_sim src/mujoco/hugmy_pneumatic_hw_sim.cpp)
 add_dependencies(hugmy_pneumatic_mujoco_hw_sim ${catkin_EXPORTED_TARGETS})
 target_compile_definitions(hugmy_pneumatic_mujoco_hw_sim PRIVATE SIMULATION)
-target_link_libraries(hugmy_pneumatic_mujoco_hw_sim ${catkin_LIBRARIES})
+# HugmyPneumaticHWSim derives from AerialRobotHWSim.  Keep the base plugin as
+# an explicit ELF dependency: relying only on pluginlib load order leaves its
+# virtual methods/RTTI unresolved when this derived plugin is loaded first.
+target_link_libraries(hugmy_pneumatic_mujoco_hw_sim
+  ${catkin_LIBRARIES})
 
 add_library(hugmy_navigation src/navigation/hugmy_navigation.cpp)
 target_link_libraries(hugmy_navigation ${catkin_LIBRARIES})
@@ -116,7 +120,7 @@ add_dependencies(perching_node ${catkin_EXPORTED_TARGETS})
 set(HUGMY_MUJOCO_MODEL ${PROJECT_SOURCE_DIR}/mujoco/hugmy2/robot.xml)
 add_custom_command(
   OUTPUT ${HUGMY_MUJOCO_MODEL}
-  COMMAND rosrun mujoco_ros_control mujoco_model_generator.py
+  COMMAND rosrun mujoco_ros_utils mujoco_model_generator.py
           ${PROJECT_SOURCE_DIR}/config/mujoco_model.yaml
   COMMAND ${PYTHON_EXECUTABLE}
           ${PROJECT_SOURCE_DIR}/script/finalize_mujoco_model.py
@@ -134,6 +138,28 @@ add_custom_command(
     ${PROJECT_SOURCE_DIR}/urdf/mesh/prop_5inch.dae
   WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 add_custom_target(generate_hugmy_mujoco_model ALL DEPENDS ${HUGMY_MUJOCO_MODEL})
+
+# Conservative locomotion fixture: retain a human-sized elliptic section but
+# remove the forearm taper, so a pressure-normal force cannot create free
+# axial progress.  This is generated separately to preserve the anatomical
+# tapered model for comparison experiments.
+set(HUGMY_HIGH_FRICTION_MUJOCO_MODEL
+    ${PROJECT_SOURCE_DIR}/mujoco/hugmy2/robot_high_friction.xml)
+add_custom_command(
+  OUTPUT ${HUGMY_HIGH_FRICTION_MUJOCO_MODEL}
+  COMMAND ${CMAKE_COMMAND} -E copy
+          ${HUGMY_MUJOCO_MODEL}
+          ${HUGMY_HIGH_FRICTION_MUJOCO_MODEL}
+  COMMAND ${PYTHON_EXECUTABLE}
+          ${PROJECT_SOURCE_DIR}/script/finalize_mujoco_model.py
+          ${HUGMY_HIGH_FRICTION_MUJOCO_MODEL}
+          --forearm-profile uniform
+  DEPENDS
+    ${HUGMY_MUJOCO_MODEL}
+    ${PROJECT_SOURCE_DIR}/script/finalize_mujoco_model.py
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+add_custom_target(generate_hugmy_high_friction_mujoco_model ALL
+                  DEPENDS ${HUGMY_HIGH_FRICTION_MUJOCO_MODEL})
 
 install(DIRECTORY config doc launch plugins mujoco
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
@@ -177,6 +203,7 @@ catkin_install_python(PROGRAMS
   script/optimize_rocking_gait.py
   script/replay_hugmy_stride_mujoco.py
   script/run_hugmy_real_stride.py
+  script/sweep_recovery_mujoco.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
 add_library(hugmy_attitude_pressure_controller

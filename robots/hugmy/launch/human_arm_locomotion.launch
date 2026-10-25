@@ -9,8 +9,32 @@
   <arg name="forward_distance_m" default="0.100" />
   <arg name="maximum_pressure_kpa" default="40.0" />
   <arg name="bottom_pressure_kpa" default="30.0" />
-  <arg name="ppg_settle_sec" default="10.0" />
-  <arg name="hybrid_locomotion_outer_enabled" default="false" />
+  <!-- Motion-validation default.  Set ppg_settle_sec:=10.0 only when an
+       actual post-motion PPG acquisition interval is required. -->
+  <arg name="ppg_settle_sec" default="0.0" />
+  <!-- Start collecting the first measured baseline immediately and enable
+       bounded trajectory exploration from the following comparable stroke. -->
+  <arg name="hybrid_locomotion_outer_enabled" default="true" />
+  <arg name="hybrid_trajectory_min_extension_rad" default="0.2617993877991494" />
+  <arg name="hybrid_trajectory_extension_rate_rad_s" default="0.70" />
+  <arg name="hybrid_lift_rear_release_start_ratio" default="0.10" />
+  <arg name="hybrid_lift_rear_pressure_floor_kpa" default="0.0" />
+  <arg name="hybrid_regrip_rear_hold_pressure_kpa" default="10.0" />
+  <arg name="hybrid_pull_rear_release_start_ratio" default="0.05" />
+  <arg name="hybrid_pull_rear_release_end_ratio" default="0.65" />
+  <arg name="hybrid_trajectory_golden_handoff_enabled" default="true" />
+  <arg name="hybrid_trajectory_windup_pitch_rad" default="0.29670597283903605" />
+  <arg name="hybrid_trajectory_windup_pitch_kp_n_rad" default="3.0" />
+  <arg name="hybrid_trajectory_windup_pitch_kd_n_s_rad" default="1.0" />
+  <arg name="hybrid_trajectory_windup_pitch_rate_max_rad_s" default="0.25" />
+  <arg name="hybrid_trajectory_windup_extra_extension_rad" default="1.0471975511965976" />
+  <arg name="hybrid_trajectory_windup_hold_pressure_kpa" default="30.0" />
+  <arg name="hybrid_trajectory_windup_pressure_slew_kpa_s" default="12.0" />
+  <arg name="hybrid_trajectory_windup_rear_reverse_max_n" default="1.5" />
+  <arg name="hybrid_trajectory_windup_rear_reverse_rise_n_s" default="0.75" />
+  <arg name="hybrid_locomotion_pitch_change_limit_rad" default="0.3490658503988659" />
+  <arg name="hybrid_trajectory_flex_rate_rad_s" default="1.2" />
+  <arg name="hybrid_trajectory_pressure_lead_max_sec" default="0.60" />
 
   <!-- ID 2 contributes XY translation only. The controller forces the target
        attitude to [0, 0, 0] and retains Spinal as its attitude source. -->
@@ -21,6 +45,46 @@
          value="$(arg hybrid_locomotion_outer_enabled)" />
     <arg name="hybrid_locomotion_initial_bottom_kpa"
          value="$(arg bottom_pressure_kpa)" />
+    <arg name="hybrid_trajectory_min_extension_rad"
+         value="$(arg hybrid_trajectory_min_extension_rad)" />
+    <arg name="hybrid_trajectory_extension_rate_rad_s"
+         value="$(arg hybrid_trajectory_extension_rate_rad_s)" />
+    <arg name="hybrid_lift_rear_release_start_ratio"
+         value="$(arg hybrid_lift_rear_release_start_ratio)" />
+    <arg name="hybrid_lift_rear_pressure_floor_kpa"
+         value="$(arg hybrid_lift_rear_pressure_floor_kpa)" />
+    <arg name="hybrid_regrip_rear_hold_pressure_kpa"
+         value="$(arg hybrid_regrip_rear_hold_pressure_kpa)" />
+    <arg name="hybrid_pull_rear_release_start_ratio"
+         value="$(arg hybrid_pull_rear_release_start_ratio)" />
+    <arg name="hybrid_pull_rear_release_end_ratio"
+         value="$(arg hybrid_pull_rear_release_end_ratio)" />
+    <arg name="hybrid_trajectory_golden_handoff_enabled"
+         value="$(arg hybrid_trajectory_golden_handoff_enabled)" />
+    <arg name="hybrid_trajectory_windup_pitch_rad"
+         value="$(arg hybrid_trajectory_windup_pitch_rad)" />
+    <arg name="hybrid_trajectory_windup_pitch_kp_n_rad"
+         value="$(arg hybrid_trajectory_windup_pitch_kp_n_rad)" />
+    <arg name="hybrid_trajectory_windup_pitch_kd_n_s_rad"
+         value="$(arg hybrid_trajectory_windup_pitch_kd_n_s_rad)" />
+    <arg name="hybrid_trajectory_windup_pitch_rate_max_rad_s"
+         value="$(arg hybrid_trajectory_windup_pitch_rate_max_rad_s)" />
+    <arg name="hybrid_trajectory_windup_extra_extension_rad"
+         value="$(arg hybrid_trajectory_windup_extra_extension_rad)" />
+    <arg name="hybrid_trajectory_windup_hold_pressure_kpa"
+         value="$(arg hybrid_trajectory_windup_hold_pressure_kpa)" />
+    <arg name="hybrid_trajectory_windup_pressure_slew_kpa_s"
+         value="$(arg hybrid_trajectory_windup_pressure_slew_kpa_s)" />
+    <arg name="hybrid_trajectory_windup_rear_reverse_max_n"
+         value="$(arg hybrid_trajectory_windup_rear_reverse_max_n)" />
+    <arg name="hybrid_trajectory_windup_rear_reverse_rise_n_s"
+         value="$(arg hybrid_trajectory_windup_rear_reverse_rise_n_s)" />
+    <arg name="hybrid_locomotion_pitch_change_limit_rad"
+         value="$(arg hybrid_locomotion_pitch_change_limit_rad)" />
+    <arg name="hybrid_trajectory_flex_rate_rad_s"
+         value="$(arg hybrid_trajectory_flex_rate_rad_s)" />
+    <arg name="hybrid_trajectory_pressure_lead_max_sec"
+         value="$(arg hybrid_trajectory_pressure_lead_max_sec)" />
     <arg name="maximum_pressure_kpa" value="$(arg maximum_pressure_kpa)" />
     <arg name="ppg_settle_sec" value="$(arg ppg_settle_sec)" />
     <arg name="use_mocap_attitude_for_inchworm" value="false" />

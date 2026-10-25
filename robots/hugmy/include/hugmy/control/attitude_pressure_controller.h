@@ -30,6 +30,7 @@
 #include <hugmy/control/continuous_roll_recovery.h>
 #include <hugmy/control/recovery_predictive_control.h>
 #include <hugmy/control/pulse_bend_observer.h>
+#include <hugmy/control/circular_grasp_geometry.h>
 
 class AttitudePressureController
 {
@@ -80,6 +81,7 @@ private:
   double measuredArmBendAngle(size_t arm) const;
   Vector3 rotorPositionFromAngle(size_t arm, double bend_angle) const;
   Vector3 rotorDirectionFromAngle(size_t arm, double bend_angle) const;
+  Vector3 armContactPointFromAngle(size_t arm, double bend_angle) const;
   bool armGeometryReady(const PressureArray& target, const ros::Time& now) const;
   void publishPressureTarget(const PressureArray& target, double maximum_step,
                              double pressure_limit_kpa = -1.0);
@@ -103,7 +105,9 @@ private:
   void beginInchwormArmReach(const ros::Time& now);
   void stopInchwormToGrasp(const ros::Time& now, const char* reason);
   void requestActionCPostureRecovery(const ros::Time& now,
-                                     const char* reason);
+                                     const char* reason,
+                                     double confirmed_trigger_rad =
+                                         std::numeric_limits<double>::quiet_NaN());
   bool resumeActionCAfterRecovery(const ros::Time& now);
   bool actionCRearReleased(const ros::Time& now);
   bool hybridLocomotionActive() const;
@@ -143,6 +147,7 @@ private:
   ros::Publisher arm_relative_angle_pub_, arm_target_relative_angle_pub_;
   ros::Publisher arm_shape_error_pub_, arm_shape_active_pub_;
   ros::Publisher arm_bend_angle_deg_pub_;
+  ros::Publisher recovery_circle_geometry_pub_;
   ros::Publisher hand_relative_position_pub_;
   ros::Publisher desired_moment_pub_, achieved_moment_pub_;
   ros::Publisher correction_thrust_pub_, root_correction_thrust_pub_;
@@ -264,15 +269,123 @@ private:
   bool continuous_recovery_blocked_ = false;
   bool continuous_recovery_started_ = false;
   bool continuous_recovery_waiting_for_settle_ = false;
+  // The nominal hardware/MuJoCo pair mapping is the first choice. A released
+  // arm can move the contact pivot through a moment-sign change, however, so
+  // one measured wrong-way pass may request one opposite-pair retry after a
+  // safe pneumatic handoff. Never switch on model prediction alone.
+  bool continuous_recovery_use_opposite_pair_ = false;
+  // A wrong-sign response discovered during pneumatic handoff is retried
+  // only after balanced support has been restored.  Keep that one-shot pair
+  // choice across the intermediate GRASP state.
+  bool continuous_recovery_retry_opposite_pending_ = false;
+  unsigned continuous_recovery_pair_switches_ = 0;
+  // A posture event has four contact-conditioned actuator candidates:
+  // pair 0+1 / 2+3, each either flexed or released.  If measured roll first
+  // improves and then reverses, reject only that exact candidate.  Regrasp
+  // before evaluating the remaining candidates from the new contact state.
+  uint8_t recovery_rejected_candidate_mask_ = 0;
+  bool recovery_candidate_reselect_pending_ = false;
+  bool recovery_pair_selection_available_ = true;
+  size_t recovery_selected_pair_index_ = 0;
   hugmy::ContinuousRollRecovery continuous_roll_recovery_;
   hugmy::RollRecoveryConfig roll_recovery_config_;
   hugmy::RecoveryPredictiveConfig recovery_predictive_config_;
   hugmy::RecoveryPredictiveControl recovery_predictive_;
   std::array<hugmy::RollRecoveryResponse, 2> roll_recovery_response_;
+  // Finite high roll rates are a recovery state, not stale/invalid IMU data.
+  // Locomotion still hands over at correction_max_angular_rate_; this wider
+  // bound is only the sensor-plausibility envelope of the recovery loop.
+  double recovery_measurement_rate_limit_rad_s_ = 1.5;
   double recovery_rotor_cant_rad_ = 6.5 * M_PI / 180.0;
   double recovery_release_pressure_kpa_ = 0.0;
   double recovery_pressure_down_rate_ = 0.5;
+  // Completing the rotor correction is not the mechanical endpoint: bending
+  // the released pair back around the object can disturb roll again.  These
+  // settings keep that pneumatic handoff in the same feedback loop.
+  double recovery_handoff_pressure_rate_kpa_s_ = 6.0;
+  double recovery_handoff_stage_a_thrust_max_n_ = 1.5;
+  double recovery_handoff_thrust_fall_n_s_ = 0.75;
+  double recovery_handoff_reopen_angle_rad_ = 1.0 * M_PI / 180.0;
+  double recovery_handoff_settle_sec_ = 0.30;
+  double recovery_handoff_timeout_sec_ = 60.0;
+  // Re-bending the released pair can create a static contact moment before
+  // nominal grasp pressure is reached. Preserve the lowest-error measured
+  // pressure above a two-anchor safety floor.
+  double recovery_handoff_min_pressure_kpa_ = 15.0;
+  double recovery_handoff_trim_margin_rad_ = 1.0 * M_PI / 180.0;
+  double recovery_handoff_trim_confirm_sec_ = 0.30;
+  double recovery_handoff_integral_n_ = 0.0;
+  double recovery_handoff_brake_error_rad_ = 0.0;
+  double recovery_handoff_best_error_rad_ = std::numeric_limits<double>::infinity();
+  double recovery_handoff_worsening_since_ = -1.0;
+  double recovery_handoff_thrust_worsening_since_ = -1.0;
+  // The rotor phase can improve roll, yet the same contact-conditioned
+  // candidate may settle outside the target after full pneumatic regrasp.
+  // Track retained improvement separately from instantaneous wrong-way
+  // motion so a static contact equilibrium causes a measured re-selection
+  // instead of consuming the complete handoff timeout.
+  double recovery_handoff_progress_reference_rad_ =
+      std::numeric_limits<double>::infinity();
+  double recovery_handoff_last_progress_time_ = -1.0;
+  bool recovery_handoff_braking_ = false;
+  bool recovery_handoff_support_equalized_ = false;
+  // True only when the released-pair recovery itself had a measured
+  // wrong-sign response. A sign reversal caused later by pneumatic support
+  // transfer does not invalidate the pair which already corrected roll.
+  bool recovery_handoff_pair_was_wrong_ = false;
+  bool recovery_handoff_pressure_trimmed_ = false;
+  bool recovery_handoff_thrust_wrong_way_ = false;
+  bool recovery_handoff_finalizing_regrasp_ = false;
+  // A successful monitored handoff may end at an asymmetric but
+  // load-bearing pressure equilibrium.  Keep it through GRASP until a new
+  // locomotion task deliberately establishes its own initial grasp.
+  bool recovery_contact_grasp_active_ = false;
+  PressureArray recovery_handoff_target_pressure_{};
+  PressureArray recovery_handoff_best_pressure_{};
+  // A circle is the first-order grasped-object model.  It is identified from
+  // measured arm bends while at least one contact on each side is loaded.
+  // The estimate selects both the rotor pair and whether that pair should
+  // remain flexed/grasping or be released to obtain a useful moment arm.
+  bool recovery_circle_selection_enabled_ = true;
+  double recovery_circle_min_radius_m_ = 0.025;
+  double recovery_circle_max_radius_m_ = 0.15;
+  double recovery_circle_max_rms_m_ = 0.015;
+  double recovery_circle_min_confidence_ = 0.35;
+  double recovery_circle_contact_pressure_kpa_ = 10.0;
+  double recovery_circle_side_margin_rad_ = 5.0 * M_PI / 180.0;
+  double recovery_circle_small_radius_m_ = 0.035;
+  double recovery_circle_small_radius_capture_margin_factor_ = 3.0;
+  double recovery_circle_small_radius_support_pressure_kpa_ = 25.0;
+  // Keeping the active pair grasped avoids the large support-transfer impulse
+  // seen when a 12-deg correction immediately released two arms.  Larger
+  // errors transfer support and use the released long-arm geometry.
+  double recovery_circle_flexed_max_error_rad_ = 15.0 * M_PI / 180.0;
+  double recovery_circle_release_penalty_n_ = 0.75;
+  double recovery_circle_min_signed_lever_m_ = 0.005;
+  double recovery_circle_max_age_sec_ = 30.0;
+  hugmy::CircularGraspEstimate recovery_circle_estimate_;
+  ros::Time recovery_circle_stamp_;
+  bool recovery_circle_event_locked_ = false;
+  bool recovery_selected_pair_release_ = true;
+  bool recovery_selected_contact_pivot_enabled_ = false;
+  double recovery_selected_pair_mean_depth_rad_ =
+      std::numeric_limits<double>::quiet_NaN();
+  // Candidate failures are directional. A pair/contact state which produced
+  // the wrong moment before regrasp may be the restoring candidate after the
+  // pressure-induced contact shift carries roll across the target.
+  int recovery_rejected_direction_sign_ = 0;
+  void resetRecoveryHandoffState();
+  void updateCircularGraspGeometry(const ros::Time& now);
+  PressureArray recoveryReselectionPressure() const;
+  PressureArray recoveryMeasuredContactPressure() const;
+  double recoverySupportPressure() const;
   hugmy::RollRecoveryModel measuredRecoveryModel() const;
+  Vector3 recoveryContactPivot(
+      const std::array<bool, ARM_COUNT>& selected_pair,
+      bool selected_pair_release) const;
+  double recoveryRotorRawLeverAbout(
+      size_t arm, double bend, const Vector3& pivot) const;
+  double recoveryRotorRawLever(size_t arm, double bend) const;
   double recoveryRotorLever(size_t arm, double bend) const;
   void selectContinuousRecoveryPair(double roll_error);
   double correction_trigger_angle_, correction_stop_angle_;
@@ -456,7 +569,7 @@ private:
   double action_c_start_extension_margin_rad_;
   double action_c_bottom_deflation_tolerance_kpa_ = 5.0;
   hugmy::RollTrendGate action_c_roll_trend_;
-  double action_c_posture_hard_roll_rad_ = 15.0 * M_PI / 180.0;
+  double action_c_posture_hard_roll_rad_ = 20.0 * M_PI / 180.0;
   hugmy::PressureReadyGate action_c_pressure_ready_gate_;
   double action_c_pressure_hold_tolerance_kpa_ = 5.0;
   double action_c_pressure_dropout_sec_ = 0.10;
@@ -480,14 +593,42 @@ private:
   Vector3 hybrid_contact_position_{{0.,0.,-.07}};
   PressureArray hybrid_regrip_thrust_{},hybrid_regrip_pressure_{};
   PressureArray hybrid_grasp_pressure_{};
+  // Absolute Neuron bend at the stable, empty-bottom endpoint immediately
+  // before a stroke. Regrip pressure is closed around this geometry instead
+  // of blindly returning every front chamber to 30 kPa.
+  PressureArray hybrid_endpoint_bend_{{NAN, NAN, NAN, NAN}};
   bool hybrid_retain_grasp_pressure_=false,hybrid_hold_pressure_=false;
   double hybrid_regrip_bottom_=0.;
+  // Keep all four pneumatic anchors loaded while the bottom support is
+  // exhausted.  Rotor trim is deliberately not mixed into this boundary:
+  // nonzero thrust prevents the endpoint from becoming a settled reference.
+  double hybrid_regrip_bottom_ramp_kpa_s_ = 2.5;
+  double hybrid_regrip_roll_emergency_rad_ = 30.0 * M_PI / 180.0;
   double hybrid_regrip_x_=0.,hybrid_settling_loss_=0.;
+  // Regrip completion, bottom exhaust, and endpoint measurement are separate
+  // one-way latches.  In particular, a quiet mocap/pitch fluctuation must not
+  // invalidate a grasp that has already been verified mechanically.
+  int hybrid_regrip_anchor_phase_=0;
+  double hybrid_regrip_anchor_since_=-1.;
+  // One-way boundary between the 10-kPa compliant handoff and the full
+  // 30-kPa grasp.  Once all rotor commands are zero, do not reintroduce a
+  // trim thrust and reopen the rear chambers because of an IMU fluctuation.
+  bool hybrid_regrip_thrust_zero_latched_=false;
+  bool hybrid_regrip_complete_latched_=false;
+  bool hybrid_bottom_deflated_latched_=false;
+  bool hybrid_endpoint_captured_latched_=false;
+  double hybrid_ppg_wait_since_=-1.;
   hugmy::PressureReadyGate hybrid_pressure_ready_gate_;
   bool hybrid_start_mean_valid_ = false, hybrid_end_mean_valid_ = false;
   bool hybrid_preinflate_measured_ = false;
   bool hybrid_terminal_settle_ = false;
   bool hybrid_terminal_retry_ = false;
+  bool hybrid_identification_settle_ = false;
+  // Optional legacy mode.  The default endpoint is now the mechanically
+  // regrasped, bottom-deflated state so every guarded trial can be scored and
+  // retried without conflating bottom rocking with locomotion.
+  bool hybrid_keep_bottom_between_strokes_ = false;
+  bool hybrid_inflated_boundary_ = false;
   std::string hybrid_terminal_reason_;
   bool hybrid_bottom_changed_ = false;
   double hybrid_end_mean_x_ = 0.;
@@ -528,9 +669,19 @@ private:
   // Goal and resume state shared by predictive locomotion and roll recovery.
   double action_c_absolute_target_x_m_ = 0.0;
   double action_c_direction_sign_x_ = 1.0;
+  // Converts the attitude source's pitch convention into positive
+  // load-relief pitch in the commanded travel direction.  Both the Spinal
+  // attitude used on the current hardware and MuJoCo decrease pitch when the
+  // +x front pair unloads the bottom contact.
+  double hybrid_directional_pitch_sign_ = -1.0;
   Vector2 action_c_resume_direction_{{1.0, 0.0}};
   int action_c_posture_recovery_count_ = 0;
   bool action_c_resume_pending_ = false;
+  // The gait can request a pre-stroke correction inside the ordinary 10-deg
+  // recovery band. Retain that already-confirmed boundary until GRASP starts
+  // the shared controller; NaN means use the ordinary trigger.
+  double action_c_requested_recovery_trigger_rad_ =
+      std::numeric_limits<double>::quiet_NaN();
   bool action_c_preserve_adaptation_on_start_ = false;
   double action_d_target_angle_rad_;
   double action_d_soft_min_angle_rad_, action_d_soft_max_angle_rad_;
