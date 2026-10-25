@@ -9,6 +9,8 @@ source = (root / 'src/control/attitude_pressure_controller.cpp').read_text()
 branch = source[source.index('case PREPARE:'):source.index('case THRUST_CORRECTION:')]
 assert 'if(!config.shadow)' in branch
 assert 'continuous_roll_recovery_.fault=true;' in branch
+assert 'predictive_target = 0.0;' in branch
+assert 'braking this cycle and replanning from measured contact state' in branch
 assert 'response, predictive_target)' in branch
 assert 'recovery_predictive_.reset();' in source
 assert 'recoveryRotorLever(arms[j],angle)' in branch
@@ -71,7 +73,9 @@ int main() {
   assert(actual.fault && actual.thrust==0.);
   actual.reset(.4,0.);assert(actual.update(.4,0.,.02,.02,model,bounds,response,100.)<=.030001);
   actual.reset(.4,0.);actual.thrust=1.;
-  for(int i=1;i<=12;++i)actual.update(.01,0.,i*.02,.02,model,bounds,response,4.);
+  // Include both the 1-N thrust rundown and the configured low-rate settle
+  // dwell; entering the angular band alone is deliberately not completion.
+  for(int i=1;i<=25;++i)actual.update(.01,0.,i*.02,.02,model,bounds,response,4.);
   assert(actual.finished && actual.thrust==0.);
   // Shadow calculations cannot alter baseline FF/PI state or actuator output.
   ContinuousRollRecovery base,shadow;base.reset(.4,0.);shadow.reset(.4,0.);

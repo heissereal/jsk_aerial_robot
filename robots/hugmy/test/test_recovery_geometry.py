@@ -19,7 +19,11 @@ def function(name, result):
 functions = '\n'.join(function(name, result) for name, result in [
     ('measuredRecoveryModel', 'hugmy::RollRecoveryModel'),
     ('recoveryRotorLever', 'double'),
+    ('recoveryContactPivot', 'AttitudePressureController::Vector3'),
+    ('recoveryRotorRawLeverAbout', 'double'),
+    ('recoveryRotorRawLever', 'double'),
     ('rotorPositionFromAngle', 'AttitudePressureController::Vector3'),
+    ('armContactPointFromAngle', 'AttitudePressureController::Vector3'),
     ('rotateAboutLocalY', 'AttitudePressureController::Vector3'),
     ('rotateLocalToBody', 'AttitudePressureController::Vector3'),
     ('cross', 'AttitudePressureController::Vector3'),
@@ -28,6 +32,7 @@ functions = '\n'.join(function(name, result) for name, result in [
 code = r'''
 #include <hugmy/control/continuous_roll_recovery.h>
 #include <hugmy/control/recovery_predictive_control.h>
+#include <hugmy/control/circular_grasp_geometry.h>
 #include <hugmy/model/pressure_thrust_bend_model.h>
 #include <cassert>
 #include <cstdio>
@@ -37,10 +42,13 @@ public:
  static constexpr size_t ARM_COUNT=4;
  hugmy::RollRecoveryConfig roll_recovery_config_;
  bool gravity_compensation_=true;
+ bool correction_pair_reverse_spinal_mapping_=false;
  double roll_moment_kp_=.1, target_roll_=0., roll_=-.3, mass_kg_=1.244;
  double recovery_rotor_cant_rad_=6.5*M_PI/180., bottom_pressure_kpa_=1.;
  std::array<double,2> correction_axis_{{1.,0.}};
- std::array<bool,4> prepare_arm_active_{{true,true,false,false}};
+ std::array<bool,4> prepare_arm_active_{{false,false,true,true}};
+ bool recovery_selected_pair_release_=true;
+ bool recovery_selected_contact_pivot_enabled_=true;
  std::array<double,4> measured_pressure_{{10,11,30,31}}, angles{{1.57,1.57,1.57,1.57}};
  std::array<double,4> arm_yaw_{{-3*M_PI/4,-M_PI/4,M_PI/4,3*M_PI/4}};
  std::array<Vector3,4> arm_base_position_{{{{.03812,.03812,-.039}},{{-.03812,.03812,-.039}},
@@ -49,11 +57,15 @@ public:
  Vector3 contact_position_{{0.,0.,-.07}}, gravity_body_{{0.,0.,-9.81}};
  double measuredArmBendAngle(size_t arm)const{return angles[arm];}
  Vector3 rotorPositionFromAngle(size_t,double)const;
+ Vector3 armContactPointFromAngle(size_t,double)const;
  static Vector3 rotateAboutLocalY(const Vector3&,double);
  static Vector3 rotateLocalToBody(const Vector3&,double);
  static Vector3 cross(const Vector3&,const Vector3&);
  static double wrapAngle(double);
  hugmy::RollRecoveryModel measuredRecoveryModel()const;
+ Vector3 recoveryContactPivot(const std::array<bool,4>&,bool)const;
+ double recoveryRotorRawLeverAbout(size_t,double,const Vector3&)const;
+ double recoveryRotorRawLever(size_t,double)const;
  double recoveryRotorLever(size_t,double)const;
 };
 FUNCTIONS
@@ -61,6 +73,11 @@ int main() {
  AttitudePressureController c;
  auto m=c.measuredRecoveryModel();
  assert(m.valid && m.lever>0.015 && m.moment>0.);
+ // About the old fixed bottom pivot this pair has the opposite sign.  The
+ // retained 0+1 contacts are the physical pivot when 2+3 are released.
+ const double fixed_pair_lever=c.recoveryRotorRawLever(2,c.angles[2])+
+     c.recoveryRotorRawLever(3,c.angles[3]);
+ assert(fixed_pair_lever<0. && m.lever>0.);
  assert(m.context[0]==10 && m.context[4]==1 && m.context[5]==1.57);
  auto first=m;
  // Perched correction requests only additional restoring moment. Gravity,
@@ -80,11 +97,12 @@ int main() {
  assert(m.lever==first.lever && m.moment==first.moment);
  c.angles[0]=1.0;m=c.measuredRecoveryModel();assert(std::abs(m.lever-first.lever)>.001);
  c.angles.fill(1.57);c.roll_=.3;c.correction_axis_[0]=-1.;
- c.prepare_arm_active_={{false,false,true,true}};
+ c.prepare_arm_active_={{true,true,false,false}};
  m=c.measuredRecoveryModel();assert(m.lever>.015);
  assert(std::abs(m.lever-first.lever)<1e-8); // mirrored correcting pair
- c.prepare_arm_active_={{true,true,false,false}};
- m=c.measuredRecoveryModel();assert(m.lever<0.); // no abs() hides wrong sign
+ c.prepare_arm_active_={{false,false,true,true}};
+ // Signed geometry rejects a pair which would drive away from the target.
+ m=c.measuredRecoveryModel();assert(m.lever<0.);
  c.correction_axis_[0]=1.;c.gravity_compensation_=false;c.roll_=-.3;
  m=c.measuredRecoveryModel();assert(std::abs(m.moment-.1*(.3-c.roll_recovery_config_.stop))<1e-8);
  // Validate cant for each motor against an independent matrix calculation.
@@ -95,10 +113,24 @@ int main() {
    const double fx=-std::sin(a)*std::cos(cant),fy=sign*std::sin(cant),fz=std::cos(a)*std::cos(cant);
    const double body_fy=std::sin(y)*fx+std::cos(y)*fy;
    auto pos=c.rotorPositionFromAngle(arm,a);
-   double expected=(pos[1]-c.contact_position_[1])*fz-(pos[2]-c.contact_position_[2])*body_fy;
-   m=c.measuredRecoveryModel();assert(std::abs(m.lever-expected)<1e-10);
+   const auto pivot=c.recoveryContactPivot(
+       c.prepare_arm_active_,c.recovery_selected_pair_release_);
+   double expected=(pos[1]-pivot[1])*fz-(pos[2]-pivot[2])*body_fy;
+   m=c.measuredRecoveryModel();
+   assert(std::abs(m.lever-expected*c.correction_axis_[0])<1e-10);
  }
  c.angles[0]=std::numeric_limits<double>::quiet_NaN();assert(!c.measuredRecoveryModel().valid);
+ // The same production kinematics infer a plausible 50-mm-class circle and
+ // classify a 105-deg grasp as just below the object side.
+ std::array<std::array<double,2>,4> contact{};
+ for(size_t arm=0;arm<4;++arm) {
+   const auto point=c.armContactPointFromAngle(arm,105.*M_PI/180.);
+   contact[arm]={{point[1],point[2]}};
+ }
+ const auto circle=hugmy::estimateCircularGrasp(contact,
+     {{true,true,true,true}},{{0.,-.07}},{{0.,-9.81}},.025,.15,.015);
+ assert(circle.valid && circle.radius>.035 && circle.radius<.050);
+ for(double depth:circle.depth_angle)assert(depth>M_PI/2);
  // Exercise the real forward geometry and calibration table with the planner.
  hugmy::PressureThrustBendModel table;
  hugmy::RecoveryPredictiveConfig config;config.budget_ms=1000.;
