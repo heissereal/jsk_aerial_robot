@@ -659,6 +659,16 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
   if(!pressure_pending) hybrid_planner_.model.observe(s,hybrid_config_,equilibrium);
   hugmy::hybrid::State safety_state=s;
   auto safety_config=hybrid_config_;
+  // The nominal model ceiling is 150 deg, but a small human arm can be
+  // grasped more deeply before locomotion starts (the 2026-10-26 run measured
+  // 152--156 deg). Rejecting that quiet initial contact at the first active
+  // tick prevented even the slip-test thrust ramp from starting. Anchor the
+  // upper guard to the captured four-arm grasp instead: extension moves away
+  // from this ceiling, while pressure-driven over-flexion is still stopped
+  // after the configured small margin.
+  safety_config.bend_max=hugmy::hybrid::contactRelativeBendMaximum(
+      safety_config.bend_max,hybrid_single_.grasp_reference,
+      safety_config.grasp_bend_margin);
   if(hybrid_phase_==2) {
     // Regrip has an independent emergency handoff above. Applying the
     // ordinary gait limit again in the generic planner guard would interrupt
@@ -748,11 +758,12 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
     }
   }
   if(run && !Planner::valid(safety_state,safety_config,pressure_pending)) {
-    ROS_WARN("Hybrid guard details: motion %d bend [%.1f %.1f] start [%.1f %.1f] floor [%.1f %.1f] deg, rate [%.2f %.2f], pitch excursion %.1f deg",
+    ROS_WARN("Hybrid guard details: motion %d bend [%.1f %.1f] start [%.1f %.1f] floor [%.1f %.1f] deg, upper %.1f deg, rate [%.2f %.2f], pitch excursion %.1f deg",
         int(hybrid_single_.phase),s.bend[0]*180./M_PI,s.bend[1]*180./M_PI,
         safety_state.start_bend[0]*180./M_PI,safety_state.start_bend[1]*180./M_PI,
         safety_state.floor[0]*180./M_PI,safety_state.floor[1]*180./M_PI,
-        s.rate[0],s.rate[1],(s.pitch-s.pitch_start)*180./M_PI);
+        safety_config.bend_max*180./M_PI,s.rate[0],s.rate[1],
+        (s.pitch-s.pitch_start)*180./M_PI);
     beginHybridTerminalSettle(now,"hybrid measured bend/rate/tilt guard; score retained endpoint and retry");return;
   }
   // Reuse the acquired pressure latch here.  A strict +/-2-kPa comparison

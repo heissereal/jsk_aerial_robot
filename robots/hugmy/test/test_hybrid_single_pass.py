@@ -11,6 +11,19 @@ source=r'''
 using namespace hugmy::hybrid;
 int main(){
  Config c;SinglePassConfig k;Model model;model.reset(c);
+ // A real grasp may start above the nominal 150-deg model ceiling. The
+ // captured pose receives only a bounded 5-deg allowance: its initial state
+ // is valid, while continued pneumatic over-flexion still trips the guard.
+ Pair deep_grasp{{2.05,155.*3.141592653589793/180.}};
+ const double deep_limit=contactRelativeBendMaximum(
+     c.bend_max,deep_grasp,c.grasp_bend_margin);
+ State deep_state;deep_state.fresh=true;deep_state.bend=deep_grasp;
+ deep_state.start_bend=deep_grasp;deep_state.floor={{.523599,.523599}};
+ assert(deep_limit>deep_grasp[1] && deep_limit<c.bend_max+.18);
+ auto deep_config=c;deep_config.bend_max=deep_limit;
+ assert(Planner::valid(deep_state,deep_config));
+ deep_state.bend[1]=deep_limit+.001;
+ assert(!Planner::valid(deep_state,deep_config));
  BendCoordinateRate observed;
  for(int i=0;i<100;++i)observed.update(1.5-.1*i*.02,i*.02);
  assert(std::abs(observed.rate+.1)<1e-5);

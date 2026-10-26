@@ -364,6 +364,7 @@ hybrid_locomotion_stroke_m: 0.020
 # Maximum vertical-to-horizontal transfer time, NOT a powered-run stop timer.
 # Drive continues to the absolute goal unless prediction/measured guards stop it.
 hybrid_locomotion_run_max_sec: 3.0
+hybrid_locomotion_grasp_bend_margin_rad: 0.08726646259971647 # permit a measured >150-deg grasp, but stop 5 deg beyond it
 hybrid_locomotion_up_force_max_n: 6.0  # also capped at 60% of configured body weight
 imu_timeout_sec: 0.10
 thrust_timeout_sec: 0.20

@@ -1311,6 +1311,8 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   pnh_.param("hybrid_locomotion_pitch_change_limit_rad",
       hybrid_config_.pitch_change_limit,20.*M_PI/180.);
   pnh_.param("hybrid_locomotion_extension_limit_rad", hybrid_config_.extension_limit, 20.*M_PI/180.);
+  pnh_.param("hybrid_locomotion_grasp_bend_margin_rad",
+      hybrid_config_.grasp_bend_margin,5.*M_PI/180.);
   pnh_.param("hybrid_locomotion_up_force_max_n", hybrid_config_.up_force_max, 6.0);
   hybrid_config_.up_force_max=std::min(hybrid_config_.up_force_max, .6*mass_kg_*9.81);
   hybrid_config_.thrust_max=std::min(6., action_c_max_thrust_n_);

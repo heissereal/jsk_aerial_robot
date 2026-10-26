@@ -29,6 +29,10 @@ struct Config {
   double bend_tau=.35, bend_rate_tau=.12, moment_gain=8., roll_damping=1.5;
   double roll_limit=.261799, roll_rate_limit=.8, pitch_change_limit=.35;
   double bend_min=.523599, bend_max=2.61799, extension_limit=.349066, bend_rate_limit=3.14;
+  // A tightly wrapped real grasp can begin above the nominal 150-deg model
+  // envelope. Admit that measured contact pose plus only this small margin;
+  // do not disable the upper-bend guard for the powered trajectory.
+  double grasp_bend_margin=.0872665; // 5 deg
   // Pair-level request must not silently cap two 6-N rotors at 6 N total.
   // Individual thrust and upward-force constraints remain independent.
   double mismatch_limit=.261799, target_speed=.005, forward_force_max=12., up_force_max=6.;
@@ -42,7 +46,8 @@ struct Config {
     for(double v:{period,horizon,step,budget_ms,thrust_max,thrust_rise,thrust_fall,
         pressure_max,pressure_measurement_margin,pressure_slew,pressure_rate,exhaust_rate,pressure_delay,bend_tau,
         bend_rate_tau,moment_gain,roll_damping,roll_limit,roll_rate_limit,pitch_change_limit,
-        bend_min,bend_max,extension_limit,bend_rate_limit,mismatch_limit,target_speed,
+        bend_min,bend_max,extension_limit,bend_rate_limit,grasp_bend_margin,
+        mismatch_limit,target_speed,
         forward_force_max,up_force_max,run_min,run_max,prepare_timeout,regrip_timeout,settle,
         stroke,pressure_tolerance,energy_weight,force_weight,ratio_weight,roll_weight,
         search_initial_thrust,search_thrust_step,search_interval,search_thrust_weight,sliding_rear_pressure})
@@ -52,7 +57,9 @@ struct Config {
       pressure_max>0 && pressure_max<=55 && pressure_measurement_margin>=0 &&
       pressure_measurement_margin<=10 && pressure_slew>0 && pressure_rate>0 && exhaust_rate>0 &&
       pressure_delay<=.8 && bend_tau>0 && bend_rate_tau>0 && roll_limit>0 &&
-      roll_rate_limit>0 && bend_min<bend_max && extension_limit>0 && bend_rate_limit>0 &&
+      roll_rate_limit>0 && bend_min<bend_max && extension_limit>0 &&
+      bend_rate_limit>0 && grasp_bend_margin>=0. &&
+      grasp_bend_margin<=.261799 &&
       mismatch_limit>0 && target_speed>0 && forward_force_max>0 && up_force_max>0 && run_min>0 &&
       run_max>=run_min && run_max<=5 && prepare_timeout>0 && regrip_timeout>0 &&
       settle>0 && stroke>0 && search_initial_thrust>0 &&
@@ -60,6 +67,13 @@ struct Config {
       search_thrust_weight>0 && sliding_rear_pressure<=6.;
   }
 };
+inline double contactRelativeBendMaximum(double nominal_max,
+    const Pair& grasp_bend,double margin) {
+  double limit=nominal_max;
+  for(double bend:grasp_bend)
+    if(std::isfinite(bend)) limit=std::max(limit,bend+margin);
+  return std::min(3.141592653589793,limit);
+}
 struct State {
   double now=0., roll=0., roll_rate=0., pitch=0., pitch_start=0., speed=0., elapsed=0.;
   double bottom=0., bottom_command=0.;
