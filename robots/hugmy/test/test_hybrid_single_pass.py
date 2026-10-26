@@ -143,6 +143,13 @@ int main(){
  bad=k;bad.pull_golden_roll_limit=.05;assert(!bad.valid());
  bad=k;bad.rear_pressure_adaptation_max=31.;assert(!bad.valid());
  bad=k;bad.rear_pressure_adaptation_roll_limit=.05;assert(!bad.valid());
+ bad=k;bad.rear_release_angle_max=.01;assert(!bad.valid());
+ bad=k;bad.rear_release_angle_filter_tau=.5;assert(!bad.valid());
+ bad=k;bad.rear_release_pressure_trim_max=11.;assert(!bad.valid());
+ bad=k;bad.rear_release_thrust_trim_max=1.6;assert(!bad.valid());
+ bad=k;bad.rear_release_mismatch_soft=.2;
+ bad.rear_release_mismatch_hard=.1;assert(!bad.valid());
+ bad=k;bad.rear_release_realization_ratio=.1;assert(!bad.valid());
  bad=k;bad.regrip_rear_hold_pressure=31.;assert(!bad.valid());
  bad=k;bad.pull_rear_release_start_ratio=.7;
  bad.pull_rear_release_end_ratio=.6;assert(!bad.valid());
@@ -173,6 +180,23 @@ int main(){
  fresh_rear_schedule.support_transfer_started=true;
  fresh_rear_schedule.enter(SinglePass::Lift,in);
  assert(!fresh_rear_schedule.support_transfer_started);
+ // Rear-support safety regulates roll created by this stroke, not a stable
+ // contact-dependent absolute bias.  The adapter retains the independent
+ // absolute hard guard outside SinglePass.
+ SinglePass relative_roll;auto relative_roll_input=in;
+ relative_roll_input.s.roll=.15;relative_roll_input.s.roll_rate=.08;
+ relative_roll.slip_tested=true;relative_roll.begin(relative_roll_input);
+ relative_roll.enter(SinglePass::Lift,relative_roll_input);
+ relative_roll.update(relative_roll_input,c,k,model,geom);
+ assert(relative_roll.rear_support_safety_override==0.);
+ relative_roll_input.s.roll=.25;relative_roll_input.s.roll_rate=.08;
+ relative_roll.update(relative_roll_input,c,k,model,geom);
+ assert(relative_roll.rear_support_safety_override>0.);
+ relative_roll.rear_candidate_requested=true;
+ relative_roll.rear_candidate_distinct=true;
+ assert(!relative_roll.selectedRearCandidateIdentifiable());
+ relative_roll.rear_candidate_realized=true;
+ assert(relative_roll.selectedRearCandidateIdentifiable());
  // Retained-goal conditioning is enabled only with a comparable measured
  // full stride. It shortens reach but keeps a bounded unloading stroke, then
  // applies one common pull envelope to both rotors.
@@ -317,6 +341,16 @@ int main(){
  golden_input.s.bend={{1.,1.}};golden_input.s.pressure={{15.,15.}};
  golden_input.s.command={{15.,15.}};golden_input.s.thrust={{3.,3.}};
  golden_input.rear_pressure=0.;
+ // The early paired arm/body precursor starts the rear-assist envelope, but
+ // does not claim the full Motion-2 event or phase transition by itself.
+ SinglePass precursor=golden;auto precursor_input=golden_input;
+ precursor.load_relief_detected=false;
+ precursor.load_relief_candidate=true;
+ precursor.enter(SinglePass::Pull,precursor_input);
+ auto precursor_output=precursor.update(precursor_input,c,k,model,geom);
+ assert(precursor.rear_positive_started &&
+        precursor_output.rear_positive_thrust>0. &&
+        !precursor.load_relief_detected);
  golden.enter(SinglePass::Pull,golden_input);
  // The positive rear assist follows the bounded front-pair force. Its state
  // spans Motion 2/3 and remains separate from the reverse-assist search.
@@ -351,6 +385,78 @@ int main(){
         golden.golden_desired_forward>golden_start.desired_forward &&
         golden.golden_desired_up<golden_start.desired_up &&
         golden_pull.rear_positive_thrust==0.);
+ // Rear pressure is not physical release.  Capture unequal absolute rear
+ // bends and close one common pressure/thrust loop around the less-released
+ // arm. Under-release lowers pressure and adds positive assist; a large
+ // pair mismatch removes only those aggressive corrections.
+ SinglePass rear_angle_fb;auto rear_angle_input=golden_input;
+ rear_angle_fb.initialized=true;rear_angle_fb.slip_tested=true;
+ rear_angle_fb.calibrated=true;rear_angle_fb.grasp_reference={{1.5,1.5}};
+ rear_angle_fb.lift_up=1.5;rear_angle_fb.pull_forward=2.5;
+ rear_angle_fb.lift_force=3.;rear_angle_fb.load_relief_detected=true;
+ rear_angle_fb.unload_event_thrust={{3.,3.}};
+ rear_angle_fb.rear_support_prior=-1.;
+ rear_angle_fb.rear_grasp_reference={{1.6,1.4}};
+ rear_angle_fb.rear_grasp_reference_valid=true;
+ rear_angle_fb.rear_pressure_command=10.;
+ rear_angle_input.rear_kinematics_valid=true;
+ rear_angle_input.rear_bend={{1.6,1.4}};
+ rear_angle_input.rear_rate={{0.,0.}};
+ rear_angle_input.rear_pressure=0.;
+ rear_angle_input.s.bend={{1.,1.}};
+ rear_angle_input.s.pressure={{15.,15.}};
+ rear_angle_input.s.command={{15.,15.}};
+ rear_angle_input.s.thrust={{3.,3.}};
+ rear_angle_fb.enter(SinglePass::Pull,rear_angle_input);
+ auto rear_under=rear_angle_fb.update(
+     rear_angle_input,c,k,model,geom);
+ assert(rear_angle_fb.rear_angle_feedback_active &&
+        std::abs(rear_angle_fb.rear_release_target-
+                 k.rear_release_angle_max)<1e-9 &&
+        rear_angle_fb.rear_angle_pressure_trim<0. &&
+        rear_angle_fb.rear_angle_thrust_trim>0. &&
+        rear_under.rear_pressure<10. &&
+        rear_under.rear_positive_thrust>0.);
+ rear_angle_input.rear_bend={{1.6-2.*k.rear_release_angle_max,1.4}};
+ for(int i=0;i<20;++i)
+   rear_under=rear_angle_fb.update(rear_angle_input,c,k,model,geom);
+ assert(rear_angle_fb.rear_release_mismatch>=
+            k.rear_release_mismatch_hard &&
+        rear_angle_fb.rear_release_balance_envelope==0. &&
+        rear_under.rear_positive_thrust==0.);
+ // A release-side optimizer candidate is not an observation merely because
+ // its valve or rotor command was sent. Both rear bends must realize a
+ // sustained fraction of the requested relative extension.
+ SinglePass rear_candidate;auto rear_candidate_input=rear_angle_input;
+ rear_candidate.initialized=true;rear_candidate.slip_tested=true;
+ rear_candidate.calibrated=true;
+ rear_candidate.grasp_reference={{1.5,1.5}};
+ rear_candidate.lift_up=1.5;rear_candidate.pull_forward=2.5;
+ rear_candidate.lift_force=3.;rear_candidate.load_relief_detected=true;
+ rear_candidate.unload_event_thrust={{3.,3.}};
+ rear_candidate.rear_support_prior=0.;rear_candidate.trajectory.current=2;
+ rear_candidate.rear_candidate_requested=true;
+ rear_candidate.rear_candidate_distinct=true;
+ rear_candidate.rear_grasp_reference={{1.6,1.4}};
+ rear_candidate.rear_grasp_reference_valid=true;
+ rear_candidate.rear_pressure_command=7.5;
+ rear_candidate_input.rear_bend={{1.6,1.4}};
+ rear_candidate_input.rear_rate={{0.,0.}};
+ rear_candidate_input.rear_pressure=7.5;
+ rear_candidate_input.s.bend={{1.,1.}};
+ rear_candidate_input.s.pressure={{15.,15.}};
+ rear_candidate_input.s.command={{15.,15.}};
+ rear_candidate_input.s.thrust={{3.,3.}};
+ rear_candidate.enter(SinglePass::Pull,rear_candidate_input);
+ for(int i=0;i<10;++i)
+   rear_candidate.update(rear_candidate_input,c,k,model,geom);
+ assert(!rear_candidate.rear_candidate_realized);
+ const double realized_release=.75*k.rear_release_angle_max;
+ rear_candidate_input.rear_bend={{1.6-realized_release,
+                                  1.4-realized_release}};
+ for(int i=0;i<30 && !rear_candidate.rear_candidate_realized;++i)
+   rear_candidate.update(rear_candidate_input,c,k,model,geom);
+ assert(rear_candidate.rear_candidate_realized);
  // Regression for the real-arm Motion-3 handoff: one front arm may still be
  // extending quickly when pneumatic flexion starts.  Rate braking must not
  // copy an almost-zero target to both rotors.  Retain a bounded fraction of
@@ -395,24 +501,46 @@ int main(){
         !transition.support_transfer_started);
  transition_input.s.bend={{1.30,1.30}}; // 60% flexion
  transition_output=transition.update(transition_input,c,k,model,geom);
+ assert(!transition.support_transfer_started); // one sample is not a catch
+ for(int i=0;i<120 && !transition.support_transfer_started;++i) {
+   transition_output=transition.update(transition_input,c,k,model,geom);
+   transition_input.s.thrust=transition_output.thrust;
+   transition_input.s.command=transition_output.pressure;
+ }
  assert(transition.support_transfer_started);
- // Rear support adapts at settled stroke boundaries and is independent from
- // the outer force/mix candidate.
- SinglePass rear_adapt;
- rear_adapt.adaptive_rear_pressure_floor=0.;
- rear_adapt.stroke_lifted=true;rear_adapt.load_relief_detected=true;
- rear_adapt.stroke_peak_abs_gait_roll=13.*M_PI/180.;
- assert(rear_adapt.adaptRearPressureAfterMeasuredStroke(.01,true,k)==1 &&
-        std::abs(rear_adapt.rearPressureFloor(k)-5.)<1e-9);
- rear_adapt.stroke_peak_abs_gait_roll=2.*M_PI/180.;
- assert(rear_adapt.adaptRearPressureAfterMeasuredStroke(.01,true,k)==-1 &&
-        std::abs(rear_adapt.rearPressureFloor(k)-2.5)<1e-9);
- // Rear reverse assist is an outer-search variable, but the command is
- // released only as the newly placed front pair flexes and the continuous
- // rear-pressure schedule begins.  Measured pressure may lag the command, so
- // measured flexion is also valid authority during this golden interval.  It
- // must remain smooth and bounded, never a phase-transition step.
- full_goal.trajectory.current=2;
+ // Slip/first-unload identification chooses a coarse signed rear-support
+ // prior exactly once. Later support trials belong to the same outer search
+ // as front trajectory trials and therefore cannot be changed independently.
+ SinglePass rear_unstable;
+ rear_unstable.rear_support_prior=-.5;
+ rear_unstable.stroke_lifted=true;rear_unstable.load_relief_detected=true;
+ rear_unstable.stroke_peak_abs_gait_roll=13.*M_PI/180.;
+ assert(rear_unstable.finishRearSupportIdentification(.01,true,k)==1 &&
+        std::abs(rear_unstable.rear_support_prior-.25)<1e-9 &&
+        std::abs(rear_unstable.rearPressureFloor(k)-18.75)<1e-9);
+ assert(rear_unstable.finishRearSupportIdentification(.02,true,k)==0);
+ SinglePass rear_stable;
+ rear_stable.rear_support_prior=0.;
+ rear_stable.stroke_lifted=true;rear_stable.load_relief_detected=true;
+ rear_stable.stroke_peak_abs_gait_roll=2.*M_PI/180.;
+ // A successful first stroke validates its actual rear support; success is
+ // not evidence that maximum release would also be safe.
+ assert(rear_stable.finishRearSupportIdentification(.01,true,k)==0 &&
+        std::abs(rear_stable.rear_support_prior)<1e-9 &&
+        std::abs(rear_stable.rearPressureFloor(k)-15.)<1e-9);
+ SinglePass rear_stuck;
+ rear_stuck.rear_support_prior=-.5;
+ rear_stuck.stroke_lifted=true;rear_stuck.load_relief_detected=true;
+ rear_stuck.stroke_peak_abs_gait_roll=2.*M_PI/180.;
+ assert(rear_stuck.finishRearSupportIdentification(0.,true,k)==-1 &&
+        std::abs(rear_stuck.rear_support_prior+.75)<1e-9 &&
+        std::abs(rear_stuck.rearPressureFloor(k)-3.75)<1e-9);
+ // Positive signed rear support is an outer-search variable. Reverse thrust
+ // is used only while the higher pressure target is late and remains smooth
+ // and bounded, never a phase-transition step.
+ full_goal.rear_support_prior=.25;
+ full_goal.trajectory.current=3;
+ full_goal.rear_pressure_command=30.;
  full_goal.rear_release_commanded=true;
  full_input.rear_pressure=0.;
  full_goal.rear_positive_started=true;
@@ -420,12 +548,14 @@ int main(){
  full_goal.rear_positive_thrust_command=0.;
  auto reverse_assist=full_goal.update(full_input,c,k,model,geom);
  assert(reverse_assist.rear_reverse_thrust>0. &&
-        reverse_assist.rear_reverse_thrust<=.35+1e-9 &&
+        reverse_assist.rear_reverse_thrust<=
+            k.trajectory_windup_rear_reverse_max+1e-9 &&
         reverse_assist.rear_positive_thrust==0.);
  full_input.rear_pressure=in.base_pressure;
  auto anchored_rear=full_goal.update(full_input,c,k,model,geom);
  assert(anchored_rear.rear_reverse_thrust>=0. &&
-        anchored_rear.rear_reverse_thrust<=.35+1e-9);
+        anchored_rear.rear_reverse_thrust<=
+            k.trajectory_windup_rear_reverse_max+1e-9);
  SinglePass p;p.begin(in);bool high=false,low=false;
  for(int i=0;i<1600 && p.phase==SinglePass::SlipProbe;++i){
    const auto previous=in.s.thrust;auto o=p.update(in,c,k,model,geom);
@@ -439,7 +569,15 @@ int main(){
    in.s.thrust=o.thrust;in.s.command=o.pressure;in.s.now+=in.dt;
  }
  assert(high && low && p.slip_entries==1 && p.lift_probe_entries==0 && p.phase==SinglePass::StopForLift);
+ // A probe which reaches its timeout without a retained slide is itself the
+ // stable/no-slip classification. It must not inherit the 0-kPa lift fallback.
+ assert(!p.sliding_effective && p.rear_support_slip_identified &&
+        std::abs(p.rear_support_prior-k.rear_support_probe_stable)<1e-9);
  assert(p.pull_forward<=k.slip_seed_pull_max+1e-9);
+ // The remainder of this long fixture checks the historical maximum-release
+ // Pull path. Rear-support variation itself is covered by dedicated cases.
+ p.rear_support_prior=k.rear_support_probe_sliding;
+ p.rear_support_nominal=p.rear_support_command=p.rear_support_prior;
  // A horizontal arm that needs extra holding pressure can rise above the
  // 30-kPa grasp value, but never above the dedicated 40-kPa slip cap.
  SinglePass pressure_probe;auto pressure_input=in;
@@ -571,7 +709,11 @@ int main(){
  in.s.roll_rate=0.;
  for(int i=0;i<50;++i){auto o=p.update(in,c,k,model,geom);assert(o.thrust[0]==0.);in.s.command=o.pressure;}
  assert(p.phase==SinglePass::VentFront && p.powered_time==0.);
- assert(p.update(in,c,k,model,geom).rear_pressure==30.); // rear anchor stays grasped
+ const auto led_rear=p.update(in,c,k,model,geom);
+ // Front-vent preparation now leads the slow rear exhaust only to the
+ // compliant hold. Motion 2 owns the remaining optimized release.
+ assert(led_rear.rear_pressure<30. &&
+        led_rear.rear_pressure>=k.regrip_rear_hold_pressure);
  assert(in.s.command[0]>=0.); // command may already be zero; measured pressure still gates Lift
  // VentFront is a zero-thrust preparation boundary with one common pressure
  // target; relative extension is owned by the following powered phase.
@@ -619,9 +761,11 @@ int main(){
  in.s.pressure={{0.,0.}};in.rear_pressure=30.;
  for(int i=0;i<11;++i){auto o=p.update(in,c,k,model,geom);in.s.command=o.pressure;in.s.thrust=o.thrust;}
  assert(p.phase==SinglePass::Lift && p.lift_probe_entries==1);
- // Motion 2 begins with measured rear pressure still grasping.  Exhaust may
- // start only after both front arms provide a measured time-to-event.
- assert(p.update(in,c,k,model,geom).rear_pressure==30.);
+ // Motion 2 preserves the pre-vent command instead of returning the rear
+ // pair to 30 kPa for one sample and losing the pneumatic lead.
+ const auto preserved_rear=p.update(in,c,k,model,geom);
+ assert(preserved_rear.rear_pressure<=k.regrip_rear_hold_pressure+1e-9 &&
+        preserved_rear.rear_pressure>=p.rearPressureFloor(k)-1e-9);
  // Above 45 deg a physically extreme outward-rate spike is considered by
  // pausing the search for this sample. It must not erase the identified force,
  // and the chamber remains at zero until the measured target is reached.
@@ -976,9 +1120,10 @@ int main(){
  // is performed only with bounded thrust while the rear remains anchored.
  SinglePass synchronized;auto sync_input=in;sync_input.s.bend={{1.5,1.5}};
  sync_input.s.thrust={{3.,3.}};sync_input.s.command={{0.,0.}};
- sync_input.s.pressure={{0.,0.}};sync_input.s.roll=-.12;sync_input.s.roll_rate=-.1;
+ sync_input.s.pressure={{0.,0.}};sync_input.s.roll=0.;sync_input.s.roll_rate=0.;
  synchronized.slip_tested=true;synchronized.begin(sync_input);
  synchronized.enter(SinglePass::Lift,sync_input);
+ sync_input.s.roll=-.12;sync_input.s.roll_rate=-.1;
  sync_input.s.bend={{1.2,1.45}};
  auto sync_output=synchronized.update(sync_input,c,k,model,geom);
  assert(synchronized.phase==SinglePass::Lift && !sync_output.recover_roll);
@@ -1300,9 +1445,9 @@ int main(){
  reused_input.s.thrust=fast_lift.thrust;
  reused_input.s.bend={{1.44,1.44}};reused_input.s.rate={{-.20,-.20}};
  auto predicted_vent=reused.update(reused_input,c,k,model,geom);
- // A fast breakaway-rate estimate alone must not release the rear anchor.
- // Both fronts first complete the useful Action-C reach; otherwise the old
- // event-time estimate can remove rear support immediately after Lift entry.
+ // Once both front rotors are powered, rear exhaust is allowed to lead the
+ // arm event by the measured pneumatic delay.  The command remains bounded
+ // by the selected floor and cannot itself complete Motion 2.
  assert(predicted_vent.rear_pressure>=k.lift_rear_pressure_floor &&
         predicted_vent.rear_pressure<=30.);
  reused_input.s.thrust={{1.,1.}};
@@ -1310,12 +1455,13 @@ int main(){
  predicted_vent=reused.update(reused_input,c,k,model,geom);
  assert(predicted_vent.rear_pressure>=k.lift_rear_pressure_floor &&
         predicted_vent.rear_pressure<=30.);
- // Without confirmed powered onset of BOTH front arms, even a learned bend
- // sample cannot weaken the rear anchor. Fresh body-unloading evidence still
- // owns the transition to pressure-driven flexion.
+ // A learned bend sample still cannot complete Motion 2 without the paired
+ // arm/body event, but the already powered pair keeps the pre-vent command
+ // active so the slow rear plant is ready when that event arrives.
  reused_input.s.bend={{1.20,1.20}};reused_input.s.rate={{0.,0.}};
  predicted_vent=reused.update(reused_input,c,k,model,geom);
- assert(predicted_vent.rear_pressure==30.);
+ assert(predicted_vent.rear_pressure>=k.lift_rear_pressure_floor &&
+        predicted_vent.rear_pressure<30.);
  assert(reused.phase==SinglePass::Lift);
  reused_input.s.thrust={{2.,2.}};
  reused_input.height=k.unload_height;
@@ -1431,20 +1577,25 @@ int main(){
  // Pull inherits the compliant Motion-2 rear support without jumping back to
  // 30 kPa. Further exhaust follows measured front flexion.
  assert(p.phase==SinglePass::Pull && p.lift_tested &&
-        std::abs(o.rear_pressure-k.lift_rear_pressure_floor)<1e-9);
+        std::abs(o.rear_pressure-p.rearPressureFloor(k))<1e-9);
  // Command pressure is not sufficient: without measured flexion the rear
  // pair remains at the configured Motion-2 floor rather than changing state.
  in.s.pressure={{40.,40.}};in.s.command=o.pressure;in.s.thrust=o.thrust;
- for(int i=0;i<30;++i){o=p.update(in,c,k,model,geom);assert(!o.regrip && std::abs(o.rear_pressure-k.lift_rear_pressure_floor)<1e-9);}
+ for(int i=0;i<30;++i){o=p.update(in,c,k,model,geom);assert(!o.regrip && std::abs(o.rear_pressure-p.rearPressureFloor(k))<1e-9);}
  in.s.bend={{1.58,1.58}};in.s.rate={{0.,0.}};
  in.front_contact=false;
  // Pressure-driven flexion without a measured contact must not restore the
  // old rear anchor: that would erase the newly placed front point.  Once the
  // simulator reports contact, rear refill may overlap the remaining pull.
  for(int i=0;i<30;++i)o=p.update(in,c,k,model,geom);
- assert(!o.regrip && o.rear_pressure==0.);
+ assert(!o.regrip &&
+        std::abs(o.rear_pressure-p.rearPressureFloor(k))<1e-9);
  in.front_contact=true;
- for(int i=0;i<30 && o.rear_pressure==0.;++i)o=p.update(in,c,k,model,geom);
+ // A real front contact alone is insufficient: measured pressure/flexion
+ // must persist through the useful traction dwell before rear refill.
+ for(int i=0;i<250 &&
+     std::abs(o.rear_pressure-p.rearPressureFloor(k))<1e-9;++i)
+   o=p.update(in,c,k,model,geom);
  assert(std::abs(o.rear_pressure-k.regrip_rear_hold_pressure)<1e-9);
  // The first near-straight envelope stays valid until adapter regrip.  A
  // small settling drift in FrontCatch must not restore the ordinary floor.
@@ -1645,6 +1796,9 @@ int main(){
  cancelled_release.grasp_reference={{1.50,1.50}};
  cancelled_release.lift_force=2.;cancelled_release.lift_up=.5;
  cancelled_release.pull_forward=2.;
+ cancelled_release.rear_release_commanded=true;
+ cancelled_release.rear_pressure_command=0.;
+ cancelled_release.rear_release_pressure_threshold=3.;
  cancelled_input.s.bend={{1.40,1.40}};
  cancelled_input.s.roll=-.20;cancelled_input.s.roll_rate=-.1;
  SinglePassOutput cancelled_output;
@@ -1727,7 +1881,8 @@ int main(){
  for(int i=0;i<30 && slide.phase==SinglePass::SlipSettle;++i)
    o=slide.update(in,c,k,model,geom);
  assert(slide.phase==SinglePass::Slide && slide.slip_tested &&
-     slide.sliding_effective && slide.lift_probe_entries==0);
+     slide.sliding_effective && slide.lift_probe_entries==0 &&
+     std::abs(slide.rear_support_prior-k.rear_support_probe_sliding)<1e-9);
  // A detected slide is useful only while it advances the retained position.
  // Alternating positive velocity samples at essentially the same x must hand
  // control to motion 2 after the three-second no-progress window.
@@ -1736,7 +1891,8 @@ int main(){
    o=slide.update(in,c,k,model,geom);
  }
  assert((slide.phase==SinglePass::StopForLift ||
-         slide.phase==SinglePass::VentFront) && !slide.sliding_effective);
+         slide.phase==SinglePass::VentFront) && !slide.sliding_effective &&
+     std::abs(slide.rear_support_prior-k.rear_support_probe_stable)<1e-9);
  // Genuine, even slow, monotonic progress refreshes that watchdog and keeps
  // the low-friction sliding strategy active.
  SinglePass progressing_slide;auto progressing=in;

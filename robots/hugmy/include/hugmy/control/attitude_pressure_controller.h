@@ -578,6 +578,7 @@ private:
   hugmy::hybrid::SinglePassConfig hybrid_single_config_;
   hugmy::hybrid::SinglePass hybrid_single_;
   std::array<hugmy::hybrid::BendCoordinateRate,2> hybrid_sim_rate_;
+  std::array<hugmy::hybrid::BendCoordinateRate,2> hybrid_rear_sim_rate_;
   bool hybrid_hold_bottom_=false;
   hugmy::hybrid::Planner hybrid_planner_;
   hugmy::hybrid::Search hybrid_search_;

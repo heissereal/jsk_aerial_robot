@@ -950,7 +950,7 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   pnh_.param("hybrid_rear_pressure_adaptation_min_kpa",
       hybrid_single_config_.rear_pressure_adaptation_min,0.0);
   pnh_.param("hybrid_rear_pressure_adaptation_max_kpa",
-      hybrid_single_config_.rear_pressure_adaptation_max,15.0);
+      hybrid_single_config_.rear_pressure_adaptation_max,30.0);
   pnh_.param("hybrid_rear_pressure_adaptation_up_step_kpa",
       hybrid_single_config_.rear_pressure_adaptation_up_step,5.0);
   pnh_.param("hybrid_rear_pressure_adaptation_down_step_kpa",
@@ -960,6 +960,38 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       12.*M_PI/180.);
   pnh_.param("hybrid_rear_pressure_adaptation_progress_m",
       hybrid_single_config_.rear_pressure_adaptation_progress,.002);
+  pnh_.param("hybrid_rear_support_probe_sliding",
+      hybrid_single_config_.rear_support_probe_sliding,-1.0);
+  pnh_.param("hybrid_rear_support_probe_stable",
+      hybrid_single_config_.rear_support_probe_stable,-.75);
+  pnh_.param("hybrid_rear_support_probe_unstable",
+      hybrid_single_config_.rear_support_probe_unstable,.25);
+  pnh_.param("hybrid_rear_support_roll_start_rad",
+      hybrid_single_config_.rear_support_roll_start,4.*M_PI/180.);
+  pnh_.param("hybrid_rear_support_roll_full_rad",
+      hybrid_single_config_.rear_support_roll_full,10.*M_PI/180.);
+  pnh_.param("hybrid_rear_release_angle_max_rad",
+      hybrid_single_config_.rear_release_angle_max,10.*M_PI/180.);
+  pnh_.param("hybrid_rear_release_angle_filter_tau_sec",
+      hybrid_single_config_.rear_release_angle_filter_tau,.06);
+  pnh_.param("hybrid_rear_release_pressure_kp_kpa_rad",
+      hybrid_single_config_.rear_release_pressure_kp,40.0);
+  pnh_.param("hybrid_rear_release_pressure_kd_kpa_s_rad",
+      hybrid_single_config_.rear_release_pressure_kd,2.0);
+  pnh_.param("hybrid_rear_release_pressure_trim_max_kpa",
+      hybrid_single_config_.rear_release_pressure_trim_max,5.0);
+  pnh_.param("hybrid_rear_release_thrust_kp_n_rad",
+      hybrid_single_config_.rear_release_thrust_kp,3.0);
+  pnh_.param("hybrid_rear_release_thrust_kd_n_s_rad",
+      hybrid_single_config_.rear_release_thrust_kd,.25);
+  pnh_.param("hybrid_rear_release_thrust_trim_max_n",
+      hybrid_single_config_.rear_release_thrust_trim_max,.5);
+  pnh_.param("hybrid_rear_release_mismatch_soft_rad",
+      hybrid_single_config_.rear_release_mismatch_soft,6.*M_PI/180.);
+  pnh_.param("hybrid_rear_release_mismatch_hard_rad",
+      hybrid_single_config_.rear_release_mismatch_hard,12.*M_PI/180.);
+  pnh_.param("hybrid_rear_release_realization_ratio",
+      hybrid_single_config_.rear_release_realization_ratio,.5);
   pnh_.param("hybrid_regrip_rear_hold_pressure_kpa",
       hybrid_single_config_.regrip_rear_hold_pressure,10.0);
   pnh_.param("hybrid_pull_rear_release_start_ratio",

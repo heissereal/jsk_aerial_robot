@@ -295,11 +295,12 @@ void AttitudePressureController::finishHybridLocomotion(const ros::Time& now,boo
     ROS_INFO("Hybrid C/D measured settling rollback %.2f mm; next powered endpoint allowance %.2f mm (absolute retained goal unchanged)",
         1000.*loss,1000.*hybrid_settling_loss_);
   }
-  // Use this inner correction only once, before a repeated trajectory has
-  // produced any settled sample.  Afterwards the measured outer search owns
-  // horizontal mix/force adaptation.  Repeatedly increasing pull here despite
-  // worsening retained displacement previously drove 3.37 -> 6.37 N while
-  // the optimizer remained at candidate zero.
+  // A pending comparison can exist when resuming adaptation saved by an older
+  // run; finish it once, then hand all deliberate force changes to the outer
+  // measured search.  In the current policy the slip and first unloading
+  // probes establish the coarse operating point.  Chaining a separate blind
+  // +dF calibration here would change the front waveform at the same time as
+  // a rear-support candidate and make the measured result unidentifiable.
   const double previous_pull=hybrid_single_.pull_forward;
   const int pull_calibration_result=safe && measured ?
       hybrid_single_.finishPullCalibration(hybrid_result_.progress):0;
@@ -311,28 +312,34 @@ void AttitudePressureController::finishHybridLocomotion(const ros::Time& now,boo
   else if(pull_calibration_result>0)
     ROS_INFO("Hybrid initial pull calibration retained: endpoint response did not worsen; horizontal pull remains %.2f N",
         hybrid_single_.pull_forward);
-  // The first identification stroke has a deliberately different lift
-  // waveform and must not close calibration.  Once a repeated, settled
-  // stroke has already met the retained-progress requirement, however, there
-  // is no reason to inject another +dF trial.  Freeze the safe inner command
-  // and let the bounded outer mix/force search compare trajectories.
-  if(completed && safe && measured && hybrid_single_.strokes>1 &&
-     !hybrid_single_.goal_conditioned &&
-     hybrid_result_.progress>=hybrid_single_config_.pull_progress_threshold)
+  // The first identification reach has a deliberately different waveform.
+  // The first subsequent measured, safe stroke is the baseline observation,
+  // even when a guard shortened it: its stable retained endpoint is precisely
+  // the evidence required by the bounded outer search.  Freeze the inner
+  // command before recording that sample so front and rear experiments remain
+  // orthogonal.
+  if(safe && measured && hybrid_single_.calibrated &&
+     hybrid_single_.strokes>1 && !hybrid_single_.pull_calibration_pending)
     hybrid_single_.pull_calibration_complete=true;
-  const bool calibration_eligible=completed && safe && measured &&
-     !hybrid_single_.goal_conditioned &&
-     !hybrid_single_.pull_calibration_complete;
-  if(calibration_eligible &&
-     hybrid_single_.adaptPullAfterMeasuredStroke(
-         hybrid_result_.progress,hybrid_single_config_))
-    ROS_INFO("Hybrid initial pull calibration: retained %.2f mm < %.2f mm; horizontal pull %.2f -> %.2f N (later changes belong to measured trajectory optimization)",
-        1000.*hybrid_result_.progress,
-        1000.*hybrid_single_config_.pull_progress_threshold,
-        previous_pull,hybrid_single_.pull_forward);
-  else if(calibration_eligible &&
-          hybrid_single_.pull_forward>=hybrid_single_config_.pull_adaptation_max)
-    hybrid_single_.pull_calibration_complete=true;
+  // Complete the rear-support prior before recording an outer-search sample.
+  // This is the second half of the one-time identification (the slip probe is
+  // the first); after it, rear support is changed only by the same measured
+  // candidate search as the front trajectory.
+  const double previous_rear_support=hybrid_single_.rear_support_prior;
+  const int rear_identification=measured?
+      hybrid_single_.finishRearSupportIdentification(
+          hybrid_result_.progress,safe,hybrid_single_config_):0;
+  if(rear_identification!=0) {
+    hybrid_single_.trajectory.samples.clear();
+    hybrid_single_.trajectory.current=0;
+    hybrid_single_.trajectory.baseline_revalidation_remaining=0;
+    ROS_INFO("Hybrid rear-support identification: %.2f -> %.2f (%s; pressure floor %.1f kPa, peak stroke-relative roll %.1f deg, retained %.2f mm)",
+        previous_rear_support,hybrid_single_.rear_support_prior,
+        rear_identification>0?"more support":"more release",
+        hybrid_single_.rearPressureFloor(hybrid_single_config_),
+        hybrid_single_.stroke_peak_abs_gait_roll*180./M_PI,
+        1000.*hybrid_result_.progress);
+  }
   // The first identification reach is a different waveform and must not
   // teach the repeated-stroke model. Subsequent shortened/strengthened
   // strokes remain useful because record() retains their exact scale.
@@ -341,39 +348,37 @@ void AttitudePressureController::finishHybridLocomotion(const ros::Time& now,boo
   // phase.  Such a pressure-handoff-only interval is not a trajectory trial
   // and must not add a failed optimizer sample.  A guarded/interrupted stroke
   // that actually started remains useful measured evidence.
-  if(hybrid_single_.calibrated && hybrid_single_.strokes>1 &&
+  if(hybrid_single_.lift_probe_entries>0 && hybrid_single_.strokes>1 &&
      hybrid_run_start_>=0.) {
     hybrid_single_.trajectory.enabled=hybrid_search_.enabled;
-    hybrid_single_.trajectory.record(hybrid_single_.context_bend,hybrid_single_.context_roll,
-        hybrid_single_.context_pitch,hybrid_result_.progress,hybrid_result_.seconds,
-        hybrid_result_.effort,hybrid_result_.recovery_seconds,measured,
-        hybrid_result_.completed,safe,hybrid_single_.goal_scale);
+    const unsigned executed_candidate=hybrid_single_.trajectory.current;
     const auto choice=hybrid_single_.trajectory.selected();
-    ROS_INFO("Hybrid measured trajectory optimization: candidate %u, mix offset %.2f force scale %.2f unload scale %.2f rear reverse %.2f N, observations %zu; retained %.2f mm",
-        hybrid_single_.trajectory.current,choice.mix_offset,choice.force_scale,
-        choice.unload_scale,choice.rear_reverse_n,
-        hybrid_single_.trajectory.samples.size(),1000.*hybrid_result_.progress);
-  }
-  const double previous_rear_floor=
-      hybrid_single_.rearPressureFloor(hybrid_single_config_);
-  const int rear_adaptation=measured?
-      hybrid_single_.adaptRearPressureAfterMeasuredStroke(
-          hybrid_result_.progress,safe,hybrid_single_config_):0;
-  if(rear_adaptation!=0) {
-    const double next_rear_floor=
-        hybrid_single_.rearPressureFloor(hybrid_single_config_);
-    // A changed support floor defines a different inner controller.  Restart
-    // the bounded outer force/mix comparison at its baseline so its score is
-    // not attributed to two simultaneously changed mechanisms.
-    hybrid_single_.trajectory.samples.clear();
-    hybrid_single_.trajectory.current=0;
-    hybrid_single_.trajectory.baseline_revalidation_remaining=0;
-    ROS_INFO("Hybrid rear-support adaptation: %.1f -> %.1f kPa (%s; peak stroke-relative roll %.1f deg, minimum measured rear %.1f kPa, retained %.2f mm). Outer force/mix search reset to baseline",
-        previous_rear_floor,next_rear_floor,
-        rear_adaptation>0?"more rear support":"more rear release",
-        hybrid_single_.stroke_peak_abs_gait_roll*180./M_PI,
-        hybrid_single_.stroke_min_rear_pressure,
-        1000.*hybrid_result_.progress);
+    if(hybrid_single_.selectedRearCandidateIdentifiable()) {
+      hybrid_single_.trajectory.record(hybrid_single_.context_bend,hybrid_single_.context_roll,
+          hybrid_single_.context_pitch,hybrid_result_.progress,hybrid_result_.seconds,
+          hybrid_result_.effort,hybrid_result_.recovery_seconds,measured,
+          hybrid_result_.completed,safe,hybrid_single_.goal_scale);
+      ROS_INFO("Hybrid measured trajectory optimization: candidate %u, mix offset %.2f force scale %.2f unload scale %.2f rear-support offset %.2f (prior/effective %.2f/%.2f), observations %zu; retained %.2f mm",
+          executed_candidate,choice.mix_offset,choice.force_scale,
+          choice.unload_scale,choice.rear_support_offset,
+          hybrid_single_.rear_support_prior,
+          hybrid_single_.rear_support_command,
+          hybrid_single_.trajectory.samples.size(),1000.*hybrid_result_.progress);
+    } else {
+      // The inner posture loop replaced this rear-support request before the
+      // pressure/thrust reached the hardware.  Scoring the retained motion as
+      // the selected candidate would teach the optimizer the response of a
+      // different input.  Return to one baseline stroke without adding a
+      // fictitious observation; the candidate may be retried after the
+      // contact boundary is stable.
+      hybrid_single_.trajectory.current=0;
+      hybrid_single_.trajectory.baseline_revalidation_remaining=1;
+      ROS_WARN("Hybrid optimizer excluded unrealized rear candidate %u (offset %.2f, distinct=%d realized=%d, safety override %.2f); returning to baseline without recording this sample",
+          executed_candidate,choice.rear_support_offset,
+          hybrid_single_.rear_candidate_distinct,
+          hybrid_single_.rear_candidate_realized,
+          hybrid_single_.rear_support_safety_override);
+    }
   }
   ROS_INFO("Hybrid C/D result: completed=%d safe=%d retained %.2f mm / %.2f s, effort %.3f N2s, recovery %.2f s, J %.6f, bottom %.1f kPa m_min %.2f",
       hybrid_result_.completed,safe,1000.*hybrid_result_.progress,hybrid_result_.seconds,hybrid_result_.effort,
@@ -477,6 +482,37 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
         action_c_hard_min_bend_rad_,action_c_extension_target_rad_,action_c_start_extension_margin_rad_);
     s.fresh=s.fresh && std::isfinite(rate) && std::isfinite(s.bend[j]);
   }
+  Pair rear_bend{},rear_rate{};
+  std::array<size_t,2> rear_arms{{0,0}};
+  bool rear_kinematics_valid=true;
+  size_t rear_index=0;
+  for(size_t arm=0;arm<ARM_COUNT;++arm) if(!inchworm_front_[arm]) {
+    if(rear_index>=rear_arms.size()) {
+      rear_kinematics_valid=false;
+      break;
+    }
+    rear_arms[rear_index]=arm;
+    rear_bend[rear_index]=measuredArmBendAngle(arm);
+    const double measured_rate=hugmy::relativeBendRate(
+        neuron_gyro_[arm][1],body_angular_velocity_[0],
+        body_angular_velocity_[1],arm_yaw_[arm]);
+    const bool simulated=std::isfinite(grip_joint_bend_rad_[arm]) &&
+        fresh(grip_state_stamp_,.25);
+    rear_rate[rear_index]=simulated?
+        hybrid_rear_sim_rate_[rear_index].update(
+            rear_bend[rear_index],grip_state_stamp_.toSec()):
+        measured_rate;
+    rear_kinematics_valid=rear_kinematics_valid &&
+        std::isfinite(rear_bend[rear_index]) &&
+        std::isfinite(rear_rate[rear_index]);
+    ++rear_index;
+  }
+  rear_kinematics_valid=rear_kinematics_valid &&
+      rear_index==rear_arms.size();
+  // Rear bend feedback now owns part of the actuator command, so stale or
+  // invalid rear Neuron data is a safety input failure rather than an
+  // optional diagnostic omission.
+  s.fresh=s.fresh && rear_kinematics_valid;
   auto equilibrium=[&](size_t,double pressure,double force) {
     const auto range=bend_model_.ranges();const double coordinate=force+bend_model_thrust_offset_n_;
     if(pressure<range.first.first-5. || pressure>range.first.second ||
@@ -843,6 +879,8 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
   input.directional_pitch=hybrid_directional_pitch_sign_*
       action_c_direction_sign_x_*s.pitch;
   input.base_pressure=base_pressure_kpa_;input.speed_valid=speed_valid;
+  input.rear_bend=rear_bend;input.rear_rate=rear_rate;
+  input.rear_kinematics_valid=rear_kinematics_valid;
   input.rear_released=actionCRearReleased(now);
   input.rear_grasped=true;input.rear_pressure=0.;
   for(size_t arm=0;arm<ARM_COUNT;++arm) if(!inchworm_front_[arm]) {
@@ -925,6 +963,8 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
     const bool previous_unload_event=hybrid_single_.unload_event_detected;
     const bool previous_unload_capture=hybrid_single_.unload_capture_started;
     const bool previous_rear_release=hybrid_single_.rear_release_observed;
+    const bool previous_support_transfer=
+        hybrid_single_.support_transfer_started;
     const std::array<unsigned,2> previous_samples{{hybrid_single_.onset[0].samples,hybrid_single_.onset[1].samples}};
     command=hybrid_single_.update(input,hybrid_config_,hybrid_single_config_,
         hybrid_planner_.model,geometry,equilibrium);
@@ -1040,6 +1080,25 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
     if(!previous_rear_release && hybrid_single_.rear_release_observed)
       ROS_INFO("Hybrid measured rear-anchor release: pressure %.1f kPa; front support transfer may begin after the flexion/load conditions are met",
           input.rear_pressure);
+    if(!previous_support_transfer && hybrid_single_.support_transfer_started)
+      ROS_INFO("Hybrid rear support transfer starts after %s: front pressure [%.1f %.1f] kPa, bend [%.1f %.1f] deg, rear measured/hold %.1f/%.1f kPa, confirmation %.2f s",
+          hybrid_single_.support_transfer_ready_time+1.e-9>=
+              hybrid_single_config_.pull_regrip_confirm?
+                  "sustained measured pressure/flexion":"roll safety override",
+          s.pressure[0],s.pressure[1],
+          s.bend[0]*180./M_PI,s.bend[1]*180./M_PI,
+          input.rear_pressure,
+          hybrid_single_config_.regrip_rear_hold_pressure,
+          hybrid_single_.support_transfer_ready_time);
+    if(previous_phase==SinglePass::SlipSettle &&
+       hybrid_single_.phase!=SinglePass::SlipSettle)
+      ROS_INFO("Hybrid slip identification: retained %.2f mm, sliding=%d unstable=%d; rear-support prior %.2f (pressure floor %.1f kPa), pull seed %.2f N",
+          1000.*hybrid_single_.slip_retained_progress,
+          hybrid_single_.sliding_effective,
+          hybrid_single_.slip_probe_unstable,
+          hybrid_single_.rear_support_prior,
+          hybrid_single_.rearPressureFloor(hybrid_single_config_),
+          hybrid_single_.pull_forward);
     if(previous_phase!=hybrid_single_.phase)
       ROS_INFO("Hybrid single-pass trajectory phase %d -> %d; slip probes %u lift probes %u; bend [%.1f %.1f] deg, Lift reference [%.1f %.1f] deg, current extension [%.1f %.1f] deg, extension target [%.1f %.1f] deg, bend target [%.1f %.1f] deg, straight identification %d (measured absolute target only), learned absolute bend [%.1f %.1f] deg, learned target thrust [%.2f %.2f] N, recorded extension min/per-arm %.1f/[%.1f %.1f] deg, lift %.2f N, pull %.2f N",
           int(previous_phase),int(hybrid_single_.phase),hybrid_single_.slip_entries,hybrid_single_.lift_probe_entries,
@@ -1363,7 +1422,7 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
       float(trajectory_choice.mix_offset),
       float(trajectory_choice.force_scale),
       float(trajectory_choice.unload_scale),
-      float(trajectory_choice.rear_reverse_n),
+      float(trajectory_choice.rear_support_offset),
       float(command.rear_reverse_thrust),
       // Unified Motion-2/3 trajectory diagnostics (appended to preserve every
       // existing v3 field index used by bag-analysis scripts).
@@ -1429,10 +1488,41 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
       float(hybrid_single_.unload_extension_memory[0]),
       float(hybrid_single_.unload_extension_memory[1]),
       float(hybrid_single_.unload_pair_mismatch_measured),
-      float(hybrid_single_config_.unload_pair_mismatch)};
+      float(hybrid_single_config_.unload_pair_mismatch),
+      // Unified rear-support diagnostics. These are appended so older bag
+      // parsers keep all established indices.
+      float(hybrid_single_.rear_support_prior),
+      float(hybrid_single_.rear_support_nominal),
+      float(hybrid_single_.rear_support_command),
+      float(hybrid_single_.rear_support_safety_override),
+      float(hybrid_single_.rear_support_slip_identified),
+      float(hybrid_single_.rear_support_identified),
+      // Early event and optimizer-identifiability diagnostics.  A rear
+      // candidate is learnable only when the selected pressure/thrust reached
+      // the plant without the inner roll loop replacing it.
+      float(hybrid_single_.load_relief_candidate),
+      float(hybrid_single_.rear_candidate_requested),
+      float(hybrid_single_.rear_candidate_distinct),
+      float(hybrid_single_.rear_candidate_realized),
+      float(hybrid_single_.rear_candidate_realization_time),
+      // Measured rear-angle feedback (append-only for bag compatibility).
+      float(input.rear_bend[0]),float(input.rear_bend[1]),
+      float(input.rear_rate[0]),float(input.rear_rate[1]),
+      float(hybrid_single_.rear_grasp_reference[0]),
+      float(hybrid_single_.rear_grasp_reference[1]),
+      float(hybrid_single_.rear_release_by_arm[0]),
+      float(hybrid_single_.rear_release_by_arm[1]),
+      float(hybrid_single_.rear_release_pair),
+      float(hybrid_single_.rear_release_target),
+      float(hybrid_single_.rear_release_pair_rate),
+      float(hybrid_single_.rear_release_mismatch),
+      float(hybrid_single_.rear_release_balance_envelope),
+      float(hybrid_single_.rear_angle_pressure_trim),
+      float(hybrid_single_.rear_angle_thrust_trim),
+      float(hybrid_single_.rear_angle_feedback_active)};
   hybrid_diagnostic_pub_.publish(debug);
   ROS_INFO_THROTTLE(.5,
-      "Hybrid golden-time: active=%d u=%.2f, desired Fup/Fx %.2f/%.2f N, rear +/reverse %.2f/%.2f N env front/pressure %.2f/%.2f delivered %.2f s, rear floor/cmd/measured %.1f/%.1f/%.1f kPa, peak stroke roll %.1f deg",
+      "Hybrid golden-time: active=%d u=%.2f, desired Fup/Fx %.2f/%.2f N, rear +/reverse %.2f/%.2f N env front/pressure %.2f/%.2f delivered %.2f s, support prior/nominal/effective %.2f/%.2f/%.2f (safety %.2f), rear floor/cmd/measured %.1f/%.1f/%.1f kPa, rear release [%.1f %.1f]/%.1f deg rate %.1f deg/s mismatch %.1f deg trim P/T %+.1f/%+.2f, peak stroke roll %.1f deg",
       hybrid_single_.golden_window_active,
       hybrid_single_.golden_flex_progress,
       hybrid_single_.golden_desired_up,
@@ -1441,8 +1531,19 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
       hybrid_single_.rear_positive_front_envelope,
       hybrid_single_.rear_positive_pressure_envelope,
       hybrid_single_.rear_positive_elapsed,
+      hybrid_single_.rear_support_prior,
+      hybrid_single_.rear_support_nominal,
+      hybrid_single_.rear_support_command,
+      hybrid_single_.rear_support_safety_override,
       hybrid_single_.rearPressureFloor(hybrid_single_config_),
       hybrid_single_.rear_pressure_command,input.rear_pressure,
+      hybrid_single_.rear_release_by_arm[0]*180./M_PI,
+      hybrid_single_.rear_release_by_arm[1]*180./M_PI,
+      hybrid_single_.rear_release_target*180./M_PI,
+      hybrid_single_.rear_release_pair_rate*180./M_PI,
+      hybrid_single_.rear_release_mismatch*180./M_PI,
+      hybrid_single_.rear_angle_pressure_trim,
+      hybrid_single_.rear_angle_thrust_trim,
       hybrid_single_.stroke_peak_abs_gait_roll*180./M_PI);
   ROS_INFO_THROTTLE(.5,"Hybrid single-pass: phase=%d motion=%d T [%.2f %.2f] P [%.1f %.1f] rear cmd/measured %.1f/%.1f bottom %.1f, bend [%.1f %.1f] deg ref [%.1f %.1f] deg dExt [%.1f %.1f]/[%.1f %.1f] deg safetyBend [%.1f %.1f] deg unload=%d evidence=%.2f s bodyMemory=%.2f s dPitch=%.1f deg dZ=%.1f mm predictBend=[%.1f %.1f] deg identify=%d armLimit=[%d %d] prefill [%.1f %.1f] angleHoldP [%.1f %.1f] kPa dirPitch=%.1f deg rate [%.1f %.1f] deg/s, rear vent prediction %.2f/%.2f s, Fx %.2f Fup %.2f N; slip/lift probes %u/%u",
       hybrid_phase_,int(hybrid_single_.phase),inchworm_thrust_[arms[0]],inchworm_thrust_[arms[1]],

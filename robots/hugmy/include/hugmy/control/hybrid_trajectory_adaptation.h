@@ -4,11 +4,17 @@
 
 namespace hugmy { namespace hybrid {
 // A bounded, measured-result search. No simulated prediction is recorded as
-// progress. Besides horizontal mix and pull magnitude, it can request a
-// slightly deeper measured unloading event and a small rear reverse assist.
-// Pressure timing and arm synchronization remain in the inner feedback loops.
+// progress.  Front-arm trajectory and rear support are deliberately kept as
+// separate mechanisms: every non-baseline choice changes either the front
+// force path or the signed rear-support offset, never both.  Pressure timing,
+// arm synchronization and the roll safety override remain inner feedback
+// loops and therefore cannot be traded for score by this search.
 struct TrajectoryChoice {
-  double mix_offset=0., force_scale=1., unload_scale=1., rear_reverse_n=0.;
+  double mix_offset=0., force_scale=1., unload_scale=1.;
+  // Added to the support prior identified by the slip and first unloading
+  // probes. -1 means maximum release/forward assist, +1 means maximum
+  // pressure/reverse support. The final value is saturated by SinglePass.
+  double rear_support_offset=0.;
 };
 struct TrajectorySample {
   unsigned choice=0; Pair bend{};
@@ -31,6 +37,11 @@ class TrajectoryAdaptation {
   std::vector<TrajectorySample> samples;
   unsigned current=0;
   unsigned baseline_revalidation_remaining=0;
+  // A rear-support offset can saturate against the identified prior and
+  // therefore become physically identical to the baseline.  Such a choice is
+  // not a failed experiment; it is unavailable for this identified contact
+  // and must be skipped rather than retried forever as an unobserved arm.
+  std::array<bool,choice_count> unavailable{};
   bool enabled=true;
   static TrajectoryChoice choice(unsigned i) {
     // The measured unloading pose commonly gives m0 ~= 0.94--1.0. Positive
@@ -47,24 +58,27 @@ class TrajectoryAdaptation {
     // weaker pull at the same time. Lower-force variants remain as separate
     // candidates, allowing the measured energy penalty to prefer them when
     // their retained progress is comparable.
-    // Candidate zero is the measured baseline.  The next four candidates
-    // alter exactly one physical mechanism (unloading depth, rear assist,
-    // pull magnitude, then lift/pull mix); the last candidate combines only
-    // bounded changes.  Keeping this set small is deliberate: a 20--30 s
-    // physical stroke can compare all mechanisms online instead of spending
-    // the entire experiment on several nearly identical mix offsets.
-    // Rear reverse is capped below 1 N per arm and is released only during
-    // measured pressure-driven flexion.
+    // Candidate zero is the probe-derived baseline. Front and rear trials are
+    // interleaved so a changed rear anchor is never credited to a simultaneous
+    // front-force change.  The rear offsets straddle the identified prior:
+    // negative asks for more release/positive assist and positive asks for
+    // more grip/reverse assist. Keeping this set small is deliberate: a
+    // physical stroke is expensive and the probes have already found the
+    // rough operating point.
     const std::array<TrajectoryChoice,choice_count> choices{{
         {0.,1.,1.,0.},
-        {0.,1.,1.15,0.},
-        {0.,1.,1.,.35},
-        {0.,1.15,1.,0.},
-        {-.15,1.18,1.,0.},
-        {-.15,1.18,1.20,.50}}};
+        {0.,1.10,1.,0.},
+        {0.,1.,1.,-.50},
+        {0.,1.,1.,1.0},
+        {0.,1.,1.05,0.},
+        {-.10,1.10,1.,0.}}};
     return choices[i%choices.size()];
   }
   TrajectoryChoice selected() const {return choice(current);}
+  void markUnavailable(unsigned i) {
+    if(i>0 && i<choice_count) unavailable[i]=true;
+    if(current==i) current=0;
+  }
   static double contextDistance(const Pair& a,const Pair& b,double roll,double pitch,
                                 const TrajectorySample& s) {
     return std::pow((a[0]-b[0])/.2,2)+std::pow((a[1]-b[1])/.2,2)+
@@ -186,7 +200,12 @@ class TrajectoryAdaptation {
     // search on the exact high-friction contact that needs a stronger pull:
     // the unchanged waveform can be safe and repeatable while retaining a
     // small negative displacement.
-    if(current!=0 && (!completed || !safe || dx<.001))
+    // A guard-shortened stroke with a quiet measured endpoint is still useful
+    // evidence (and is scored with a modest incomplete penalty above).  Force
+    // baseline revalidation only after unsafe or ineffective exploration;
+    // otherwise every positive guarded candidate alternates with candidate 0
+    // forever and the rear-support candidates are never reached.
+    if(current!=0 && (!safe || dx<.001))
       baseline_revalidation_remaining=1;
     else if(current==0 && safe && completed &&
             baseline_revalidation_remaining)
@@ -204,8 +223,14 @@ class TrajectoryAdaptation {
     std::array<double,choice_count> sum{};
     std::array<unsigned,choice_count> positive{},safe_completed{},reverse{};
     unsigned n=0;
-    for(const auto& s:samples) if(contextDistance(bend,s.bend,roll,pitch,s)<=4. &&
-                                  std::abs(s.command_scale-1.)<=.02) {
+    // Goal-distance conditioning is applied to every physically executed
+    // stroke, so waiting for an accidental command_scale==1 sample can lock
+    // the search at candidate zero for an entire long-distance command.  The
+    // score already evaluates the actually retained displacement per time,
+    // effort per retained distance and recovery fraction.  Admit every
+    // bounded, recorded scale here; command_scale remains part of each sample
+    // for the separate stride-response normalization in progressEstimate().
+    for(const auto& s:samples) if(contextDistance(bend,s.bend,roll,pitch,s)<=4.) {
       ++count[s.choice];sum[s.choice]+=s.score;++n;
       if(s.safe && s.progress>=.001) ++positive[s.choice];
       if(s.safe && s.completed) ++safe_completed[s.choice];
@@ -236,12 +261,14 @@ class TrajectoryAdaptation {
        samples.back().safe && samples.back().progress>=.001) return;
     // Explore finite local candidates; then revisit using a bounded confidence
     // bonus. Updates occur only at measured regrasp boundaries, never mid-pulse.
-    for(unsigned i=0;i<count.size();++i) if(!count[i]) {current=i;return;}
+    for(unsigned i=0;i<count.size();++i)
+      if(!unavailable[i] && !count[i]) {current=i;return;}
     // Only a candidate with measured forward travel and no retained reversal
     // can become the deployed winner.
     double best=-std::numeric_limits<double>::infinity();
     unsigned best_index=0;
     for(unsigned i=0;i<count.size();++i) {
+      if(unavailable[i]) continue;
       if(!positive[i] || reverse[i]) continue;
       const double value=sum[i]/count[i]+.2*std::sqrt(std::log(1.+n)/count[i]);
       if(value>best) {best=value;best_index=i;}

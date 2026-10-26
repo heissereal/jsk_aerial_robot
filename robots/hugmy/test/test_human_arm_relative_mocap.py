@@ -65,7 +65,8 @@ assert args['forward_button'] == '3' and args['stop_button'] == '1'
 assert abs(float(args['ppg_settle_sec'])) < 1e-12
 assert abs(float(args['hybrid_lift_rear_release_start_ratio']) - .10) < 1e-12
 assert abs(float(args['hybrid_lift_rear_pressure_floor_kpa'])) < 1e-12
-assert abs(float(args['hybrid_regrip_rear_hold_pressure_kpa']) - 10.0) < 1e-12
+assert abs(float(args['hybrid_rear_support_probe_stable']) + .75) < 1e-12
+assert abs(float(args['hybrid_regrip_rear_hold_pressure_kpa']) - 7.5) < 1e-12
 assert args['hybrid_locomotion_outer_enabled'] == 'true'
 include = human.find('include')
 forwarded = {arg.get('name'): arg.get('value') for arg in include.findall('arg')}
@@ -76,5 +77,6 @@ assert forwarded['ppg_settle_sec'] == '$(arg ppg_settle_sec)'
 assert forwarded['hybrid_locomotion_outer_enabled'] == '$(arg hybrid_locomotion_outer_enabled)'
 assert forwarded['hybrid_lift_rear_release_start_ratio'] == '$(arg hybrid_lift_rear_release_start_ratio)'
 assert forwarded['hybrid_lift_rear_pressure_floor_kpa'] == '$(arg hybrid_lift_rear_pressure_floor_kpa)'
+assert forwarded['hybrid_rear_support_probe_stable'] == '$(arg hybrid_rear_support_probe_stable)'
 assert forwarded['hybrid_regrip_rear_hold_pressure_kpa'] == '$(arg hybrid_regrip_rear_hold_pressure_kpa)'
 print('PASS: ID2 position-only reference, rigid-motion rejection, 100-mm Joy goal, online optimization enabled')

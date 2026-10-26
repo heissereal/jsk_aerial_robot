@@ -28,12 +28,14 @@ int main() {
  a.select(bend,0.,0.);assert(a.current==1);
  a.record(bend,0.,0.,.0112,10.,20.,0.,true,true,true);
  a.select(bend,0.,0.);assert(a.current==2);
- // Scaled results update the baseline response after normalization, but are
- // excluded from direct candidate score comparison.
+ // Scaled results update the baseline response after normalization and must
+ // also unlock the outer search: long-distance goal conditioning must not
+ // leave candidate zero selected forever.
  TrajectoryAdaptation scaled;
  scaled.record(bend,0.,0.,.0096,10.,20.,0.,true,true,true,1.2);
  scaled.record(bend,0.,0.,.0104,10.,20.,0.,true,true,true,1.3);
  assert(std::abs(scaled.estimatedProgress(bend,0.,0.)-.008)<1e-9);
+ scaled.select(bend,0.,0.);assert(scaled.current==1);
  // Merely positive is not enough: a strongly scattered response must not be
  // used to decide the number of remaining strokes or to strengthen a command.
  TrajectoryAdaptation scattered;
@@ -50,6 +52,13 @@ int main() {
  TrajectoryAdaptation losing;
  losing.record(bend,0.,0.,-.004,10.,20.,0.,true,true,true);
  losing.select(bend,0.,0.);assert(losing.current==1);
+ // A saturated rear-support arm is physically identical to the baseline and
+ // is skipped without fabricating a failed or successful observation.
+ TrajectoryAdaptation unavailable;
+ unavailable.record(bend,0.,0.,.004,10.,20.,0.,true,true,true);
+ unavailable.markUnavailable(1);
+ unavailable.select(bend,0.,0.);
+ assert(unavailable.current==2 && unavailable.samples.size()==1);
  // Distance tiling: exact long goals repeat; a weak last stroke is spread;
  // an almost-full remainder becomes one slightly weaker extra stroke.
  assert(std::abs(TrajectoryAdaptation::planStride(.050,.010,.010,.25,1.5)-.010)<1e-9);
@@ -60,19 +69,18 @@ int main() {
  a.record(bend,0.,0.,.011,10.,20.,0.,true,false,true);
  assert(a.samples.back().progress==.011 && a.samples.back().score>0.);
  a.select({{.5,.5}},.5,.5);assert(a.current==0); // different support context
- assert(std::abs(a.choice(1).unload_scale-1.15)<1e-9);
- assert(std::abs(a.choice(2).rear_reverse_n-.35)<1e-9);
- assert(std::abs(a.choice(3).force_scale-1.15)<1e-9);
- assert(std::abs(a.choice(4).mix_offset+.15)<1e-9 &&
-        std::abs(a.choice(4).force_scale-1.18)<1e-9);
- assert(std::abs(a.choice(5).unload_scale-1.20)<1e-9 &&
-        std::abs(a.choice(5).rear_reverse_n-.50)<1e-9);
+ assert(std::abs(a.choice(1).force_scale-1.10)<1e-9);
+ assert(std::abs(a.choice(2).rear_support_offset+.50)<1e-9);
+ assert(std::abs(a.choice(3).rear_support_offset-1.0)<1e-9);
+ assert(std::abs(a.choice(4).unload_scale-1.05)<1e-9);
+ assert(std::abs(a.choice(5).mix_offset+.10)<1e-9 &&
+        std::abs(a.choice(5).force_scale-1.10)<1e-9);
  for(unsigned i=0;i<TrajectoryAdaptation::choice_count;++i){
    auto c=a.choice(i);
    assert(c.force_scale>=.90 && c.force_scale<=1.40 &&
           c.mix_offset>=-.30 && c.mix_offset<=0. &&
           c.unload_scale>=1. && c.unload_scale<=1.35 &&
-          c.rear_reverse_n>=0. && c.rear_reverse_n<=.60);
+          c.rear_support_offset>=-.50 && c.rear_support_offset<=1.0);
  }
  // Once every bounded candidate has measured evidence, a backward candidate
  // can never win by saving energy or time.  The deployed choice must have at
@@ -105,7 +113,9 @@ int main() {
    guarded_progress.record(bend,0.,0.,.011,10.,20.,0.,true,false,true);
  guarded_progress.select(bend,0.,0.);assert(guarded_progress.current==1);
  guarded_progress.record(bend,0.,0.,.010,10.,20.,0.,true,false,true);
- guarded_progress.select(bend,0.,0.);assert(guarded_progress.current==0);
+ // A safe retained endpoint does not need a baseline interleave merely
+ // because a guard shortened the waveform. Repeat it once for reproducibility.
+ guarded_progress.select(bend,0.,0.);assert(guarded_progress.current==1);
  guarded_progress.record(bend,0.,0.,.009,10.,20.,0.,true,true,true);
  guarded_progress.select(bend,0.,0.);assert(guarded_progress.current==2);
  a.enabled=false;a.select(bend,0.,0.);assert(a.current==0);

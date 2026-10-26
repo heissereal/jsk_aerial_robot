@@ -81,17 +81,44 @@ hybrid_pull_golden_roll_limit_rad: 0.20943951023931953 # 12 deg
 # thrust is zero; only then is the 30-kPa four-arm grasp restored.
 hybrid_lift_rear_release_start_ratio: 0.10 # begin relaxing rear support after 10% of paired Motion-2 extension
 hybrid_lift_rear_pressure_floor_kpa: 0.0
-# Rear support is adapted only at settled stroke boundaries. A large
-# stroke-relative roll raises the next floor by 5 kPa; a retained, roll-stable
-# forward stroke releases 2.5 kPa again. The outer force/mix optimizer is
-# revalidated whenever this inner support condition changes.
+# The slip probe and first unloading stroke initialize one signed rear-support
+# coordinate. -1 is release plus positive assist, +1 is pressure support plus
+# reverse assist when pressure is late. Subsequent changes are candidates in
+# the same measured-result optimizer as the front trajectory, but no candidate
+# changes front and rear mechanisms simultaneously.
 hybrid_rear_pressure_adaptation_enabled: true
 hybrid_rear_pressure_adaptation_min_kpa: 0.0
-hybrid_rear_pressure_adaptation_max_kpa: 15.0
+hybrid_rear_pressure_adaptation_max_kpa: 30.0
+# Retained for configuration compatibility; the one-time probe identification
+# now replaces the old independent per-stroke pressure stepping.
 hybrid_rear_pressure_adaptation_up_step_kpa: 5.0
 hybrid_rear_pressure_adaptation_down_step_kpa: 2.5
 hybrid_rear_pressure_adaptation_roll_limit_rad: 0.20943951023931953 # 12 deg
 hybrid_rear_pressure_adaptation_progress_m: 0.002
+hybrid_rear_support_probe_sliding: -1.0
+hybrid_rear_support_probe_stable: -0.75 # no sustained slip: release enough for the first unloading test (3.75 kPa with a 0--30-kPa range)
+hybrid_rear_support_probe_unstable: 0.25
+# A worsening roll can only increase support. At 4 deg it starts cancelling
+# release; by 10 deg it requests the full pressure/reverse-support end.
+hybrid_rear_support_roll_start_rad: 0.06981317007977318 # 4 deg
+hybrid_rear_support_roll_full_rad: 0.17453292519943295 # 10 deg
+# Rear release is verified in geometry, not inferred from chamber pressure.
+# Each stroke captures both rear bends at the quiet four-arm grasp. A -1 rear
+# support request targets 10 deg of extension on BOTH arms; intermediate
+# optimizer values interpolate this target. Pressure and positive thrust are
+# then trimmed from measured bend/rate error. Large pair mismatch fades only
+# the aggressive release direction while pressure restoration stays active.
+hybrid_rear_release_angle_max_rad: 0.17453292519943295 # 10 deg
+hybrid_rear_release_angle_filter_tau_sec: 0.06
+hybrid_rear_release_pressure_kp_kpa_rad: 40.0
+hybrid_rear_release_pressure_kd_kpa_s_rad: 2.0
+hybrid_rear_release_pressure_trim_max_kpa: 5.0
+hybrid_rear_release_thrust_kp_n_rad: 3.0
+hybrid_rear_release_thrust_kd_n_s_rad: 0.25
+hybrid_rear_release_thrust_trim_max_n: 0.5
+hybrid_rear_release_mismatch_soft_rad: 0.10471975511965977 # 6 deg
+hybrid_rear_release_mismatch_hard_rad: 0.20943951023931953 # 12 deg
+hybrid_rear_release_realization_ratio: 0.5
 hybrid_regrip_rear_hold_pressure_kpa: 10.0
 hybrid_pull_rear_release_start_ratio: 0.05
 hybrid_pull_rear_release_end_ratio: 0.65
@@ -137,10 +164,11 @@ hybrid_rear_release_sec: 2.0
 hybrid_rear_grasp_sec: 1.0
 hybrid_rear_low_kpa: 0.0
 hybrid_rear_preload_kpa: 15.0 # predicted handoff keeps a load-bearing rear anchor; only the measured unload event commands 0 kPa
-hybrid_rear_vent_lead_margin_sec: 0.10 # predict only the 30->preload preparation; final exhaust is event-driven
+hybrid_rear_vent_lead_margin_sec: 0.10 # measured valve delay/rate lead used by VentFront and the final optimized exhaust
 hybrid_rear_vent_start_margin_rad: 0.13962634015954636 # keep the rear anchor until BOTH fronts have made the useful 8-deg Action-C reach
-# Front target completion owns the handoff. Rear exhaust continues in motion3;
-# it may delay the handoff only until 12 kPa or for at most 0.5 s.
+# Motion 2/3 own the final optimizer-selected rear pressure. VentFront leads
+# only to the compliant hold, and Motion 3 restores it after sustained,
+# measured front pressure/flexion or an independent roll-safety override.
 hybrid_probe_extension_rad: 0.13962634015954636  # compatibility fallback; 8 deg is not normal motion-2 completion
 # The first motion=2 is identification, not an Action-C pulse.  Its early
 # extension is at 0 kPa.  On an adverse slope only, the late reach uses the
