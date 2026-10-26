@@ -401,6 +401,11 @@ private:
   hugmy::PostureRecoveryGate hybrid_ppg_settle_gate_;
   hugmy::PostureRecoveryGate action_c_ppg_settle_gate_;
   double ppg_settle_sec_ = 0.0;
+  // A target-reaching stroke is watched briefly after bottom deflation and
+  // four-arm regrasp.  This is independent of the optional PPG dwell: it lets
+  // the ordinary worsening-roll detector catch a slow support-transfer drift
+  // before locomotion relinquishes actuator ownership.
+  double hybrid_terminal_posture_monitor_sec_ = 8.0;
   double action_c_posture_settle_sec_ = 0.5;
   double correction_max_angular_rate_, correction_thrust_duration_;
   double prepare_timeout_, prepare_stable_duration_, recover_timeout_, cooldown_duration_;

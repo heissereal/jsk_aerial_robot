@@ -51,6 +51,13 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   if (!std::isfinite(ppg_settle_sec_) || ppg_settle_sec_ < 0.0 ||
       ppg_settle_sec_ > 60.0)
     throw std::runtime_error("ppg_settle_sec must be finite and in [0, 60] s");
+  pnh_.param("hybrid_terminal_posture_monitor_sec",
+             hybrid_terminal_posture_monitor_sec_, 8.0);
+  if (!std::isfinite(hybrid_terminal_posture_monitor_sec_) ||
+      hybrid_terminal_posture_monitor_sec_ < 0.0 ||
+      hybrid_terminal_posture_monitor_sec_ > 60.0)
+    throw std::runtime_error(
+        "hybrid_terminal_posture_monitor_sec must be finite and in [0, 60] s");
   pnh_.param("hybrid_regrip_bottom_ramp_kpa_s",
              hybrid_regrip_bottom_ramp_kpa_s_, 2.5);
   pnh_.param("hybrid_regrip_roll_emergency_rad",

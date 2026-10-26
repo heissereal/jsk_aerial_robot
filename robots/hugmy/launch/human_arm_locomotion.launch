@@ -12,6 +12,7 @@
   <!-- Motion-validation default.  Set ppg_settle_sec:=10.0 only when an
        actual post-motion PPG acquisition interval is required. -->
   <arg name="ppg_settle_sec" default="0.0" />
+  <arg name="hybrid_terminal_posture_monitor_sec" default="8.0" />
   <!-- Start collecting the first measured baseline immediately and enable
        bounded trajectory exploration from the following comparable stroke. -->
   <arg name="hybrid_locomotion_outer_enabled" default="true" />
@@ -92,6 +93,8 @@
          value="$(arg hybrid_trajectory_pressure_lead_max_sec)" />
     <arg name="maximum_pressure_kpa" value="$(arg maximum_pressure_kpa)" />
     <arg name="ppg_settle_sec" value="$(arg ppg_settle_sec)" />
+    <arg name="hybrid_terminal_posture_monitor_sec"
+         value="$(arg hybrid_terminal_posture_monitor_sec)" />
     <arg name="use_mocap_attitude_for_inchworm" value="false" />
     <arg name="hand_relative_mocap_enabled" value="true" />
     <arg name="hand_target_selects_direction" value="true" />

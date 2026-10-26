@@ -2,6 +2,11 @@ control_rate_hz: 50.0
 # Disabled during motion validation.  Set the launch argument to 10 s for a
 # post-motion PPG acquisition with bottom empty, thrust zero and grasp held.
 ppg_settle_sec: 0.0
+# Keep control ownership briefly after the terminal endpoint is fixed.  A
+# slow roll drift caused by four-arm regrasp can then enter ordinary posture
+# recovery; stable offsets are ignored by the worsening-roll gate.  This does
+# not delay intermediate strokes and is independent of PPG acquisition.
+hybrid_terminal_posture_monitor_sec: 8.0
 hybrid_locomotion_outer_enabled: true
 hybrid_locomotion_initial_bottom_kpa: 30.0
 # Score and restart every stroke from a common bottom-deflated boundary.

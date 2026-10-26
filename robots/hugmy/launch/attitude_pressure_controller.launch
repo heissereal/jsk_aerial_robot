@@ -1,6 +1,7 @@
 <launch>
   <arg name="robot_ns" default="quadrotor" />
   <arg name="ppg_settle_sec" default="0.0" />
+  <arg name="hybrid_terminal_posture_monitor_sec" default="8.0" />
   <arg name="inchworm_action_b" default="false" />
   <arg name="inchworm_action_c" default="false" />
   <arg name="hybrid_locomotion_outer_enabled" default="true" />
@@ -177,6 +178,8 @@
       <rosparam command="load"
                 file="$(find hugmy)/config/attitude_pressure_controller.yaml" />
       <param name="ppg_settle_sec" value="$(arg ppg_settle_sec)" />
+      <param name="hybrid_terminal_posture_monitor_sec"
+             value="$(arg hybrid_terminal_posture_monitor_sec)" />
       <param name="recovery_predictive_enabled" value="$(arg recovery_predictive_enabled)" />
       <param name="recovery_predictive_shadow" value="$(arg recovery_predictive_shadow)" />
       <param name="inchworm_action_b_enabled" value="$(arg inchworm_action_b)" />

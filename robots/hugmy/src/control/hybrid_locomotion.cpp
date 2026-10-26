@@ -1303,14 +1303,57 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
           hybrid_end_mean_x_);
     }
 
+    // Do not relinquish control on the first quiet sample after a terminal
+    // stroke.  Four-arm regrasp can unload the bottom cleanly and then drift
+    // several degrees over the following seconds.  Keeping phase 2 alive at
+    // the already-safe zero-thrust/zero-bottom boundary allows the boundary
+    // trend detector above to request posture recovery if (and only if) roll
+    // keeps worsening.  Intermediate strokes retain the fast PPG-only wait.
+    const double remaining_at_endpoint=hybrid_end_mean_valid_ ?
+        action_c_direction_sign_x_*(
+            action_c_absolute_target_x_m_-hybrid_end_mean_x_) :
+        std::numeric_limits<double>::infinity();
+    const bool target_reached_at_endpoint=
+        hybrid_endpoint_captured_latched_ && remaining_at_endpoint<=.001;
+    const double endpoint_hold_sec=target_reached_at_endpoint ?
+        std::max(ppg_settle_sec_,hybrid_terminal_posture_monitor_sec_) :
+        ppg_settle_sec_;
     const bool ppg_settle_ready=hybrid_endpoint_captured_latched_ &&
         hybrid_ppg_wait_since_>=0. &&
-        clock-hybrid_ppg_wait_since_>=ppg_settle_sec_;
+        clock-hybrid_ppg_wait_since_>=endpoint_hold_sec;
     if(hybrid_endpoint_captured_latched_ && !ppg_settle_ready)
       ROS_INFO_THROTTLE(1.0,
-          "Hybrid PPG settle after fixed endpoint: holding safe outputs for %.1f/%.1f s",
-          clock-hybrid_ppg_wait_since_,ppg_settle_sec_);
-    if(ppg_settle_ready) {
+          "Hybrid endpoint hold: safe outputs for %.1f/%.1f s (terminal posture monitor=%d, PPG dwell %.1f s)",
+          clock-hybrid_ppg_wait_since_,endpoint_hold_sec,
+          target_reached_at_endpoint,ppg_settle_sec_);
+    // The first quiet endpoint can still creep backwards while the terminal
+    // posture monitor owns the robot.  Re-measure the retained position at
+    // the end of that monitor instead of declaring success from the stale
+    // pre-hold sample.  If more than the 1-mm goal tolerance was lost, the
+    // ordinary continuation below schedules another measured stroke.
+    const bool terminal_position_ready=!target_reached_at_endpoint ||
+        hybrid_position_window_.stable(clock);
+    if(ppg_settle_ready && target_reached_at_endpoint &&
+       !terminal_position_ready)
+      ROS_INFO_THROTTLE(1.0,
+          "Hybrid terminal position is still settling; retaining safe zero-output ownership before final goal validation");
+    if(ppg_settle_ready && target_reached_at_endpoint &&
+       terminal_position_ready) {
+      const double monitored_endpoint=hybrid_position_window_.mean();
+      if(std::isfinite(monitored_endpoint)) {
+        const double previous_endpoint=hybrid_end_mean_x_;
+        hybrid_end_mean_x_=monitored_endpoint;
+        hybrid_end_mean_valid_=true;
+        const double monitored_remaining=action_c_direction_sign_x_*(
+            action_c_absolute_target_x_m_-hybrid_end_mean_x_);
+        if(monitored_remaining>.001)
+          ROS_WARN("Hybrid terminal hold retained %.2f mm less progress than its first endpoint; %.2f mm remains, so locomotion will continue",
+              1000.*action_c_direction_sign_x_*(
+                  previous_endpoint-hybrid_end_mean_x_),
+              1000.*monitored_remaining);
+      }
+    }
+    if(ppg_settle_ready && terminal_position_ready) {
       const bool terminal=hybrid_terminal_settle_;
       const bool retry=hybrid_terminal_retry_;
       const std::string terminal_reason=hybrid_terminal_reason_;
