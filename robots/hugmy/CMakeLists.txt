@@ -19,15 +19,40 @@ find_package(catkin REQUIRED COMPONENTS
   cv_bridge
   tf
   image_transport
-  mujoco_ros_control
   visualization_msgs
   )
 
 find_package(PythonInterp REQUIRED)
+find_package(mujoco_ros QUIET)
+if(mujoco_ros_FOUND)
+  find_package(mujoco_ros_control QUIET)
+endif()
+find_package(mujoco_ros_utils QUIET)
+
+list(FIND aerial_robot_simulation_LIBRARIES
+  mujoco_aerial_robot_hw_sim HUGMY_MUJOCO_BASE_LIBRARY_INDEX)
+set(HUGMY_MUJOCO_AVAILABLE FALSE)
+if(mujoco_ros_FOUND AND mujoco_ros_control_FOUND AND mujoco_ros_utils_FOUND
+   AND NOT HUGMY_MUJOCO_BASE_LIBRARY_INDEX EQUAL -1)
+  set(HUGMY_MUJOCO_AVAILABLE TRUE)
+  message(STATUS "Building Hugmy MuJoCo hardware plugin and models")
+else()
+  message(STATUS
+    "MuJoCo packages are incomplete; building Hugmy real-machine control only")
+endif()
+
+set(HUGMY_EXPORTED_LIBRARIES hugmy_quad_bi_controller)
+set(HUGMY_CATKIN_DEPENDS
+  aerial_robot_control pluginlib aerial_robot_model aerial_robot_simulation
+  spinal std_msgs std_srvs geometry_msgs sensor_msgs tf visualization_msgs)
+if(HUGMY_MUJOCO_AVAILABLE)
+  list(APPEND HUGMY_EXPORTED_LIBRARIES hugmy_pneumatic_mujoco_hw_sim)
+  list(APPEND HUGMY_CATKIN_DEPENDS mujoco_ros_control)
+endif()
 
 catkin_package(
-  LIBRARIES hugmy_pneumatic_mujoco_hw_sim hugmy_quad_bi_controller
-  CATKIN_DEPENDS aerial_robot_control pluginlib aerial_robot_model aerial_robot_simulation mujoco_ros_control spinal std_msgs std_srvs geometry_msgs sensor_msgs tf visualization_msgs
+  LIBRARIES ${HUGMY_EXPORTED_LIBRARIES}
+  CATKIN_DEPENDS ${HUGMY_CATKIN_DEPENDS}
   )
 
 include_directories(
@@ -35,14 +60,18 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
   )
 
-add_library(hugmy_pneumatic_mujoco_hw_sim src/mujoco/hugmy_pneumatic_hw_sim.cpp)
-add_dependencies(hugmy_pneumatic_mujoco_hw_sim ${catkin_EXPORTED_TARGETS})
-target_compile_definitions(hugmy_pneumatic_mujoco_hw_sim PRIVATE SIMULATION)
-# HugmyPneumaticHWSim derives from AerialRobotHWSim.  Keep the base plugin as
-# an explicit ELF dependency: relying only on pluginlib load order leaves its
-# virtual methods/RTTI unresolved when this derived plugin is loaded first.
-target_link_libraries(hugmy_pneumatic_mujoco_hw_sim
-  ${catkin_LIBRARIES})
+if(HUGMY_MUJOCO_AVAILABLE)
+  include_directories(${mujoco_ros_control_INCLUDE_DIRS})
+  add_library(hugmy_pneumatic_mujoco_hw_sim
+    src/mujoco/hugmy_pneumatic_hw_sim.cpp)
+  add_dependencies(hugmy_pneumatic_mujoco_hw_sim ${catkin_EXPORTED_TARGETS})
+  target_compile_definitions(hugmy_pneumatic_mujoco_hw_sim PRIVATE SIMULATION)
+  # HugmyPneumaticHWSim derives from AerialRobotHWSim.  Keep the base plugin
+  # as an explicit ELF dependency: relying only on pluginlib load order leaves
+  # its virtual methods/RTTI unresolved when this derived plugin loads first.
+  target_link_libraries(hugmy_pneumatic_mujoco_hw_sim
+    ${catkin_LIBRARIES} ${mujoco_ros_control_LIBRARIES})
+endif()
 
 add_library(hugmy_navigation src/navigation/hugmy_navigation.cpp)
 target_link_libraries(hugmy_navigation ${catkin_LIBRARIES})
@@ -116,57 +145,59 @@ add_executable(perching_node src/control/perching.cpp)
 target_link_libraries(perching_node ${catkin_LIBRARIES})
 add_dependencies(perching_node ${catkin_EXPORTED_TARGETS})
 
-# Generate the articulated MuJoCo model used by the pneumatic hardware plugin.
-set(HUGMY_MUJOCO_MODEL ${PROJECT_SOURCE_DIR}/mujoco/hugmy2/robot.xml)
-add_custom_command(
-  OUTPUT ${HUGMY_MUJOCO_MODEL}
-  COMMAND rosrun mujoco_ros_utils mujoco_model_generator.py
-          ${PROJECT_SOURCE_DIR}/config/mujoco_model.yaml
-  COMMAND ${PYTHON_EXECUTABLE}
-          ${PROJECT_SOURCE_DIR}/script/finalize_mujoco_model.py
-          ${HUGMY_MUJOCO_MODEL}
-  DEPENDS
-    ${PROJECT_SOURCE_DIR}/config/mujoco_model.yaml
-    ${PROJECT_SOURCE_DIR}/script/finalize_mujoco_model.py
-    ${PROJECT_SOURCE_DIR}/urdf/hugmy2.mujoco.xacro
-    ${PROJECT_SOURCE_DIR}/urdf/hugmy2.urdf.xacro
-    ${PROJECT_SOURCE_DIR}/urdf/mesh/4S_1000mAh_battery.stl
-    ${PROJECT_SOURCE_DIR}/urdf/mesh/body_with_face_mujoco.stl
-    ${PROJECT_SOURCE_DIR}/urdf/mesh/cable_carrier_2.stl
-    ${PROJECT_SOURCE_DIR}/urdf/mesh/cable_carrier_arm_end.stl
-    ${PROJECT_SOURCE_DIR}/urdf/mesh/long_cabble_carrier_and_moter_mount.stl
-    ${PROJECT_SOURCE_DIR}/urdf/mesh/prop_5inch.dae
-  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
-add_custom_target(generate_hugmy_mujoco_model ALL DEPENDS ${HUGMY_MUJOCO_MODEL})
+if(HUGMY_MUJOCO_AVAILABLE)
+  # Generate the articulated MuJoCo model used by the pneumatic hardware
+  # plugin.  Real-machine builds deliberately skip these generated assets.
+  set(HUGMY_MUJOCO_MODEL ${PROJECT_SOURCE_DIR}/mujoco/hugmy2/robot.xml)
+  add_custom_command(
+    OUTPUT ${HUGMY_MUJOCO_MODEL}
+    COMMAND rosrun mujoco_ros_utils mujoco_model_generator.py
+            ${PROJECT_SOURCE_DIR}/config/mujoco_model.yaml
+    COMMAND ${PYTHON_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/script/finalize_mujoco_model.py
+            ${HUGMY_MUJOCO_MODEL}
+    DEPENDS
+      ${PROJECT_SOURCE_DIR}/config/mujoco_model.yaml
+      ${PROJECT_SOURCE_DIR}/script/finalize_mujoco_model.py
+      ${PROJECT_SOURCE_DIR}/urdf/hugmy2.mujoco.xacro
+      ${PROJECT_SOURCE_DIR}/urdf/hugmy2.urdf.xacro
+      ${PROJECT_SOURCE_DIR}/urdf/mesh/4S_1000mAh_battery.stl
+      ${PROJECT_SOURCE_DIR}/urdf/mesh/body_with_face_mujoco.stl
+      ${PROJECT_SOURCE_DIR}/urdf/mesh/cable_carrier_2.stl
+      ${PROJECT_SOURCE_DIR}/urdf/mesh/cable_carrier_arm_end.stl
+      ${PROJECT_SOURCE_DIR}/urdf/mesh/long_cabble_carrier_and_moter_mount.stl
+      ${PROJECT_SOURCE_DIR}/urdf/mesh/prop_5inch.dae
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+  add_custom_target(generate_hugmy_mujoco_model ALL
+                    DEPENDS ${HUGMY_MUJOCO_MODEL})
 
-# Conservative locomotion fixture: retain a human-sized elliptic section but
-# remove the forearm taper, so a pressure-normal force cannot create free
-# axial progress.  This is generated separately to preserve the anatomical
-# tapered model for comparison experiments.
-set(HUGMY_HIGH_FRICTION_MUJOCO_MODEL
-    ${PROJECT_SOURCE_DIR}/mujoco/hugmy2/robot_high_friction.xml)
-add_custom_command(
-  OUTPUT ${HUGMY_HIGH_FRICTION_MUJOCO_MODEL}
-  COMMAND ${CMAKE_COMMAND} -E copy
-          ${HUGMY_MUJOCO_MODEL}
-          ${HUGMY_HIGH_FRICTION_MUJOCO_MODEL}
-  COMMAND ${PYTHON_EXECUTABLE}
-          ${PROJECT_SOURCE_DIR}/script/finalize_mujoco_model.py
-          ${HUGMY_HIGH_FRICTION_MUJOCO_MODEL}
-          --forearm-profile uniform
-  DEPENDS
-    ${HUGMY_MUJOCO_MODEL}
-    ${PROJECT_SOURCE_DIR}/script/finalize_mujoco_model.py
-  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
-add_custom_target(generate_hugmy_high_friction_mujoco_model ALL
-                  DEPENDS ${HUGMY_HIGH_FRICTION_MUJOCO_MODEL})
+  # Conservative locomotion fixture: retain a human-sized elliptic section
+  # but remove the forearm taper, so normal force cannot create free progress.
+  set(HUGMY_HIGH_FRICTION_MUJOCO_MODEL
+      ${PROJECT_SOURCE_DIR}/mujoco/hugmy2/robot_high_friction.xml)
+  add_custom_command(
+    OUTPUT ${HUGMY_HIGH_FRICTION_MUJOCO_MODEL}
+    COMMAND ${CMAKE_COMMAND} -E copy
+            ${HUGMY_MUJOCO_MODEL}
+            ${HUGMY_HIGH_FRICTION_MUJOCO_MODEL}
+    COMMAND ${PYTHON_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/script/finalize_mujoco_model.py
+            ${HUGMY_HIGH_FRICTION_MUJOCO_MODEL}
+            --forearm-profile uniform
+    DEPENDS
+      ${HUGMY_MUJOCO_MODEL}
+      ${PROJECT_SOURCE_DIR}/script/finalize_mujoco_model.py
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+  add_custom_target(generate_hugmy_high_friction_mujoco_model ALL
+                    DEPENDS ${HUGMY_HIGH_FRICTION_MUJOCO_MODEL})
+endif()
 
 install(DIRECTORY config doc launch plugins mujoco
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
   USE_SOURCE_PERMISSIONS
   )
 
-install(TARGETS hugmy_pneumatic_mujoco_hw_sim hugmy_quad_bi_controller
+install(TARGETS ${HUGMY_EXPORTED_LIBRARIES}
   DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
 
 add_library(hugmy_independent_arm_pressure_controller src/control/independent_arm_pressure_controller.cpp)
