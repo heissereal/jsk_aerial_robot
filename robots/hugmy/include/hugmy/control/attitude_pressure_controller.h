@@ -314,6 +314,8 @@ private:
   double recovery_handoff_min_pressure_kpa_ = 15.0;
   double recovery_handoff_trim_margin_rad_ = 1.0 * M_PI / 180.0;
   double recovery_handoff_trim_confirm_sec_ = 0.30;
+  double recovery_handoff_contact_equilibrium_rad_ =
+      5.5 * M_PI / 180.0;
   double recovery_handoff_integral_n_ = 0.0;
   double recovery_handoff_brake_error_rad_ = 0.0;
   double recovery_handoff_best_error_rad_ = std::numeric_limits<double>::infinity();

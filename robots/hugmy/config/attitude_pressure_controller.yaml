@@ -456,6 +456,12 @@ recovery_handoff_timeout_sec: 60.0
 recovery_handoff_min_pressure_kpa: 15.0
 recovery_handoff_trim_margin_rad: 0.017453292519943295
 recovery_handoff_trim_confirm_sec: 0.30
+# Initial rotor recovery still targets +/-3 deg. Only after that strict band
+# has actually been observed may a quiet contact-conditioned regrasp settle
+# within +/-5.5 deg.  This remains well inside the 10-deg locomotion recovery
+# trigger, but includes the measured 5.0--5.2-deg zero-rate equilibrium of the
+# high-friction forearm instead of re-exciting it for the full timeout.
+recovery_handoff_contact_equilibrium_rad: 0.09599310885968812
 # On progress timeout, start grasp immediately and slew thrust down at the
 # configured fall rate before declaring the timeout. This avoids arm rebound
 # from an instantaneous motor cut. The selected rotor pair is never swapped.

@@ -39,7 +39,7 @@ assert 'const double handoff_retry_thrust = std::max(\n                      rol
 assert 'rejected handoff candidate reached zero thrust' in source
 assert 'released terminal-brake deadband' in source
 assert 'const double handoff_brake_entry = recovery_stop_angle;' in source
-assert '!recovery_handoff_braking_ && command_at_grasp &&\n                  abs_error <= handoff_brake_entry' in source
+assert '!recovery_handoff_braking_ && command_at_grasp &&\n                  abs_error <= (strict_target_observed_before_regrasp' in source
 assert 'const bool terminal_contact_plateau =' in source
 assert 'if (terminal_contact_plateau)' in source
 assert 'const bool terminal_pressure_search =' in source
@@ -49,10 +49,15 @@ assert 'recovery_contact_grasp_active_' in source
 assert 'pressure_search_floor_for(arm)' in source
 assert 'pressure_distance_from_best' in source
 assert 'const double terminal_reopen_margin =' in source
-assert 'recovery_stop_angle + terminal_reopen_margin' in source
+assert 'const bool strict_target_observed_before_regrasp =' in source
+assert 'recovery_handoff_best_error_rad_ <= handoff_settle_error' in source
+assert 'const double active_handoff_settle_error =' in source
+assert 'active_handoff_settle_error + terminal_reopen_margin' in source
 assert 'abs_error >= terminal_reopen_error' in source
 assert 'retained_handoff_error +\n                      terminal_reopen_margin' in source
-assert 'abs_error <= recovery_stop_angle;' in source
+assert 'abs_error <= handoff_drive_stop))' in source
+assert 'abs_error > active_handoff_settle_error' in source
+assert 'abs_error <= active_handoff_settle_error;' in source
 assert 'monitoring final nominal regrasp' in source
 hybrid_source=(root/'src/control/hybrid_locomotion.cpp').read_text()
 assert 'pre_stroke_budget_exhausted=settled && hybrid_phase_==0' in hybrid_source

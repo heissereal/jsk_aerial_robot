@@ -32,7 +32,8 @@ assert 'recovery_handoff_reopen_angle_rad_' in controller
 assert '-handoff_fall_rate' in controller
 assert 'std::max(3.0, recovery_handoff_thrust_fall_n_s_)' in controller
 assert 'const double handoff_settle_error = recovery_stop_angle' in controller
-assert 'abs_error <= handoff_settle_error' in controller
+assert 'const bool strict_target_observed_before_regrasp =' in controller
+assert 'abs_error <= active_handoff_settle_error' in controller
 assert 'abs_error > handoff_control_error' in controller
 code=r"""
 #include <hugmy/control/hybrid_locomotion_mpc.h>

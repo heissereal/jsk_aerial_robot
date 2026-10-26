@@ -137,6 +137,9 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
                  recovery_handoff_trim_margin_rad_, 0.005, 0.0872665);
   recovery_param("recovery_handoff_trim_confirm_sec",
                  recovery_handoff_trim_confirm_sec_, 0.05, 2.0);
+  recovery_param("recovery_handoff_contact_equilibrium_rad",
+                 recovery_handoff_contact_equilibrium_rad_,
+                 0.05236, 0.174533);
   pnh_.param("recovery_circle_selection_enabled",
              recovery_circle_selection_enabled_, true);
   recovery_param("recovery_circle_min_radius_m",
@@ -3386,9 +3389,30 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               const double handoff_settle_error = recovery_stop_angle +
                   std::min(0.50 * M_PI / 180.0,
                            0.50 * roll_recovery_config_.stop_margin);
-              const double handoff_drive_stop = std::max(0.0,
-                  recovery_stop_angle -
-                      2.0 * roll_recovery_config_.stop_margin);
+              // First demonstrate the strict terminal band. Re-bending the
+              // selected pair can then shift the passive contact equilibrium
+              // by a few degrees even at zero thrust. If the pressure search
+              // has already observed the strict target and retained that
+              // contact pressure, accept a quiet nearby equilibrium instead
+              // of indefinitely exciting the stiff contact. A first recovery
+              // which never reached the target remains strict.
+              const bool strict_target_observed_before_regrasp =
+                  recovery_handoff_pressure_trimmed_ &&
+                  std::isfinite(recovery_handoff_best_error_rad_) &&
+                  recovery_handoff_best_error_rad_ <= handoff_settle_error;
+              const double active_handoff_settle_error =
+                  strict_target_observed_before_regrasp
+                  ? std::max(handoff_settle_error,
+                        recovery_handoff_contact_equilibrium_rad_)
+                  : handoff_settle_error;
+              // The requested recovery result is the configured +/- stop
+              // band itself.  Driving all the way to one degree (the former
+              // stop-minus-two-margins value) kept 0.6--2 N applied while
+              // the measured body was already oscillating across +/-3 deg,
+              // so the handoff could never satisfy its own settle test. Stop
+              // adding torque on entry to the requested band and let the
+              // bounded fall rate/prediction remove the residual command.
+              const double handoff_drive_stop = recovery_stop_angle;
               const double handoff_brake_entry = recovery_stop_angle;
               const double pressure_advance_rate_limit = std::min(
                   0.08, roll_recovery_config_.settle_rate);
@@ -3807,7 +3831,8 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                     std::abs(prepare_pressure_[arm] -
                         recovery_handoff_target_pressure_[arm]) <= 0.05;
               if (!recovery_handoff_braking_ && command_at_grasp &&
-                  abs_error <= handoff_brake_entry &&
+                  abs_error <= (strict_target_observed_before_regrasp
+                      ? active_handoff_settle_error : handoff_brake_entry) &&
                   std::abs(recovery_roll_rate) <=
                       0.5 * roll_recovery_config_.settle_rate)
                 {
@@ -3837,8 +3862,16 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               const double terminal_reopen_margin =
                   std::min(0.25 * M_PI / 180.0,
                            0.25 * recovery_handoff_reopen_angle_rad_);
+              // Completion intentionally permits the small sensor/contact
+              // hysteresis in `handoff_settle_error`.  Reopening at
+              // stop_angle+0.25 deg while completion allowed +0.50 deg made
+              // the two conditions overlap: the controller repeatedly
+              // restarted 0.5--0.7 N around 3.3--3.6 deg and could never
+              // accumulate its settle dwell.  Reopen only after leaving the
+              // complete settle corridor.  A genuine rebound is still caught
+              // well below the locomotion recovery trigger.
               const double terminal_reopen_error =
-                  recovery_stop_angle + terminal_reopen_margin;
+                  active_handoff_settle_error + terminal_reopen_margin;
               if (!recovery_handoff_thrust_wrong_way_ &&
                   recovery_handoff_braking_ &&
                   abs_error >= terminal_reopen_error &&
@@ -3864,10 +3897,14 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   // below freezes contact pressure and selects the opposite
                   // signed candidate.
                   signed_error <= 0.0 ||
+                  // Entering the requested +/-3-deg band is already the
+                  // signal to remove torque. Requiring a small angular rate
+                  // here kept applying 0.6--1.2 N while the body crossed the
+                  // target, which excited a persistent handoff limit cycle.
+                  // Rate is still required by handoff_settled below, after
+                  // the command has actually fallen to zero.
                   (support_transfer_equalized &&
-                   abs_error <= handoff_drive_stop &&
-                   std::abs(recovery_roll_rate) <=
-                       roll_recovery_config_.settle_rate))
+                   abs_error <= handoff_drive_stop))
                 {
                   handoff_target = 0.0;
                   recovery_handoff_integral_n_ = std::max(0.0,
@@ -3915,7 +3952,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   recovery_selected_contact_pivot_enabled_ &&
                   !recovery_handoff_thrust_wrong_way_ &&
                   command_at_grasp && pressure_ready &&
-                  abs_error > handoff_settle_error;
+                  abs_error > active_handoff_settle_error;
               if (!full_grasp_tracking)
                 {
                   recovery_handoff_progress_reference_rad_ =
@@ -4145,7 +4182,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                       roll_recovery_config_.settle_rate;
               if (retry_contact_settled &&
                   !recovery_handoff_finalizing_regrasp_ &&
-                  abs_error <= handoff_settle_error)
+                  abs_error <= active_handoff_settle_error)
                 {
                   recovery_handoff_finalizing_regrasp_ = true;
                   recovery_rejected_candidate_mask_ = 0;
@@ -4159,7 +4196,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   break;
                 }
               if (recovery_handoff_finalizing_regrasp_ &&
-                  abs_error > handoff_settle_error +
+                  abs_error > active_handoff_settle_error +
                       recovery_handoff_reopen_angle_rad_)
                 {
                   recovery_handoff_finalizing_regrasp_ = false;
@@ -4217,7 +4254,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                 }
               const bool handoff_settled = pressure_ready && thrust_stopped &&
                   std::abs(recovery_roll_rate) <= roll_recovery_config_.settle_rate &&
-                  abs_error <= recovery_stop_angle;
+                  abs_error <= active_handoff_settle_error;
               if (handoff_settled)
                 {
                   if (ready_start_.isZero()) ready_start_ = now;
