@@ -463,6 +463,21 @@ struct SinglePassConfig {
   double pull_rear_positive_max_pressure=12.;
   double pull_rear_positive_pressure_fade=8.;
   double pull_rear_positive_flex_end=.60;
+  // After the newly placed front pair has reached the full grasp pressure,
+  // use it as a pneumatic anchor and briefly lift the still-compliant rear
+  // pair.  This is a separate terminal event: increasing it cannot distort
+  // the measured unloading/pull waveform above.  Regrip is delayed until the
+  // pulse has also ramped back to zero.
+  bool pull_terminal_rear_lift_enabled=true;
+  double pull_terminal_rear_lift_thrust=1.2;
+  double pull_terminal_rear_lift_duration=.40;
+  double pull_terminal_rear_lift_rise=8.;
+  double pull_terminal_rear_lift_fall=12.;
+  double pull_terminal_front_pressure_tolerance=.75;
+  double pull_terminal_rear_pressure_tolerance=2.;
+  double pull_terminal_anchor_wait_timeout=2.;
+  double pull_terminal_front_pressure_stall_seconds=.25;
+  double pull_terminal_front_pressure_progress_kpa=.20;
   // Do not let the ordinary soft roll brake terminate the short unloaded
   // interval.  Roll allocation remains active, while this separate boundary
   // starts support transfer before the independent hard guard is reached.
@@ -491,13 +506,21 @@ struct SinglePassConfig {
   double rear_support_probe_unstable=.25;
   double rear_support_roll_start=.06981317; // 4 deg
   double rear_support_roll_full=.17453293;  // 10 deg
+  // Motion 2 and Motion 3 intentionally keep the rear pair compliant.  The
+  // outer all-arm regrip is the only normal path which may exceed this cap.
+  // This prevents a soft roll correction from recreating the old rear
+  // contact during the short lift/flex/pull interval.
+  double rear_motion_pressure_cap=7.5;
   // The signed rear-support coordinate is a feed-forward request.  Close an
   // inner loop around the two measured rear bends so the same pressure means
   // the same physical release on a rigid fixture and on compliant skin.  A
   // negative support command maps continuously to a relative extension
   // target; pressure and positive thrust only trim the remaining error.
-  double rear_release_angle_max=.17453293; // 10 deg at support=-1
+  double rear_release_angle_min=.05235988; // require at least 3 deg
+  double rear_release_angle_max=.08726646; // at most 5 deg
   double rear_release_angle_filter_tau=.06;
+  double rear_release_assist_deadband=.00872665; // 0.5 deg
+  double rear_release_assist_confirm=.10;
   double rear_release_pressure_kp=40.;
   double rear_release_pressure_kd=2.;
   double rear_release_pressure_trim_max=5.;
@@ -862,6 +885,13 @@ struct SinglePassConfig {
         pull_rear_positive_rise,pull_rear_positive_fall,
         pull_rear_positive_max_pressure,pull_rear_positive_pressure_fade,
         pull_rear_positive_flex_end,
+        pull_terminal_rear_lift_thrust,pull_terminal_rear_lift_duration,
+        pull_terminal_rear_lift_rise,pull_terminal_rear_lift_fall,
+        pull_terminal_front_pressure_tolerance,
+        pull_terminal_rear_pressure_tolerance,
+        pull_terminal_anchor_wait_timeout,
+        pull_terminal_front_pressure_stall_seconds,
+        pull_terminal_front_pressure_progress_kpa,
         pull_golden_roll_limit,
         lift_rear_release_start_ratio,lift_rear_pressure_floor,
         rear_pressure_adaptation_min,rear_pressure_adaptation_max,
@@ -869,7 +899,10 @@ struct SinglePassConfig {
         rear_pressure_adaptation_roll_limit,
         rear_pressure_adaptation_progress,
         rear_support_roll_start,rear_support_roll_full,
-        rear_release_angle_max,rear_release_angle_filter_tau,
+        rear_motion_pressure_cap,
+        rear_release_angle_min,rear_release_angle_max,
+        rear_release_angle_filter_tau,
+        rear_release_assist_deadband,rear_release_assist_confirm,
         rear_release_pressure_kp,rear_release_pressure_kd,
         rear_release_pressure_trim_max,
         rear_release_thrust_kp,rear_release_thrust_kd,
@@ -1028,6 +1061,24 @@ struct SinglePassConfig {
       pull_rear_positive_max_pressure+pull_rear_positive_pressure_fade<=30. &&
       pull_rear_positive_flex_end>=pull_full_thrust_flex_ratio &&
       pull_rear_positive_flex_end<=pull_up_hold_flex_ratio &&
+      pull_terminal_rear_lift_thrust>=0. &&
+      pull_terminal_rear_lift_thrust<=3. &&
+      pull_terminal_rear_lift_duration>=.1 &&
+      pull_terminal_rear_lift_duration<=1. &&
+      pull_terminal_rear_lift_rise>=1. &&
+      pull_terminal_rear_lift_rise<=20. &&
+      pull_terminal_rear_lift_fall>=2. &&
+      pull_terminal_rear_lift_fall<=30. &&
+      pull_terminal_rear_pressure_tolerance>=.5 &&
+      pull_terminal_rear_pressure_tolerance<=5. &&
+      pull_terminal_anchor_wait_timeout>=.5 &&
+      pull_terminal_anchor_wait_timeout<=5. &&
+      pull_terminal_front_pressure_stall_seconds>=.10 &&
+      pull_terminal_front_pressure_stall_seconds<=2. &&
+      pull_terminal_front_pressure_progress_kpa>=.05 &&
+      pull_terminal_front_pressure_progress_kpa<=2. &&
+      pull_terminal_front_pressure_tolerance>=.5 &&
+      pull_terminal_front_pressure_tolerance<=5. &&
       pull_golden_roll_limit>=soft_roll &&
       pull_golden_roll_limit<=.349066 &&
       lift_rear_release_start_ratio>=0. &&
@@ -1056,10 +1107,20 @@ struct SinglePassConfig {
       rear_support_roll_start>=.0174533 &&
       rear_support_roll_start<rear_support_roll_full &&
       rear_support_roll_full<=rear_pressure_adaptation_roll_limit &&
+      rear_motion_pressure_cap>=rear_low_kpa &&
+      rear_motion_pressure_cap<=15. &&
+      rear_release_angle_min>=.0349066 &&
+      rear_release_angle_min<=.0872665 &&
       rear_release_angle_max>=.0349066 &&
       rear_release_angle_max<=.261799 &&
+      rear_release_angle_min<=rear_release_angle_max &&
       rear_release_angle_filter_tau>=.01 &&
       rear_release_angle_filter_tau<=.3 &&
+      rear_release_assist_deadband>=0. &&
+      rear_release_assist_deadband<=.0349066 &&
+      rear_release_assist_deadband<rear_release_angle_min &&
+      rear_release_assist_confirm>=.04 &&
+      rear_release_assist_confirm<=.5 &&
       rear_release_pressure_kp>=0. && rear_release_pressure_kp<=100. &&
       rear_release_pressure_kd>=0. && rear_release_pressure_kd<=10. &&
       rear_release_pressure_trim_max>=0. &&
@@ -1511,6 +1572,8 @@ class SinglePass {
   bool rear_grasp_reference_valid=false;
   double rear_release_target=0.,rear_release_pair=0.,
       rear_release_pair_rate=0.,rear_release_mismatch=0.;
+  double rear_release_deficit_time=0.;
+  bool rear_release_angle_achieved=false;
   double rear_release_balance_envelope=1.;
   double rear_angle_pressure_trim=0.,rear_angle_thrust_trim=0.;
   bool rear_angle_feedback_active=false;
@@ -1534,6 +1597,18 @@ class SinglePass {
   double rear_positive_front_envelope=0.;
   double rear_positive_pressure_envelope=0.;
   bool rear_positive_started=false;
+  // One-shot rear lift after the front pair has become a full-pressure
+  // anchor.  It is independent of rear_positive_elapsed, which belongs to
+  // the earlier load-relief/golden-time assist.
+  double terminal_rear_lift_elapsed=0.;
+  double terminal_rear_lift_command=0.;
+  double terminal_anchor_wait_elapsed=0.;
+  double terminal_front_anchor_stall_time=0.;
+  double terminal_front_anchor_best_pressure=0.;
+  bool terminal_rear_lift_started=false;
+  bool terminal_rear_lift_cancelled=false;
+  bool terminal_rear_lift_complete=false;
+  bool terminal_front_anchor_wait_started=false;
   bool release_seen=false,slip_measurement_started=false;
   // Rear refill is deliberately decoupled from stroke completion.  It may
   // overlap the latter part of front flexion, while Pull continues until a
@@ -1777,6 +1852,8 @@ class SinglePass {
       rear_release_by_arm.fill(0.);
       rear_release_target=rear_release_pair=rear_release_pair_rate=0.;
       rear_release_mismatch=0.;rear_release_balance_envelope=1.;
+      rear_release_deficit_time=0.;
+      rear_release_angle_achieved=false;
       rear_angle_pressure_trim=rear_angle_thrust_trim=0.;
       rear_angle_feedback_active=false;
     }
@@ -1875,6 +1952,8 @@ class SinglePass {
       rear_vent_lead_seconds=0.;
       rear_release_observed=false;
       rear_release_commanded=false;
+      rear_release_deficit_time=0.;
+      rear_release_angle_achieved=false;
       rear_release_pressure_threshold=
           std::numeric_limits<double>::quiet_NaN();
       // VentFront has already used the measured valve model to lead the rear
@@ -1887,6 +1966,15 @@ class SinglePass {
       rear_positive_front_envelope=0.;
       rear_positive_pressure_envelope=0.;
       rear_positive_started=false;
+      terminal_rear_lift_elapsed=0.;
+      terminal_rear_lift_command=0.;
+      terminal_anchor_wait_elapsed=0.;
+      terminal_front_anchor_stall_time=0.;
+      terminal_front_anchor_best_pressure=0.;
+      terminal_rear_lift_started=false;
+      terminal_rear_lift_cancelled=false;
+      terminal_rear_lift_complete=false;
+      terminal_front_anchor_wait_started=false;
       if(!lift_tested) {++lift_probe_entries;lift_tested=true;}
       // A reused Action-C stroke rises much faster than the first sweep, but
       // motion 2 still needs the rear pair as its anchor.  Do not release the
@@ -1915,6 +2003,8 @@ class SinglePass {
     rear_release_by_arm.fill(0.);
     rear_release_target=rear_release_pair=rear_release_pair_rate=0.;
     rear_release_mismatch=0.;rear_release_balance_envelope=1.;
+    rear_release_deficit_time=0.;
+    rear_release_angle_achieved=false;
     rear_angle_pressure_trim=rear_angle_thrust_trim=0.;
     rear_angle_feedback_active=false;
     stroke_lifted=false;
@@ -2129,13 +2219,19 @@ class SinglePass {
         rear_support_nominal+rear_support_safety_override*
             (1.-rear_support_nominal):rear_support_nominal;
     // Pressure is only an actuator input, not proof that the rear anchor has
-    // physically relaxed.  Measure release in the same absolute bend
-    // coordinate as the front trajectory, relative to the quiet four-arm
-    // grasp captured at VentFront entry.  The less-released arm owns the pair
-    // feedback; this prevents one freely moving rear arm from declaring both
-    // anchors compliant.
-    rear_release_target=std::max(0.,-rear_support_command)*
-        k.rear_release_angle_max;
+    // physically relaxed.  Motion 2/3 therefore require a small measured
+    // 3--5-deg extension of BOTH rear arms.  The optimizer's nominal rear
+    // release selects a target inside that corridor, but the fast roll safety
+    // blend is deliberately not allowed to erase the geometric target: it
+    // may stop thrust through the posture gates below, while the rear pair
+    // remains compliant until the explicit all-arm regrip.
+    const bool rear_release_phase=
+        phase==Lift || phase==Pull || phase==FrontCatch;
+    const double nominal_release_fraction=clamp(
+        std::max(0.,-rear_support_nominal),0.,1.);
+    rear_release_target=rear_release_phase?
+        k.rear_release_angle_min+nominal_release_fraction*
+            (k.rear_release_angle_max-k.rear_release_angle_min):0.;
     rear_angle_feedback_active=false;
     rear_angle_pressure_trim=rear_angle_thrust_trim=0.;
     rear_release_balance_envelope=1.;
@@ -2145,7 +2241,10 @@ class SinglePass {
       for(size_t j=0;j<2;++j) {
         const double measured_release=clamp(
             rear_grasp_reference[j]-in.rear_bend[j],
-            -k.rear_release_angle_max,2.*k.rear_release_angle_max);
+            -k.rear_release_angle_max,
+            std::max(2.*k.rear_release_angle_max,
+                k.rear_release_mismatch_hard+
+                    k.rear_release_assist_deadband));
         rear_release_by_arm[j]+=filter_gain*
             (measured_release-rear_release_by_arm[j]);
       }
@@ -2161,8 +2260,7 @@ class SinglePass {
               (k.rear_release_mismatch_hard-
                   k.rear_release_mismatch_soft),0.,1.);
       rear_angle_feedback_active=
-          (phase==Lift || phase==Pull || phase==FrontCatch) &&
-          !support_transfer_started;
+          phase==Lift || phase==Pull || phase==FrontCatch;
       if(rear_angle_feedback_active) {
         const double error=rear_release_target-rear_release_pair;
         rear_angle_pressure_trim=clamp(
@@ -2184,6 +2282,25 @@ class SinglePass {
           rear_angle_thrust_trim*=rear_release_balance_envelope;
       }
     }
+    // Venting is given a short measured opportunity before rotor assistance
+    // is admitted.  Once both rear angles reach the target corridor, the
+    // positive command is removed; if contact loads bend either arm back, the
+    // same sustained-deficit test may re-enable it.  This is an angle event,
+    // not a pressure-threshold proxy.
+    rear_release_angle_achieved=rear_angle_feedback_active &&
+        rear_release_pair>=
+            rear_release_target-k.rear_release_assist_deadband;
+    const double rear_motion_pressure_limit=std::min(
+        in.base_pressure,k.rear_motion_pressure_cap);
+    const bool rear_pressure_compliant=
+        in.rear_pressure<=rear_motion_pressure_limit+
+            k.catch_pressure_tolerance;
+    const bool rear_release_deficit=rear_angle_feedback_active &&
+        !rear_release_angle_achieved && rear_pressure_compliant;
+    rear_release_deficit_time=rear_release_deficit?
+        std::min(k.rear_release_assist_confirm,
+            rear_release_deficit_time+dt):
+        std::max(0.,rear_release_deficit_time-2.*dt);
     // Worsening measured roll gets immediate balance authority, including
     // the first 0.5 s of a reused reach.  The grace period suppresses only a
     // static/one-sample soft-boundary response; it must not leave a genuine
@@ -2584,10 +2701,12 @@ class SinglePass {
         // by Motion 2/3.  The start time follows the same measured pneumatic
         // delay/rate model as the later release, so this is not a fixed early
         // valve pulse.
-        const double selected_rear_floor=std::min(in.base_pressure,
+        const double selected_rear_floor=std::min(
+            std::min(in.base_pressure,k.rear_motion_pressure_cap),
             rearPressureFloor(k));
-        const double pre_release_target=std::min(in.base_pressure,
-            std::max(selected_rear_floor,k.regrip_rear_hold_pressure));
+        const double pre_release_target=std::min(
+            std::min(in.base_pressure,k.rear_motion_pressure_cap),
+            std::max(selected_rear_floor,k.rear_low_kpa));
         const double front_time_to_empty=std::max(0.,
             vent_common_pressure-k.vent_tolerance)/
                 std::max(1.,k.vent_pressure_fall);
@@ -3258,7 +3377,8 @@ class SinglePass {
                     std::max(.017453,required_pair_extension)-
                  k.lift_rear_release_start_ratio)/
                 std::max(.05,1.-k.lift_rear_release_start_ratio),0.,1.):0.;
-      const double lift_rear_floor=std::min(in.base_pressure,
+      const double lift_rear_floor=std::min(
+          std::min(in.base_pressure,k.rear_motion_pressure_cap),
           rearPressureFloor(k));
       rear_vent_lead_seconds=c.pressure_delay+
           std::max(0.,in.rear_pressure-lift_rear_floor)/
@@ -4051,7 +4171,8 @@ class SinglePass {
                   k.pull_support_transfer_pressure),0.,1.);
       rear_release_progress=minimumJerkPosition(pull_release_phase)*
           front_support_fraction;
-      const double selected_rear_floor=std::min(in.base_pressure,
+      const double selected_rear_floor=std::min(
+          std::min(in.base_pressure,k.rear_motion_pressure_cap),
           rearPressureFloor(k));
       const double continuous_release=std::max(
           lift_rear_release_progress,rear_release_progress);
@@ -4550,19 +4671,91 @@ class SinglePass {
           k.pull_min_seconds:(contact_limited_catch?
           std::max(k.pull_min_seconds,k.pull_loaded_catch_min_seconds):
           k.pull_min_seconds);
+      // A terminal rear lift is permitted only after BOTH front chambers are
+      // physically at the full grasp pressure.  A predicted/commanded 30 kPa
+      // is not sufficient.  The front pair then acts as the anchor while the
+      // rear pair receives one short positive impulse.  Do not use this
+      // optional progress event on a posture-guarded catch.
+      // The terminal rear lift is owned by the outer regrip controller.  At
+      // that boundary all four measured arm angles are available, so the
+      // bidirectional rotor sign can be selected from the actual upward-force
+      // component.  A scalar positive command here can point downward after
+      // a rear arm flexes beyond 90 degrees.
+      const bool terminal_front_anchor_ready=false;
+      const bool terminal_front_anchor_wait_safe=false;
       if(ready_time>=k.pull_regrip_confirm &&
          phase_time>=required_pull_seconds) {
-        out.regrip=true;
-        out.contact_limited_regrip=posture_guarded_catch ||
-            (!angle_caught && (stalled_caught || pressure_flex_caught ||
-                loaded_contact_caught || guarded_four_arm_caught));
+        // A normal catch may be recognized at a lower load-bearing pressure
+        // than the full front anchor needed by the terminal rear lift.  Wait
+        // while the measured pressure is still rising, but never wait merely
+        // because a 30-kPa command exists: if neither chamber makes measurable
+        // progress for the bounded stall interval, use the ordinary safe
+        // regrip path.  This separates pneumatic delay from a disconnected or
+        // saturated pressure sensor/valve.
+        if(terminal_front_anchor_wait_safe &&
+           !terminal_front_anchor_ready) {
+          terminal_anchor_wait_elapsed+=dt;
+          if(!terminal_front_anchor_wait_started) {
+            terminal_front_anchor_wait_started=true;
+            terminal_front_anchor_best_pressure=pair_pressure;
+            terminal_front_anchor_stall_time=0.;
+          } else if(pair_pressure>=terminal_front_anchor_best_pressure+
+                    k.pull_terminal_front_pressure_progress_kpa) {
+            terminal_front_anchor_best_pressure=pair_pressure;
+            terminal_front_anchor_stall_time=0.;
+          } else {
+            terminal_front_anchor_stall_time+=dt;
+          }
+        }
+        const bool terminal_front_anchor_pending=
+            terminal_front_anchor_wait_safe &&
+            !terminal_front_anchor_ready &&
+            terminal_anchor_wait_elapsed<
+                k.pull_terminal_anchor_wait_timeout &&
+            (pair_pressure>=in.base_pressure-
+                 k.pull_terminal_front_pressure_tolerance ||
+             terminal_front_anchor_stall_time<
+                 k.pull_terminal_front_pressure_stall_seconds);
+        if(!terminal_rear_lift_started && !terminal_rear_lift_complete &&
+           !terminal_rear_lift_cancelled && terminal_front_anchor_ready) {
+          terminal_rear_lift_started=true;
+          terminal_rear_lift_elapsed=0.;
+          terminal_rear_lift_command=0.;
+        }
+        // Once started, complete the pulse and its falling edge before the
+        // outer all-arm regrip takes ownership.  If it cannot be started
+        // safely, retain the ordinary regrip path without waiting.
+        // A normal catch can be recognized at the lower load-bearing pressure
+        // used for support transfer.  When terminal lift is enabled, remain in
+        // Motion 3 until the measured front pressure reaches the full-grasp
+        // threshold instead of handing ownership to the outer regrip first.
+        // A posture-guarded catch never waits for this optional event.
+        if((!terminal_rear_lift_started &&
+            !terminal_front_anchor_pending) ||
+           terminal_rear_lift_complete) {
+          out.regrip=true;
+          out.contact_limited_regrip=posture_guarded_catch ||
+              (!angle_caught && (stalled_caught || pressure_flex_caught ||
+                  loaded_contact_caught || guarded_four_arm_caught));
+        }
+      }
+      if(terminal_rear_lift_started && !terminal_rear_lift_complete) {
+        // The front anchor is pneumatic during the terminal event.  Remove
+        // the remaining front rotor force while its 30-kPa grasp is retained;
+        // otherwise front and rear lift each other instead of recovering the
+        // rear contact point.
+        raw.fill(0.);
+        fall_limit.fill(std::max(c.thrust_fall,
+            k.pull_terminal_rear_lift_fall));
       }
       if(phase==Pull && phase_time>=k.pull_seconds) enter(FrontCatch,in);
       if(phase==FrontCatch) {
         // Stop spending thrust on an unproductive lift; leave the rear LOW
         // until front catch, or hand over to explicit fault regrasp at timeout.
         for(double& t:raw) t=std::min(t,.5);
-        if(phase_time>=k.front_wait_seconds) out.fault=true;
+        if(phase_time>=k.front_wait_seconds && !out.regrip &&
+           (!terminal_rear_lift_started || terminal_rear_lift_complete))
+          out.fault=true;
       }
     }
     // Keep the first unloading identification envelope through its whole
@@ -4572,25 +4765,34 @@ class SinglePass {
     // flag from !calibrated, so ordinary strokes still regain the normal
     // Action-C floor.  Absolute bend/rate and body roll guards remain active.
     out.rear_low=rear_low;
-    // Motion 2/3 own a continuous rear-support command.  At maximum extension
-    // Motion 2 reaches the configured 0-kPa floor.  Once front catch requests
-    // support transfer, use only the 10-kPa compliant regrip hold here; the
-    // outer regrip state restores full grasp only after thrust is zero.
+    // Motion 2/3 keep the rear pair compliant.  A soft roll correction may
+    // reshape rotor thrust or end the stroke, but must not recreate the old
+    // high-pressure rear contact during the useful unloaded interval.  Full
+    // rear grasp belongs exclusively to the outer regrip state after the
+    // front catch has been accepted.
     if(phase==VentFront)
       out.rear_pressure=clamp(rear_pressure_command,
           k.rear_low_kpa,in.base_pressure);
-    else if(phase==Lift || phase==Pull || phase==FrontCatch)
-      out.rear_pressure=support_transfer_started?
-          std::min(in.base_pressure,std::max(k.regrip_rear_hold_pressure,
-              rearPressureFloor(k))):
-          clamp(rear_pressure_command,k.rear_low_kpa,in.base_pressure);
+    else if(phase==Lift || phase==Pull || phase==FrontCatch) {
+      const double motion_pressure_limit=std::min(
+          in.base_pressure,k.rear_motion_pressure_cap);
+      rear_pressure_command=std::min(rear_pressure_command,
+          motion_pressure_limit);
+      out.rear_pressure=clamp(rear_pressure_command,
+          k.rear_low_kpa,motion_pressure_limit);
+    }
     else
       out.rear_pressure=rear_low?k.rear_low_kpa:
           (rear_preload?k.rear_preload_kpa:in.base_pressure);
-    if(rear_angle_feedback_active)
+    if(rear_angle_feedback_active) {
+      const double pressure_limit=(phase==Lift || phase==Pull ||
+          phase==FrontCatch)?
+          std::min(in.base_pressure,k.rear_motion_pressure_cap):
+          in.base_pressure;
       out.rear_pressure=clamp(
           out.rear_pressure+rear_angle_pressure_trim,
-          k.rear_low_kpa,in.base_pressure);
+          k.rear_low_kpa,pressure_limit);
+    }
     const bool has_identified_absolute_target=calibrated &&
         std::isfinite(identified_bend_target[0]) &&
         std::isfinite(identified_bend_target[1]);
@@ -5205,11 +5407,12 @@ class SinglePass {
     }
     if(proposed_up>allowed_up)
       for(double& t:out.thrust) t*=allowed_up/proposed_up;
-    // Rear positive assistance is synchronized to measured load relief, not
-    // to an arbitrary early front-thrust crossing. Use the bounded common
-    // pair level (mean after all front safety allocation) so one short
-    // per-arm brake does not erase the whole rear impulse. Both fronts must
-    // nevertheless remain powered, and the body-roll guards stay authoritative.
+    // Pressure relief alone did not physically open the rear pair on the
+    // compliant arm: both chambers reached 6--12 kPa while the measured rear
+    // bends moved farther into flexion.  Use the bounded common front-pair
+    // level and add a small positive rear command only after a sustained
+    // measured 3--5-deg release deficit.  The command disappears as soon as
+    // the limiting rear arm enters the target corridor.
     const double front_pair_min=std::min(out.thrust[0],out.thrust[1]);
     const double front_pair_level=.5*(out.thrust[0]+out.thrust[1]);
     const double rear_front_phase=clamp(
@@ -5224,36 +5427,40 @@ class SinglePass {
             k.pull_rear_positive_pressure_fade,0.,1.);
     rear_positive_front_envelope=rear_front_envelope;
     rear_positive_pressure_envelope=rear_pressure_envelope;
-    const bool rear_positive_phase=phase==Lift || phase==Pull;
+    const bool rear_positive_phase=
+        phase==Lift || phase==Pull || phase==FrontCatch;
     const bool rear_positive_posture_safe=!posture_brake &&
         std::abs(predicted_roll)<k.pull_golden_roll_limit;
     const bool rear_positive_start_request=rear_positive_phase &&
-        (load_relief_candidate || load_relief_detected);
+        rear_release_deficit_time+1.e-9>=
+            k.rear_release_assist_confirm;
     if(!rear_positive_started && rear_positive_start_request) {
       rear_positive_started=true;
       rear_positive_elapsed=0.;
     }
-    const bool rear_positive_flex_window=phase==Lift ||
-        (phase==Pull &&
-         golden_flex_progress<=k.pull_rear_positive_flex_end);
     const bool rear_positive_window=rear_positive_started &&
         rear_positive_phase &&
-        rear_positive_elapsed<k.pull_rear_positive_duration &&
-        rear_positive_flex_window;
+        rear_positive_elapsed<k.pull_rear_positive_duration;
     const bool rear_positive_hard_safe=rear_positive_posture_safe &&
-        !support_transfer_started && front_pair_min>.25;
-    if(phase==Pull && rear_positive_window)
+        front_pair_min>.25;
+    if((phase==Pull || phase==FrontCatch) && rear_positive_window)
       rear_front_envelope=std::max(rear_front_envelope,
-          k.pull_residual_thrust_ratio*goal_pull_envelope);
+          k.pull_residual_thrust_ratio);
     rear_positive_front_envelope=rear_front_envelope;
-    const double rear_release_intensity=std::max(0.,-rear_support_command);
+    const double rear_release_error=std::max(0.,
+        rear_release_target-rear_release_pair-
+            k.rear_release_assist_deadband);
+    const double rear_release_deficit_envelope=clamp(
+        rear_release_error/std::max(k.rear_release_assist_deadband,
+            rear_release_target-k.rear_release_assist_deadband),0.,1.);
     const double rear_assist_envelope=rear_front_envelope*
-        rear_pressure_envelope*goal_pull_envelope*rear_release_intensity;
+        rear_pressure_envelope*rear_release_deficit_envelope*
+        rear_release_balance_envelope;
     const double rear_positive_target=
         rear_positive_window && rear_positive_hard_safe?
-        clamp((k.pull_rear_positive_thrust*
-                   rear_release_balance_envelope+
-               (rear_angle_feedback_active?rear_angle_thrust_trim:0.))*
+        clamp((k.pull_rear_positive_thrust+
+               (rear_angle_feedback_active?
+                    std::max(0.,rear_angle_thrust_trim):0.))*
                   rear_assist_envelope,
             0.,k.pull_rear_positive_thrust+
                 k.rear_release_thrust_trim_max):0.;
@@ -5267,7 +5474,50 @@ class SinglePass {
     if(rear_positive_target>.05 && rear_positive_thrust_command>.05)
       rear_positive_elapsed=std::min(k.pull_rear_positive_duration,
           rear_positive_elapsed+dt);
-    out.rear_positive_thrust=rear_positive_thrust_command;
+    // Once the front pair is a measured full-pressure anchor, give the rear
+    // pair one short positive lift before the all-arm regrip.  Keep the rear
+    // chambers at the low-pressure command for the duration; refilling them
+    // here would mechanically cancel the requested lift.  Loss of front
+    // pressure/contact or an adverse roll trend cancels the event, after
+    // which its falling edge is still completed before regrip.
+    const bool terminal_rear_lift_active=terminal_rear_lift_started &&
+        !terminal_rear_lift_complete;
+    const double terminal_front_pressure=std::min(
+        s.pressure[0],s.pressure[1]);
+    const bool terminal_front_contact=!in.contact_available ||
+        in.front_contact;
+    const bool terminal_rear_lift_safe=
+        (phase==Pull || phase==FrontCatch) &&
+        terminal_front_pressure>=in.base_pressure-
+            k.pull_terminal_front_pressure_tolerance &&
+        in.rear_pressure<=k.rear_motion_pressure_cap+
+            k.pull_terminal_rear_pressure_tolerance &&
+        terminal_front_contact && !posture_brake &&
+        std::abs(gait_roll+.2*s.roll_rate)<k.catch_roll_angle &&
+        std::abs(s.roll_rate)<=2.*k.catch_roll_rate;
+    if(terminal_rear_lift_active && !terminal_rear_lift_safe)
+      terminal_rear_lift_cancelled=true;
+    const bool terminal_rear_lift_drive=terminal_rear_lift_active &&
+        !terminal_rear_lift_cancelled &&
+        terminal_rear_lift_elapsed<k.pull_terminal_rear_lift_duration;
+    const double terminal_rear_lift_target=terminal_rear_lift_drive?
+        k.pull_terminal_rear_lift_thrust:0.;
+    terminal_rear_lift_command=slew(terminal_rear_lift_command,
+        terminal_rear_lift_target,k.pull_terminal_rear_lift_rise,
+        k.pull_terminal_rear_lift_fall,dt);
+    if(terminal_rear_lift_drive && terminal_rear_lift_command>.05)
+      terminal_rear_lift_elapsed=std::min(
+          k.pull_terminal_rear_lift_duration,
+          terminal_rear_lift_elapsed+dt);
+    if(terminal_rear_lift_active && !terminal_rear_lift_drive &&
+       terminal_rear_lift_command<=.05) {
+      terminal_rear_lift_command=0.;
+      terminal_rear_lift_complete=true;
+    }
+    if(terminal_rear_lift_active)
+      out.rear_pressure=k.rear_low_kpa;
+    out.rear_positive_thrust=std::max(rear_positive_thrust_command,
+        terminal_rear_lift_command);
     if(out.rear_positive_thrust>1.e-6)
       out.rear_reverse_thrust=0.;
     if(rear_candidate_requested && rear_candidate_distinct &&
@@ -5284,7 +5534,8 @@ class SinglePass {
           std::abs(in.rear_pressure-candidate_pressure)<=pressure_tolerance;
       const bool candidate_thrust_delivered=
           trajectory.selected().rear_support_offset<0.?
-              out.rear_positive_thrust>.05:out.rear_reverse_thrust>.05;
+              rear_positive_thrust_command>.05:
+              out.rear_reverse_thrust>.05;
       const double candidate_release_target=std::max(
           0.,-rear_support_nominal)*k.rear_release_angle_max;
       const bool candidate_angle_realized=

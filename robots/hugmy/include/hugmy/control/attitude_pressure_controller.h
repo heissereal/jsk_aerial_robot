@@ -623,6 +623,12 @@ private:
   // trim thrust and reopen the rear chambers because of an IMU fluctuation.
   bool hybrid_regrip_thrust_zero_latched_=false;
   bool hybrid_regrip_complete_latched_=false;
+  // A normal stroke may hand control to the outer regrip before the newly
+  // placed front chambers physically reach their full-pressure anchor.  Keep
+  // the optional terminal rear lift alive across that boundary; faults and a
+  // task endpoint skip it and proceed directly to four-arm grasp.
+  bool hybrid_regrip_terminal_rear_lift_requested_=false;
+  PressureArray hybrid_terminal_rear_lift_sign_{{0.,0.,0.,0.}};
   bool hybrid_bottom_deflated_latched_=false;
   bool hybrid_endpoint_captured_latched_=false;
   double hybrid_ppg_wait_since_=-1.;

@@ -79,6 +79,21 @@ hybrid_pull_rear_positive_max_pressure_kpa: 12.0
 hybrid_pull_rear_positive_pressure_fade_kpa: 8.0
 # Keep the event-synchronized assist through the load-light half of Motion 3.
 hybrid_pull_rear_positive_flex_end_ratio: 0.60
+# After both front chambers have actually reached the 30-kPa grasp, hold that
+# pair as the anchor and briefly lift the low-pressure rear pair. This pulse is
+# deliberately separate from the earlier golden-time rear assist, so tuning it
+# cannot change Motion 2 or the main Motion-3 pull. Regrip waits for its falling
+# edge; loss of front pressure/contact or adverse roll cancels it.
+hybrid_pull_terminal_rear_lift_enabled: true
+hybrid_pull_terminal_rear_lift_thrust_n: 1.2
+hybrid_pull_terminal_rear_lift_duration_sec: 0.40
+hybrid_pull_terminal_rear_lift_rise_n_s: 8.0
+hybrid_pull_terminal_rear_lift_fall_n_s: 12.0
+hybrid_pull_terminal_front_pressure_tolerance_kpa: 0.75
+hybrid_pull_terminal_rear_pressure_tolerance_kpa: 2.0
+hybrid_pull_terminal_anchor_wait_timeout_sec: 2.0
+hybrid_pull_terminal_front_pressure_stall_sec: 0.25
+hybrid_pull_terminal_front_pressure_progress_kpa: 0.2
 hybrid_pull_golden_roll_limit_rad: 0.20943951023931953 # 12 deg
 # Rear support is intentionally compliant during the lift/flex stroke.  Both
 # front arms must move before Motion 2 predicts a 30 -> 0-kPa exhaust at the
@@ -107,14 +122,18 @@ hybrid_rear_support_probe_unstable: 0.25
 # release; by 10 deg it requests the full pressure/reverse-support end.
 hybrid_rear_support_roll_start_rad: 0.06981317007977318 # 4 deg
 hybrid_rear_support_roll_full_rad: 0.17453292519943295 # 10 deg
-# Rear release is verified in geometry, not inferred from chamber pressure.
-# Each stroke captures both rear bends at the quiet four-arm grasp. A -1 rear
-# support request targets 10 deg of extension on BOTH arms; intermediate
-# optimizer values interpolate this target. Pressure and positive thrust are
-# then trimmed from measured bend/rate error. Large pair mismatch fades only
-# the aggressive release direction while pressure restoration stays active.
-hybrid_rear_release_angle_max_rad: 0.17453292519943295 # 10 deg
+# Motion 2/3 keep the old rear contact compliant; only the explicit outer
+# regrip may restore pressure above this cap. Physical release is verified by
+# the two rear Neuron angles rather than inferred from pressure. The optimizer
+# selects a target inside the 3--5-deg corridor. After a 0.1-s sustained
+# deficit at low measured pressure, a bounded positive rear assist is enabled
+# and is removed as soon as the limiting rear arm reaches the target.
+hybrid_rear_motion_pressure_cap_kpa: 7.5
+hybrid_rear_release_angle_min_rad: 0.05235987755982989 # 3 deg
+hybrid_rear_release_angle_max_rad: 0.08726646259971647 # 5 deg
 hybrid_rear_release_angle_filter_tau_sec: 0.06
+hybrid_rear_release_assist_deadband_rad: 0.008726646259971648 # 0.5 deg
+hybrid_rear_release_assist_confirm_sec: 0.10
 hybrid_rear_release_pressure_kp_kpa_rad: 40.0
 hybrid_rear_release_pressure_kd_kpa_s_rad: 2.0
 hybrid_rear_release_pressure_trim_max_kpa: 5.0

@@ -117,6 +117,8 @@ void AttitudePressureController::startHybridLocomotion(const ros::Time& now)
   hybrid_terminal_retry_=false;hybrid_identification_settle_=false;
   hybrid_regrip_thrust_zero_latched_=false;
   hybrid_regrip_complete_latched_=false;
+  hybrid_regrip_terminal_rear_lift_requested_=false;
+  hybrid_terminal_rear_lift_sign_.fill(0.);
   hybrid_bottom_deflated_latched_=false;
   hybrid_endpoint_captured_latched_=false;
   hybrid_ppg_wait_since_=-1.;
@@ -217,6 +219,29 @@ void AttitudePressureController::beginHybridRegrip(const ros::Time& now,bool pre
   hybrid_regrip_anchor_since_=now.toSec();
   hybrid_regrip_thrust_zero_latched_=false;
   hybrid_regrip_complete_latched_=false;
+  const double remaining=action_c_direction_sign_x_*(
+      action_c_absolute_target_x_m_-locomotionPosition()[0]);
+  const bool rear_release_still_missing=
+      hybrid_single_.rear_grasp_reference_valid &&
+      hybrid_single_.rear_release_pair<
+          hybrid_single_.rear_release_target-
+              hybrid_single_config_.rear_release_assist_deadband;
+  hybrid_regrip_terminal_rear_lift_requested_=
+      hybrid_single_config_.pull_terminal_rear_lift_enabled &&
+      !prediction_limited && !hybrid_terminal_settle_ && remaining>.001 &&
+      rear_release_still_missing &&
+      !hybrid_single_.terminal_rear_lift_complete &&
+      !hybrid_single_.terminal_rear_lift_cancelled;
+  hybrid_terminal_rear_lift_sign_.fill(0.);
+  if(hybrid_regrip_terminal_rear_lift_requested_ &&
+     !hybrid_single_.terminal_rear_lift_started) {
+    hybrid_single_.terminal_rear_lift_elapsed=0.;
+    hybrid_single_.terminal_rear_lift_command=0.;
+    hybrid_single_.terminal_anchor_wait_elapsed=0.;
+    hybrid_single_.terminal_front_anchor_stall_time=0.;
+    hybrid_single_.terminal_front_anchor_best_pressure=0.;
+    hybrid_single_.terminal_front_anchor_wait_started=false;
+  }
   hybrid_bottom_deflated_latched_=false;
   hybrid_endpoint_captured_latched_=false;
   hybrid_ppg_wait_since_=-1.;
@@ -1200,22 +1225,169 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
       // the very handoff intended to make recovery safe.
       inchworm_thrust_[arms[j]]=slew(transfer_thrust[j],balanced[j],
           hybrid_single_config_.identification_tracking_rise,2.,dt);
+    // A normal Motion-3 catch may be recognized at a load-bearing pressure
+    // below the requested 30-kPa grasp.  The real front anchor reaches its
+    // full pressure here, in the outer regrip controller.  Preserve the rear
+    // low-pressure state until BOTH front chambers are measured ready and the
+    // old front thrust has fallen to zero, then deliver one bounded positive
+    // rear lift.  Only after its falling edge do all four chambers return to
+    // the full grasp target.  A completed task or a fault never requests this
+    // optional progress event.
+    const bool front_thrust_off=
+        std::abs(inchworm_thrust_[arms[0]])<=.01 &&
+        std::abs(inchworm_thrust_[arms[1]])<=.01;
+    const double front_anchor_pressure=std::min(
+        measured_pressure_[arms[0]],measured_pressure_[arms[1]]);
+    double rear_anchor_pressure=0.;
+    for(size_t arm=0;arm<ARM_COUNT;++arm)
+      if(!inchworm_front_[arm])
+        rear_anchor_pressure=std::max(
+            rear_anchor_pressure,measured_pressure_[arm]);
+    const bool terminal_posture_safe=
+        std::abs(s.roll+.2*s.roll_rate)<
+            hybrid_single_config_.catch_roll_angle &&
+        std::abs(s.roll_rate)<=
+            2.*hybrid_single_config_.catch_roll_rate;
+    const bool terminal_front_pressure_ready=
+        front_anchor_pressure>=base_pressure_kpa_-
+            hybrid_single_config_.pull_terminal_front_pressure_tolerance;
+    const bool terminal_rear_pressure_ready=
+        rear_anchor_pressure<=hybrid_single_config_.rear_motion_pressure_cap+
+            hybrid_single_config_.pull_terminal_rear_pressure_tolerance;
+    const bool terminal_front_anchor_ready=front_thrust_off &&
+        terminal_front_pressure_ready && terminal_rear_pressure_ready;
+    bool terminal_lift_geometry_ready=true;
+    for(size_t arm=0;arm<ARM_COUNT;++arm)
+      if(!inchworm_front_[arm]) {
+        const auto force=hybridRotorForce(arm,measuredArmBendAngle(arm),
+            s.roll,s.pitch);
+        terminal_lift_geometry_ready=terminal_lift_geometry_ready &&
+            std::isfinite(force.up) && std::abs(force.up)>=.20;
+      }
+    bool terminal_sequence_active=
+        hybrid_regrip_terminal_rear_lift_requested_ &&
+        !hybrid_single_.terminal_rear_lift_complete;
+    if(terminal_sequence_active && front_thrust_off &&
+       !hybrid_single_.terminal_rear_lift_started) {
+      hybrid_single_.terminal_anchor_wait_elapsed+=dt;
+      if(!terminal_posture_safe) {
+        hybrid_single_.terminal_rear_lift_cancelled=true;
+      } else if(terminal_front_anchor_ready &&
+                terminal_lift_geometry_ready) {
+        hybrid_single_.terminal_rear_lift_started=true;
+        hybrid_single_.terminal_rear_lift_elapsed=0.;
+        hybrid_single_.terminal_rear_lift_command=0.;
+        for(size_t arm=0;arm<ARM_COUNT;++arm)
+          if(!inchworm_front_[arm]) {
+            const auto force=hybridRotorForce(arm,
+                measuredArmBendAngle(arm),s.roll,s.pitch);
+            hybrid_terminal_rear_lift_sign_[arm]=
+                force.up>=0. ? 1. : -1.;
+          }
+      } else if(terminal_front_anchor_ready &&
+                !terminal_lift_geometry_ready) {
+        hybrid_single_.terminal_rear_lift_cancelled=true;
+      } else if(hybrid_single_.terminal_anchor_wait_elapsed>=
+          hybrid_single_config_.pull_terminal_anchor_wait_timeout) {
+        hybrid_single_.terminal_rear_lift_cancelled=true;
+      } else if(terminal_front_pressure_ready) {
+        // The front anchor is ready. Keep exhausting the rear pair until both
+        // rear chambers are actually compliant; a front-pressure stall must
+        // not cancel this deliberate rear-pressure wait.
+        hybrid_single_.terminal_front_anchor_stall_time=0.;
+      } else if(!hybrid_single_.terminal_front_anchor_wait_started) {
+        hybrid_single_.terminal_front_anchor_wait_started=true;
+        hybrid_single_.terminal_front_anchor_best_pressure=
+            front_anchor_pressure;
+        hybrid_single_.terminal_front_anchor_stall_time=0.;
+      } else if(front_anchor_pressure>=
+          hybrid_single_.terminal_front_anchor_best_pressure+
+          hybrid_single_config_.pull_terminal_front_pressure_progress_kpa) {
+        hybrid_single_.terminal_front_anchor_best_pressure=
+            front_anchor_pressure;
+        hybrid_single_.terminal_front_anchor_stall_time=0.;
+      } else {
+        hybrid_single_.terminal_front_anchor_stall_time+=dt;
+        if(hybrid_single_.terminal_front_anchor_stall_time>=
+           hybrid_single_config_.pull_terminal_front_pressure_stall_seconds)
+          hybrid_single_.terminal_rear_lift_cancelled=true;
+      }
+    }
+    if(terminal_sequence_active &&
+       hybrid_single_.terminal_rear_lift_started &&
+       (!terminal_posture_safe ||
+        front_anchor_pressure<base_pressure_kpa_-
+            hybrid_single_config_.pull_terminal_front_pressure_tolerance ||
+        rear_anchor_pressure>hybrid_single_config_.rear_motion_pressure_cap+
+            hybrid_single_config_.pull_terminal_rear_pressure_tolerance))
+      hybrid_single_.terminal_rear_lift_cancelled=true;
+    const bool terminal_drive=terminal_sequence_active &&
+        hybrid_single_.terminal_rear_lift_started &&
+        !hybrid_single_.terminal_rear_lift_cancelled &&
+        hybrid_single_.terminal_rear_lift_elapsed<
+            hybrid_single_config_.pull_terminal_rear_lift_duration;
+    hybrid_single_.terminal_rear_lift_command=slew(
+        hybrid_single_.terminal_rear_lift_command,
+        terminal_drive?
+            hybrid_single_config_.pull_terminal_rear_lift_thrust:0.,
+        hybrid_single_config_.pull_terminal_rear_lift_rise,
+        hybrid_single_config_.pull_terminal_rear_lift_fall,dt);
+    if(terminal_drive &&
+       hybrid_single_.terminal_rear_lift_command>.05)
+      hybrid_single_.terminal_rear_lift_elapsed=std::min(
+          hybrid_single_config_.pull_terminal_rear_lift_duration,
+          hybrid_single_.terminal_rear_lift_elapsed+dt);
+    if(terminal_sequence_active &&
+       (hybrid_single_.terminal_rear_lift_started ||
+        hybrid_single_.terminal_rear_lift_cancelled) &&
+       !terminal_drive &&
+       hybrid_single_.terminal_rear_lift_command<=.05) {
+      hybrid_single_.terminal_rear_lift_command=0.;
+      hybrid_single_.terminal_rear_lift_complete=true;
+      hybrid_regrip_terminal_rear_lift_requested_=false;
+      terminal_sequence_active=false;
+      // The event command can cross the 0.05-N completion threshold one
+      // control tick before the cached rear commands reach the stricter
+      // 0.01-N regrip threshold.  Leaving that sub-PWM command cached keeps
+      // `thrust_off` false forever, so the rear chambers remain at the
+      // compliant 10-kPa hold until the global regrip timeout.  The front
+      // pair was already verified off before this event could start and the
+      // rear falling edge has completed, therefore zero all four cached
+      // commands and latch the support-transfer boundary explicitly.
+      inchworm_thrust_.fill(0.);
+      hybrid_regrip_thrust_zero_latched_=true;
+    }
+    if(terminal_sequence_active) {
+      for(size_t arm=0;arm<ARM_COUNT;++arm)
+        if(!inchworm_front_[arm]) {
+          inchworm_pressure_[arm]=hybrid_single_config_.rear_low_kpa;
+          // Positive/negative motor direction is not synonymous with upward
+          // force once a compliant arm has flexed beyond 90 degrees. Freeze
+          // the sign selected from the measured rotor direction at event
+          // entry, while retaining one common magnitude for zero roll bias.
+          inchworm_thrust_[arm]=hybrid_terminal_rear_lift_sign_[arm]*
+              hybrid_single_.terminal_rear_lift_command;
+        }
+    }
     // Once zero thrust has been observed, keep it latched at zero while the
     // rear pair fills from the compliant hold to full grasp.  A previous
     // full-grip roll trim could reappear during this fill and reopen the rear
     // chambers, trapping an otherwise successful stroke in regrip.
-    if(hybrid_regrip_anchor_phase_>=1 ||
-       hybrid_regrip_thrust_zero_latched_) {
+    if((hybrid_regrip_anchor_phase_>=1 ||
+        hybrid_regrip_thrust_zero_latched_) &&
+       !terminal_sequence_active) {
       for(size_t arm=0;arm<ARM_COUNT;++arm)
         inchworm_thrust_[arm]=slew(inchworm_thrust_[arm],0.,0.,3.,dt);
     }
     const bool thrust_off=std::all_of(inchworm_thrust_.begin(),
         inchworm_thrust_.end(),[](double value){return std::abs(value)<=.01;});
-    if(thrust_off) hybrid_regrip_thrust_zero_latched_=true;
+    if(thrust_off && !terminal_sequence_active)
+      hybrid_regrip_thrust_zero_latched_=true;
     if(!hybrid_regrip_thrust_zero_latched_) {
-      const double rear_hold=clamp(
-          hybrid_single_config_.regrip_rear_hold_pressure,
-          hybrid_single_config_.rear_low_kpa,base_pressure_kpa_);
+      const double rear_hold=terminal_sequence_active?
+          hybrid_single_config_.rear_low_kpa:clamp(
+              hybrid_single_config_.regrip_rear_hold_pressure,
+              hybrid_single_config_.rear_low_kpa,base_pressure_kpa_);
       for(size_t arm=0;arm<ARM_COUNT;++arm)
         if(!inchworm_front_[arm]) inchworm_pressure_[arm]=rear_hold;
     }
@@ -1573,10 +1745,20 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
       float(hybrid_single_.rear_release_balance_envelope),
       float(hybrid_single_.rear_angle_pressure_trim),
       float(hybrid_single_.rear_angle_thrust_trim),
-      float(hybrid_single_.rear_angle_feedback_active)};
+      float(hybrid_single_.rear_angle_feedback_active),
+      // Full-pressure front-anchor / terminal rear-lift diagnostics.
+      float(hybrid_single_.terminal_rear_lift_started),
+      float(hybrid_single_.terminal_rear_lift_cancelled),
+      float(hybrid_single_.terminal_rear_lift_complete),
+      float(hybrid_single_.terminal_rear_lift_elapsed),
+      float(hybrid_single_.terminal_rear_lift_command),
+      // Rear-release event diagnostics (append-only): a positive assist is
+      // admitted only after this measured deficit timer reaches its limit.
+      float(hybrid_single_.rear_release_deficit_time),
+      float(hybrid_single_.rear_release_angle_achieved)};
   hybrid_diagnostic_pub_.publish(debug);
   ROS_INFO_THROTTLE(.5,
-      "Hybrid golden-time: active=%d u=%.2f, desired Fup/Fx %.2f/%.2f N, rear +/reverse %.2f/%.2f N env front/pressure %.2f/%.2f delivered %.2f s, support prior/nominal/effective %.2f/%.2f/%.2f (safety %.2f), rear floor/cmd/measured %.1f/%.1f/%.1f kPa, rear release [%.1f %.1f]/%.1f deg rate %.1f deg/s mismatch %.1f deg trim P/T %+.1f/%+.2f, peak stroke roll %.1f deg",
+      "Hybrid golden-time: active=%d u=%.2f, desired Fup/Fx %.2f/%.2f N, rear +/reverse %.2f/%.2f N env front/pressure %.2f/%.2f delivered %.2f s, terminal rear lift start/cancel/done=%d/%d/%d %.2f N %.2f s, support prior/nominal/effective %.2f/%.2f/%.2f (safety %.2f), rear floor/cmd/measured %.1f/%.1f/%.1f kPa, rear release [%.1f %.1f]/%.1f deg achieved=%d deficit %.2f s rate %.1f deg/s mismatch %.1f deg trim P/T %+.1f/%+.2f, peak stroke roll %.1f deg",
       hybrid_single_.golden_window_active,
       hybrid_single_.golden_flex_progress,
       hybrid_single_.golden_desired_up,
@@ -1585,6 +1767,11 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
       hybrid_single_.rear_positive_front_envelope,
       hybrid_single_.rear_positive_pressure_envelope,
       hybrid_single_.rear_positive_elapsed,
+      hybrid_single_.terminal_rear_lift_started,
+      hybrid_single_.terminal_rear_lift_cancelled,
+      hybrid_single_.terminal_rear_lift_complete,
+      hybrid_single_.terminal_rear_lift_command,
+      hybrid_single_.terminal_rear_lift_elapsed,
       hybrid_single_.rear_support_prior,
       hybrid_single_.rear_support_nominal,
       hybrid_single_.rear_support_command,
@@ -1594,6 +1781,8 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
       hybrid_single_.rear_release_by_arm[0]*180./M_PI,
       hybrid_single_.rear_release_by_arm[1]*180./M_PI,
       hybrid_single_.rear_release_target*180./M_PI,
+      hybrid_single_.rear_release_angle_achieved,
+      hybrid_single_.rear_release_deficit_time,
       hybrid_single_.rear_release_pair_rate*180./M_PI,
       hybrid_single_.rear_release_mismatch*180./M_PI,
       hybrid_single_.rear_angle_pressure_trim,

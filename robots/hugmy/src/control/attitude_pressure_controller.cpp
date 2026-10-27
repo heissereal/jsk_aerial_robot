@@ -949,6 +949,26 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       hybrid_single_config_.pull_rear_positive_pressure_fade,8.0);
   pnh_.param("hybrid_pull_rear_positive_flex_end_ratio",
       hybrid_single_config_.pull_rear_positive_flex_end,.60);
+  pnh_.param("hybrid_pull_terminal_rear_lift_enabled",
+      hybrid_single_config_.pull_terminal_rear_lift_enabled,true);
+  pnh_.param("hybrid_pull_terminal_rear_lift_thrust_n",
+      hybrid_single_config_.pull_terminal_rear_lift_thrust,1.2);
+  pnh_.param("hybrid_pull_terminal_rear_lift_duration_sec",
+      hybrid_single_config_.pull_terminal_rear_lift_duration,.40);
+  pnh_.param("hybrid_pull_terminal_rear_lift_rise_n_s",
+      hybrid_single_config_.pull_terminal_rear_lift_rise,8.0);
+  pnh_.param("hybrid_pull_terminal_rear_lift_fall_n_s",
+      hybrid_single_config_.pull_terminal_rear_lift_fall,12.0);
+  pnh_.param("hybrid_pull_terminal_front_pressure_tolerance_kpa",
+      hybrid_single_config_.pull_terminal_front_pressure_tolerance,.75);
+  pnh_.param("hybrid_pull_terminal_rear_pressure_tolerance_kpa",
+      hybrid_single_config_.pull_terminal_rear_pressure_tolerance,2.0);
+  pnh_.param("hybrid_pull_terminal_anchor_wait_timeout_sec",
+      hybrid_single_config_.pull_terminal_anchor_wait_timeout,2.0);
+  pnh_.param("hybrid_pull_terminal_front_pressure_stall_sec",
+      hybrid_single_config_.pull_terminal_front_pressure_stall_seconds,.25);
+  pnh_.param("hybrid_pull_terminal_front_pressure_progress_kpa",
+      hybrid_single_config_.pull_terminal_front_pressure_progress_kpa,.20);
   pnh_.param("hybrid_pull_golden_roll_limit_rad",
       hybrid_single_config_.pull_golden_roll_limit,12.*M_PI/180.);
   pnh_.param("hybrid_lift_rear_release_start_ratio",
@@ -980,10 +1000,18 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       hybrid_single_config_.rear_support_roll_start,4.*M_PI/180.);
   pnh_.param("hybrid_rear_support_roll_full_rad",
       hybrid_single_config_.rear_support_roll_full,10.*M_PI/180.);
+  pnh_.param("hybrid_rear_motion_pressure_cap_kpa",
+      hybrid_single_config_.rear_motion_pressure_cap,7.5);
+  pnh_.param("hybrid_rear_release_angle_min_rad",
+      hybrid_single_config_.rear_release_angle_min,3.*M_PI/180.);
   pnh_.param("hybrid_rear_release_angle_max_rad",
-      hybrid_single_config_.rear_release_angle_max,10.*M_PI/180.);
+      hybrid_single_config_.rear_release_angle_max,5.*M_PI/180.);
   pnh_.param("hybrid_rear_release_angle_filter_tau_sec",
       hybrid_single_config_.rear_release_angle_filter_tau,.06);
+  pnh_.param("hybrid_rear_release_assist_deadband_rad",
+      hybrid_single_config_.rear_release_assist_deadband,.5*M_PI/180.);
+  pnh_.param("hybrid_rear_release_assist_confirm_sec",
+      hybrid_single_config_.rear_release_assist_confirm,.10);
   pnh_.param("hybrid_rear_release_pressure_kp_kpa_rad",
       hybrid_single_config_.rear_release_pressure_kp,40.0);
   pnh_.param("hybrid_rear_release_pressure_kd_kpa_s_rad",

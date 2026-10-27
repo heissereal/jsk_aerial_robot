@@ -25,9 +25,24 @@
   <arg name="hybrid_lift_rear_release_start_ratio" default="0.10" />
   <arg name="hybrid_lift_rear_pressure_floor_kpa" default="0.0" />
   <arg name="hybrid_rear_support_probe_stable" default="-0.75" />
+  <arg name="hybrid_rear_motion_pressure_cap_kpa" default="7.5" />
+  <arg name="hybrid_rear_release_angle_min_rad" default="0.05235987755982989" />
+  <arg name="hybrid_rear_release_angle_max_rad" default="0.08726646259971647" />
+  <arg name="hybrid_rear_release_assist_deadband_rad" default="0.008726646259971648" />
+  <arg name="hybrid_rear_release_assist_confirm_sec" default="0.10" />
   <arg name="hybrid_regrip_rear_hold_pressure_kpa" default="10.0" />
   <arg name="hybrid_pull_rear_release_start_ratio" default="0.05" />
   <arg name="hybrid_pull_rear_release_end_ratio" default="0.65" />
+  <arg name="hybrid_pull_terminal_rear_lift_enabled" default="true" />
+  <arg name="hybrid_pull_terminal_rear_lift_thrust_n" default="1.2" />
+  <arg name="hybrid_pull_terminal_rear_lift_duration_sec" default="0.40" />
+  <arg name="hybrid_pull_terminal_rear_lift_rise_n_s" default="8.0" />
+  <arg name="hybrid_pull_terminal_rear_lift_fall_n_s" default="12.0" />
+  <arg name="hybrid_pull_terminal_front_pressure_tolerance_kpa" default="0.75" />
+  <arg name="hybrid_pull_terminal_rear_pressure_tolerance_kpa" default="2.0" />
+  <arg name="hybrid_pull_terminal_anchor_wait_timeout_sec" default="2.0" />
+  <arg name="hybrid_pull_terminal_front_pressure_stall_sec" default="0.25" />
+  <arg name="hybrid_pull_terminal_front_pressure_progress_kpa" default="0.2" />
   <arg name="hybrid_trajectory_golden_handoff_enabled" default="true" />
   <arg name="hybrid_trajectory_windup_pitch_rad" default="0.29670597283903605" />
   <arg name="hybrid_trajectory_windup_pitch_kp_n_rad" default="3.0" />
@@ -205,9 +220,39 @@
       <param name="hybrid_lift_rear_release_start_ratio" value="$(arg hybrid_lift_rear_release_start_ratio)" />
       <param name="hybrid_lift_rear_pressure_floor_kpa" value="$(arg hybrid_lift_rear_pressure_floor_kpa)" />
       <param name="hybrid_rear_support_probe_stable" value="$(arg hybrid_rear_support_probe_stable)" />
+      <param name="hybrid_rear_motion_pressure_cap_kpa"
+             value="$(arg hybrid_rear_motion_pressure_cap_kpa)" />
+      <param name="hybrid_rear_release_angle_min_rad"
+             value="$(arg hybrid_rear_release_angle_min_rad)" />
+      <param name="hybrid_rear_release_angle_max_rad"
+             value="$(arg hybrid_rear_release_angle_max_rad)" />
+      <param name="hybrid_rear_release_assist_deadband_rad"
+             value="$(arg hybrid_rear_release_assist_deadband_rad)" />
+      <param name="hybrid_rear_release_assist_confirm_sec"
+             value="$(arg hybrid_rear_release_assist_confirm_sec)" />
       <param name="hybrid_regrip_rear_hold_pressure_kpa" value="$(arg hybrid_regrip_rear_hold_pressure_kpa)" />
       <param name="hybrid_pull_rear_release_start_ratio" value="$(arg hybrid_pull_rear_release_start_ratio)" />
       <param name="hybrid_pull_rear_release_end_ratio" value="$(arg hybrid_pull_rear_release_end_ratio)" />
+      <param name="hybrid_pull_terminal_rear_lift_enabled"
+             value="$(arg hybrid_pull_terminal_rear_lift_enabled)" />
+      <param name="hybrid_pull_terminal_rear_lift_thrust_n"
+             value="$(arg hybrid_pull_terminal_rear_lift_thrust_n)" />
+      <param name="hybrid_pull_terminal_rear_lift_duration_sec"
+             value="$(arg hybrid_pull_terminal_rear_lift_duration_sec)" />
+      <param name="hybrid_pull_terminal_rear_lift_rise_n_s"
+             value="$(arg hybrid_pull_terminal_rear_lift_rise_n_s)" />
+      <param name="hybrid_pull_terminal_rear_lift_fall_n_s"
+             value="$(arg hybrid_pull_terminal_rear_lift_fall_n_s)" />
+      <param name="hybrid_pull_terminal_front_pressure_tolerance_kpa"
+             value="$(arg hybrid_pull_terminal_front_pressure_tolerance_kpa)" />
+      <param name="hybrid_pull_terminal_rear_pressure_tolerance_kpa"
+             value="$(arg hybrid_pull_terminal_rear_pressure_tolerance_kpa)" />
+      <param name="hybrid_pull_terminal_anchor_wait_timeout_sec"
+             value="$(arg hybrid_pull_terminal_anchor_wait_timeout_sec)" />
+      <param name="hybrid_pull_terminal_front_pressure_stall_sec"
+             value="$(arg hybrid_pull_terminal_front_pressure_stall_sec)" />
+      <param name="hybrid_pull_terminal_front_pressure_progress_kpa"
+             value="$(arg hybrid_pull_terminal_front_pressure_progress_kpa)" />
       <param name="hybrid_trajectory_golden_handoff_enabled" value="$(arg hybrid_trajectory_golden_handoff_enabled)" />
       <param name="hybrid_trajectory_windup_pitch_rad" value="$(arg hybrid_trajectory_windup_pitch_rad)" />
       <param name="hybrid_trajectory_windup_pitch_kp_n_rad" value="$(arg hybrid_trajectory_windup_pitch_kp_n_rad)" />
