@@ -368,6 +368,12 @@ private:
   hugmy::CircularGraspEstimate recovery_circle_estimate_;
   ros::Time recovery_circle_stamp_;
   bool recovery_circle_event_locked_ = false;
+  // The lower-side pair is selected from the inferred contact geometry once
+  // per recovery event.  Contact-state/moment evaluation may change that
+  // pair between flexed and released, but may not jump to the upper pair.
+  bool recovery_preferred_pair_locked_ = false;
+  size_t recovery_preferred_pair_index_ = 0;
+  bool recovery_preferred_pair_used_fallback_ = false;
   bool recovery_selected_pair_release_ = true;
   bool recovery_selected_contact_pivot_enabled_ = false;
   double recovery_selected_pair_mean_depth_rad_ =

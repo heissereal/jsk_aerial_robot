@@ -36,6 +36,37 @@ int main() {
   for(size_t i=0;i<4;++i)
     assert(std::abs(result.depth_angle[i]-angle[i])<1e-12);
 
+  const std::array<double,4> no_projection{{NAN,NAN,NAN,NAN}};
+  // One pair below the side: use it.
+  auto choice=hugmy::chooseCircularRecoveryPair(
+      {{100*pi/180,100*pi/180,70*pi/180,70*pi/180}},
+      no_projection,1);
+  assert(choice.valid && choice.pair_index==0 &&
+         !choice.used_gravity_or_roll_fallback);
+  // Both above the side: use the deeper pair.
+  choice=hugmy::chooseCircularRecoveryPair(
+      {{70*pi/180,72*pi/180,80*pi/180,82*pi/180}},
+      no_projection,0);
+  assert(choice.valid && choice.pair_index==1);
+  // Both below the side: keep the deeper pair as anchor and actuate the
+  // shallower pair.
+  choice=hugmy::chooseCircularRecoveryPair(
+      {{115*pi/180,117*pi/180,100*pi/180,102*pi/180}},
+      no_projection,0);
+  assert(choice.valid && choice.pair_index==1);
+  // A single arm angle never decides the pair. Complete contact/gravity
+  // evidence wins; without it, the roll-derived lower pair is used.
+  choice=hugmy::chooseCircularRecoveryPair(
+      {{100*pi/180,NAN,70*pi/180,70*pi/180}},
+      {{.8,.7,-.2,-.1}},1);
+  assert(choice.valid && choice.pair_index==0 &&
+         choice.used_gravity_or_roll_fallback);
+  choice=hugmy::chooseCircularRecoveryPair(
+      {{100*pi/180,NAN,70*pi/180,70*pi/180}},
+      no_projection,1);
+  assert(choice.valid && choice.pair_index==1 &&
+         choice.used_gravity_or_roll_fallback);
+
   // Samples from one side only cannot identify diameter in this constrained
   // two-sided gripper geometry.
   active={{true,true,false,false}};

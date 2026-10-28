@@ -35,6 +35,7 @@ struct AttitudePressureController {
  bool continuous_recovery_retry_opposite_pending_=false;
  bool recovery_candidate_reselect_pending_=false;
  bool recovery_circle_event_locked_=false;
+ bool recovery_preferred_pair_locked_=false;
  unsigned continuous_recovery_pair_switches_=0;
  unsigned recovery_rejected_candidate_mask_=0;
  int recovery_rejected_direction_sign_=0;

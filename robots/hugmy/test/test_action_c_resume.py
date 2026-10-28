@@ -98,6 +98,9 @@ public:
  unsigned char recovery_rejected_candidate_mask_=0;
  int recovery_rejected_direction_sign_=0;
  bool recovery_circle_event_locked_=false;
+ bool recovery_preferred_pair_locked_=false;
+ size_t recovery_preferred_pair_index_=0;
+ bool recovery_preferred_pair_used_fallback_=false;
  bool recovery_candidate_reselect_pending_=false;
  bool recovery_pair_selection_available_=true;
  size_t recovery_selected_pair_index_=0;
@@ -137,6 +140,7 @@ public:
  double recovery_circle_flexed_max_error_rad_=15*M_PI/180.;
  double recovery_circle_release_penalty_n_=.75,recovery_circle_min_signed_lever_m_=.005;
  double roll_moment_kp_=.1,target_roll_=0.,roll_=-.2;
+ Vector3 gravity_body_{{0.,0.,-9.81}};
  double recovery_release_pressure_kpa_=0.,correction_planning_thrust_n_=2.,bend_model_thrust_offset_n_=1.8;
  hugmy::CircularGraspEstimate recovery_circle_estimate_;ros::Time recovery_circle_stamp_{};
  hugmy::RollRecoveryConfig roll_recovery_config_;hugmy::PressureThrustBendModel bend_model_;
@@ -152,6 +156,9 @@ public:
  }
  void selectContinuousRecoveryPair(double);
  double measuredArmBendAngle(size_t arm)const{return angles[arm];}
+ Vector3 armContactPointFromAngle(size_t arm,double bend)const{
+   return {{0.,arm<2?.04:-.04,-.07-.01*std::sin(bend)}};
+ }
  Vector3 recoveryContactPivot(const std::array<bool,4>&,bool)const{
    return {{0.,0.,-.07}};
  }
@@ -223,13 +230,15 @@ int main() {
  circle.select(.2);
  assert(circle.prepare_arm_active_[0] && circle.prepare_arm_active_[1]);
  assert(circle.recovery_selected_pair_release_);
- // At a deeper bend the same pair's signed lever reverses in this synthetic
- // model, so the other loaded pair is selected instead of applying abs().
+ // A later bend change cannot move actuation to the upper pair in the same
+ // recovery event. The chosen lower-side pair remains locked; only its
+ // contact state and thrust may be recomputed.
  circle.angles.fill(2.1);
  circle.recovery_circle_estimate_.depth_angle={{2.,2.,2.,2.}};
  circle.select(.2);
- assert(circle.prepare_arm_active_[2] && circle.prepare_arm_active_[3]);
- assert(!circle.recovery_selected_pair_release_);
+ assert(circle.recovery_preferred_pair_locked_ &&
+        circle.recovery_preferred_pair_index_==0);
+ assert(circle.prepare_arm_active_[0] && circle.prepare_arm_active_[1]);
  AttitudePressureController stale;
  assert(!stale.resumeActionCAfterRecovery({12.}));
  assert(stale.action_c_resume_pending_ && !stale.active && stale.finished==0);

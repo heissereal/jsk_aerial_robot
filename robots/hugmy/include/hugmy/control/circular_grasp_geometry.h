@@ -30,8 +30,87 @@ struct CircularGraspEstimate {
       std::numeric_limits<double>::quiet_NaN()}};
 };
 
+// Geometric choice of the arm pair which is allowed to generate the recovery
+// moment.  A valid pair depth requires both arms in that pair; one available
+// arm is deliberately not treated as representative of its partner.
+struct CircularRecoveryPairChoice {
+  bool valid = false;
+  size_t pair_index = 0;
+  std::array<double, 2> pair_depth{{
+      std::numeric_limits<double>::quiet_NaN(),
+      std::numeric_limits<double>::quiet_NaN()}};
+  bool used_gravity_or_roll_fallback = false;
+};
+
 inline double circularClamp(double value, double low, double high) {
   return std::max(low, std::min(high, value));
+}
+
+// Select the pair to actuate before evaluating rotor moments.  Depth is zero
+// at the object top, pi/2 at its side and pi at its underside.
+//
+//  * If only one pair is below the side, actuate that pair.
+//  * If both are above the side, actuate the deeper pair.
+//  * If both are below the side, retain the deeper pair as the anchor and
+//    actuate the shallower pair.
+//
+// When a complete depth is unavailable, downward_projection (larger means
+// lower in gravity) is used only if both arms of both pairs are available.
+// Otherwise the roll-derived lower pair is used.  Thus a single IMU angle can
+// never decide the pair on its own.
+inline CircularRecoveryPairChoice chooseCircularRecoveryPair(
+    const std::array<double, 4>& depth_angle,
+    const std::array<double, 4>& downward_projection,
+    int roll_lower_pair,
+    double side_angle = 0.5 * 3.14159265358979323846) {
+  CircularRecoveryPairChoice choice;
+  const std::array<std::array<size_t, 2>, 2> pairs{{
+      std::array<size_t, 2>{{0, 1}},
+      std::array<size_t, 2>{{2, 3}}}};
+  std::array<double, 2> pair_projection{{
+      std::numeric_limits<double>::quiet_NaN(),
+      std::numeric_limits<double>::quiet_NaN()}};
+  for (size_t pair = 0; pair < pairs.size(); ++pair) {
+    const size_t a = pairs[pair][0], b = pairs[pair][1];
+    if (std::isfinite(depth_angle[a]) && std::isfinite(depth_angle[b]))
+      choice.pair_depth[pair] =
+          0.5 * (depth_angle[a] + depth_angle[b]);
+    if (std::isfinite(downward_projection[a]) &&
+        std::isfinite(downward_projection[b]))
+      pair_projection[pair] =
+          0.5 * (downward_projection[a] + downward_projection[b]);
+  }
+
+  const bool depth0 = std::isfinite(choice.pair_depth[0]);
+  const bool depth1 = std::isfinite(choice.pair_depth[1]);
+  if (depth0 && depth1) {
+    const bool below0 = choice.pair_depth[0] >= side_angle;
+    const bool below1 = choice.pair_depth[1] >= side_angle;
+    if (below0 != below1)
+      choice.pair_index = below0 ? 0 : 1;
+    else if (!below0)
+      choice.pair_index = choice.pair_depth[0] >= choice.pair_depth[1] ? 0 : 1;
+    else
+      choice.pair_index = choice.pair_depth[0] <= choice.pair_depth[1] ? 0 : 1;
+    choice.valid = true;
+    return choice;
+  }
+
+  // Incomplete pair angles must not be averaged with a single sample.  Use
+  // independent contact-point/gravity evidence if it is complete.
+  if (std::isfinite(pair_projection[0]) &&
+      std::isfinite(pair_projection[1])) {
+    choice.pair_index = pair_projection[0] >= pair_projection[1] ? 0 : 1;
+    choice.valid = true;
+    choice.used_gravity_or_roll_fallback = true;
+    return choice;
+  }
+  if (roll_lower_pair == 0 || roll_lower_pair == 1) {
+    choice.pair_index = static_cast<size_t>(roll_lower_pair);
+    choice.valid = true;
+    choice.used_gravity_or_roll_fallback = true;
+  }
+  return choice;
 }
 
 // depth_angle is zero at the circle top, pi/2 at its side and pi at its

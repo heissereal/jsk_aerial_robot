@@ -1558,6 +1558,7 @@ void AttitudePressureController::targetCallback(const geometry_msgs::Vector3Stam
       recovery_rejected_direction_sign_ = 0;
       recovery_candidate_reselect_pending_ = false;
       recovery_circle_event_locked_ = false;
+      recovery_preferred_pair_locked_ = false;
       return;
     }
   target_roll_ = msg->vector.x;
@@ -1567,6 +1568,7 @@ void AttitudePressureController::targetCallback(const geometry_msgs::Vector3Stam
   recovery_rejected_direction_sign_ = 0;
   recovery_candidate_reselect_pending_ = false;
   recovery_circle_event_locked_ = false;
+  recovery_preferred_pair_locked_ = false;
 }//目標姿勢
 
 void AttitudePressureController::mocapCallback(
@@ -1779,6 +1781,7 @@ void AttitudePressureController::inchwormCommandCallback(
   recovery_rejected_direction_sign_ = 0;
   recovery_candidate_reselect_pending_ = false;
   recovery_circle_event_locked_ = false;
+  recovery_preferred_pair_locked_ = false;
   action_c_resume_pending_ = false;
   action_c_requested_recovery_trigger_rad_ =
       std::numeric_limits<double>::quiet_NaN();
@@ -1823,6 +1826,7 @@ bool AttitudePressureController::enableCallback(std_srvs::SetBool::Request& req,
   recovery_rejected_direction_sign_ = 0;
   recovery_candidate_reselect_pending_ = false;
   recovery_circle_event_locked_ = false;
+  recovery_preferred_pair_locked_ = false;
   grasp_baseline_valid_ = false;
   inchworm_active_ = false;
   action_c_recovery_gate_.reset();
@@ -4302,6 +4306,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                       recovery_rejected_direction_sign_ = 0;
                       recovery_candidate_reselect_pending_ = false;
                       recovery_circle_event_locked_ = false;
+                      recovery_preferred_pair_locked_ = false;
                       // Regrasp can shift the contact equilibrium by several
                       // degrees. Keep the saved gait paused until the final
                       // grasped attitude is inside the 8-deg resume band. If
@@ -4578,6 +4583,75 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   const bool circle_fresh = recovery_circle_estimate_.valid &&
       recovery_circle_estimate_.confidence >= recovery_circle_min_confidence_ &&
       (circle_directly_fresh || recovery_circle_event_locked_);
+  std::array<double, ARM_COUNT> recovery_depth_angle =
+      recovery_circle_estimate_.depth_angle;
+  std::array<double, ARM_COUNT> downward_projection{{
+      std::numeric_limits<double>::quiet_NaN(),
+      std::numeric_limits<double>::quiet_NaN(),
+      std::numeric_limits<double>::quiet_NaN(),
+      std::numeric_limits<double>::quiet_NaN()}};
+  if (circle_fresh)
+    {
+      const double gravity_norm = std::hypot(
+          gravity_body_[1], gravity_body_[2]);
+      if (std::isfinite(gravity_norm) && gravity_norm > 1.0e-6)
+        {
+          const double down_y = gravity_body_[1] / gravity_norm;
+          const double down_z = gravity_body_[2] / gravity_norm;
+          for (size_t arm = 0; arm < ARM_COUNT; ++arm)
+            {
+              const double bend = measuredArmBendAngle(arm);
+              if (!std::isfinite(bend)) continue;
+              const Vector3 contact = armContactPointFromAngle(arm, bend);
+              const double radial_y =
+                  contact[1] - recovery_circle_estimate_.center_y;
+              const double radial_z =
+                  contact[2] - recovery_circle_estimate_.center_z;
+              const double radial_norm = std::hypot(radial_y, radial_z);
+              if (!std::isfinite(radial_norm) || radial_norm < 1.0e-6)
+                continue;
+              downward_projection[arm] =
+                  (radial_y * down_y + radial_z * down_z) / radial_norm;
+              // An IMU angle can be absent when its chamber is below the
+              // contact-pressure gate even though the arm kinematics remain
+              // available. Reconstruct that depth from the stored circle,
+              // the current contact point and gravity instead of deciding
+              // from the partner arm alone.
+              if (!std::isfinite(recovery_depth_angle[arm]))
+                recovery_depth_angle[arm] = std::acos(hugmy::circularClamp(
+                    -downward_projection[arm], -1.0, 1.0));
+            }
+        }
+
+      if (!recovery_preferred_pair_locked_)
+        {
+          // Hardware convention verified in the arm fixture: negative body
+          // roll places arms 0+1 lower; positive roll places arms 2+3 lower.
+          // This is used only when neither two-arm depth nor complete
+          // gravity-projected contact evidence is available.
+          const int roll_lower_pair = roll_ < 0.0 ? 0 : 1;
+          const hugmy::CircularRecoveryPairChoice pair_choice =
+              hugmy::chooseCircularRecoveryPair(
+                  recovery_depth_angle, downward_projection,
+                  roll_lower_pair);
+          if (pair_choice.valid)
+            {
+              recovery_preferred_pair_index_ = pair_choice.pair_index;
+              recovery_preferred_pair_used_fallback_ =
+                  pair_choice.used_gravity_or_roll_fallback;
+              recovery_preferred_pair_locked_ = true;
+              ROS_INFO("Circular recovery locked lower-side pair %zu+%zu for this event: pair depths [%.1f %.1f] deg, source=%s",
+                       pair_choice.pair_index == 0 ? 0ul : 2ul,
+                       pair_choice.pair_index == 0 ? 1ul : 3ul,
+                       std::isfinite(pair_choice.pair_depth[0])
+                           ? pair_choice.pair_depth[0] * 180.0 / M_PI : -1.0,
+                       std::isfinite(pair_choice.pair_depth[1])
+                           ? pair_choice.pair_depth[1] * 180.0 / M_PI : -1.0,
+                       pair_choice.used_gravity_or_roll_fallback
+                           ? "gravity/roll fallback" : "complete pair depth");
+            }
+        }
+    }
   const double required_moment = roll_moment_kp_ * std::max(0.0,
       std::abs(roll_error) - roll_recovery_config_.stop);
   const double fixed_mapping_sign = correction_pair_reverse_spinal_mapping_
@@ -4639,10 +4713,9 @@ void AttitudePressureController::selectContinuousRecoveryPair(
         candidate.lever += actuator_sign * correction_sign *
             recoveryRotorRawLeverAbout(
                 arm, evaluated_bend, candidate.pivot);
-        if (circle_fresh &&
-            std::isfinite(recovery_circle_estimate_.depth_angle[arm]))
+        if (circle_fresh && std::isfinite(recovery_depth_angle[arm]))
           {
-            depth_sum += recovery_circle_estimate_.depth_angle[arm];
+            depth_sum += recovery_depth_angle[arm];
             ++depth_count;
           }
       }
@@ -4679,27 +4752,33 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   if (recovery_circle_selection_enabled_ && circle_fresh)
     {
       for (size_t pair = 0; pair < pairs.size(); ++pair)
-        for (const bool release : {false, true})
-          {
-            const Candidate candidate = evaluate(pair, release);
-            ROS_INFO("Circular recovery candidate: pair %zu+%zu state=%s, depth %.1f deg, signed lever %.4f m, initial FF %.2f N/rotor, rejected=%d, valid=%d, score %.2f",
-                     pairs[pair][0], pairs[pair][1],
-                     release ? "released/extended" : "flexed/grasped",
-                     std::isfinite(candidate.depth) ?
-                         candidate.depth * 180.0 / M_PI : -1.0,
-                     candidate.lever,
-                     candidate.required_thrust,
-                     candidate.rejected ? 1 : 0,
-                     candidate.valid ? 1 : 0,
-                     candidate.score);
-            if (candidate.valid && candidate.score < selected.score)
-              selected = candidate;
-          }
+        {
+          if (recovery_preferred_pair_locked_ &&
+              pair != recovery_preferred_pair_index_)
+            continue;
+          for (const bool release : {false, true})
+            {
+              const Candidate candidate = evaluate(pair, release);
+              ROS_INFO("Circular recovery candidate: pair %zu+%zu state=%s, depth %.1f deg, signed lever %.4f m, initial FF %.2f N/rotor, rejected=%d, valid=%d, score %.2f",
+                       pairs[pair][0], pairs[pair][1],
+                       release ? "released/extended" : "flexed/grasped",
+                       std::isfinite(candidate.depth) ?
+                           candidate.depth * 180.0 / M_PI : -1.0,
+                       candidate.lever,
+                       candidate.required_thrust,
+                       candidate.rejected ? 1 : 0,
+                       candidate.valid ? 1 : 0,
+                       candidate.score);
+              if (candidate.valid && candidate.score < selected.score)
+                selected = candidate;
+            }
+        }
     }
 
   if (selected.valid)
     {
-      if (continuous_recovery_use_opposite_pair_)
+      if (continuous_recovery_use_opposite_pair_ &&
+          !recovery_preferred_pair_locked_)
         {
           const size_t opposite = 1 - selected.pair;
           Candidate alternate = evaluate(opposite, false);
@@ -4737,6 +4816,21 @@ void AttitudePressureController::selectContinuousRecoveryPair(
                selected.release ? "released/extended" : "flexed/grasped",
                1000.0 * selected.pivot[1], 1000.0 * selected.pivot[2],
                selected.lever);
+      return;
+    }
+
+  // The lower-side pair is a contact-topology constraint, not another term
+  // in the thrust score.  If neither its flexed nor released state can make
+  // the required moment, regrasp/re-estimate rather than firing the upper
+  // pair merely because its model predicts a smaller thrust.
+  if (recovery_circle_selection_enabled_ && circle_fresh &&
+      recovery_preferred_pair_locked_)
+    {
+      prepare_arm_active_.fill(false);
+      recovery_selected_contact_pivot_enabled_ = false;
+      ROS_ERROR("No restoring moment candidate remains in locked lower-side pair %zu+%zu; refusing an upper-pair switch during this recovery event",
+                recovery_preferred_pair_index_ == 0 ? 0ul : 2ul,
+                recovery_preferred_pair_index_ == 0 ? 1ul : 3ul);
       return;
     }
 
@@ -5801,6 +5895,7 @@ void AttitudePressureController::stopInchwormToGrasp(
   recovery_rejected_direction_sign_ = 0;
   recovery_candidate_reselect_pending_ = false;
   recovery_circle_event_locked_ = false;
+  recovery_preferred_pair_locked_ = false;
   action_c_recovery_gate_.reset();
   const PressureArray zero_thrust{{0.0, 0.0, 0.0, 0.0}};
   const bool target_reached=
@@ -5856,6 +5951,7 @@ void AttitudePressureController::requestActionCPostureRecovery(
   recovery_rejected_direction_sign_ = 0;
   recovery_candidate_reselect_pending_ = false;
   recovery_circle_event_locked_ = false;
+  recovery_preferred_pair_locked_ = false;
   action_c_recovery_gate_.reset();
   action_c_resume_pending_ = true;
   action_c_requested_recovery_trigger_rad_ =
