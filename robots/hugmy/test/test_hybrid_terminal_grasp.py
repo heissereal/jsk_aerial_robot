@@ -14,13 +14,15 @@ assert 'verifiedPairRollMoments(' in transfer
 assert 'transfer_moment,hybrid_single_config_.reverse_geometry_roll_moment)' in transfer
 assert 'transfer_roll_worsening?' in transfer
 assert 'slew(transfer_thrust[j],balanced[j],' in transfer
-assert 'hybrid_single_config_.identification_tracking_rise,2.,dt)' in transfer
+assert 'const double regrip_thrust_fall=hybrid_regrip_fast_roll_brake_?' in transfer
+assert 'hybrid_regrip_roll_brake_fall_n_s_:2.;' in transfer
+assert 'hybrid_single_config_.identification_tracking_rise,\n          regrip_thrust_fall,dt)' in transfer
 assert 'hybrid_single_config_.regrip_rear_hold_pressure' in transfer
-assert 'if(thrust_off) hybrid_regrip_thrust_zero_latched_=true;' in transfer
-assert 'if(!hybrid_regrip_thrust_zero_latched_)' in transfer
+assert 'if(thrust_off && !terminal_sequence_active)\n      hybrid_regrip_thrust_zero_latched_=true;' in transfer
+assert 'if(!hybrid_regrip_thrust_zero_latched_ &&\n       !hybrid_regrip_fast_roll_brake_)' in transfer
 assert transfer.index('const bool thrust_off=') < transfer.index(
-    'if(thrust_off) hybrid_regrip_thrust_zero_latched_=true;')
-assert transfer.index('if(!hybrid_regrip_thrust_zero_latched_)') < transfer.index(
+    'if(thrust_off && !terminal_sequence_active)')
+assert transfer.index('if(!hybrid_regrip_thrust_zero_latched_ &&') < transfer.index(
     'mechanical_regrip_ready')
 assert 'finishHybridLocomotion(now,!terminal,true)' in transfer
 assert 'startInchwormCycle(now);return;' in transfer
@@ -57,6 +59,8 @@ struct AttitudePressureController {
  bool continuous_recovery_waiting_for_settle_=true,inchworm_active_=true;
  bool action_c_resume_pending_=true,action_c_preserve_adaptation_on_start_=true;
  bool recovery_candidate_reselect_pending_=false;
+ bool recovery_geometry_reestimate_attempted_=false;
+ bool recovery_geometry_reestimate_pending_=false;
  bool recovery_circle_event_locked_=false;
  bool recovery_preferred_pair_locked_=false;
  unsigned recovery_rejected_candidate_mask_=0;

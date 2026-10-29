@@ -114,7 +114,8 @@ private:
   bool hybridLocomotionActive() const;
   void startHybridLocomotion(const ros::Time& now);
   void beginHybridRegrip(const ros::Time& now, bool prediction_limited);
-  void beginHybridTerminalSettle(const ros::Time& now, const char* reason);
+  void beginHybridTerminalSettle(const ros::Time& now, const char* reason,
+                                 bool fast_roll_brake = false);
   void updateHybridLocomotion(const ros::Time& now, double dt);
   void finishHybridLocomotion(const ros::Time& now, bool completed, bool safe);
   void pauseHybridLocomotion(const ros::Time& now);
@@ -287,6 +288,11 @@ private:
   uint8_t recovery_rejected_candidate_mask_ = 0;
   bool recovery_candidate_reselect_pending_ = false;
   bool recovery_pair_selection_available_ = true;
+  bool recovery_geometry_reestimate_attempted_ = false;
+  // When every candidate has been rejected in the current contact state,
+  // first restore measured four-arm support.  Do not clear the evidence or
+  // select again until the commanded support pressure is actually reached.
+  bool recovery_geometry_reestimate_pending_ = false;
   size_t recovery_selected_pair_index_ = 0;
   hugmy::ContinuousRollRecovery continuous_roll_recovery_;
   hugmy::RollRecoveryConfig roll_recovery_config_;
@@ -330,6 +336,14 @@ private:
   double recovery_handoff_progress_reference_rad_ =
       std::numeric_limits<double>::infinity();
   double recovery_handoff_last_progress_time_ = -1.0;
+  // A fully re-bent (flexed) pair can have the correct static moment sign,
+  // yet applying rotor thrust can still move the loaded contact in the
+  // wrong direction.  Keep a separate measured reference for that case:
+  // the ordinary no-response timer intentionally waits for high authority,
+  // whereas a demonstrably worsening response must be rejected early.
+  double recovery_handoff_candidate_reference_rad_ =
+      std::numeric_limits<double>::infinity();
+  double recovery_handoff_candidate_worsening_since_ = -1.0;
   bool recovery_handoff_braking_ = false;
   bool recovery_handoff_support_equalized_ = false;
   // True only when the released-pair recovery itself had a measured
@@ -393,7 +407,22 @@ private:
   double recovery_wrong_geometry_response_confirm_sec_ = 0.30;
   double recovery_wrong_geometry_rate_improvement_rad_s_ =
       2.0 * M_PI / 180.0;
+  // Do not wait for a 30 -> 0-kPa exhaust to finish when the presently
+  // measured moment arm has the wrong sign and roll is already diverging.
+  // This supervisor is intentionally independent of the ordinary rotor
+  // response-identification gate: during a predicted sign-changing pressure
+  // path the rotor command is held at zero.
+  double recovery_wrong_geometry_transition_confirm_sec_ = 0.25;
+  double recovery_wrong_geometry_transition_worsening_rad_ =
+      0.5 * M_PI / 180.0;
+  double recovery_wrong_geometry_transition_outward_rate_rad_s_ =
+      1.0 * M_PI / 180.0;
   ros::Time recovery_wrong_geometry_since_;
+  ros::Time recovery_wrong_geometry_transition_bad_since_;
+  // Independent of bend/gyro response-window resets: once a pressure-settled
+  // candidate has demonstrated useful roll correction, reject it if a later
+  // increasing-authority retry loses that retained improvement.
+  ros::Time recovery_candidate_retained_worsening_since_;
   ros::Time recovery_wrong_geometry_pressure_settled_since_;
   double recovery_wrong_geometry_reference_error_rad_ =
       std::numeric_limits<double>::quiet_NaN();
@@ -402,6 +431,13 @@ private:
   double recovery_wrong_geometry_best_rate_rad_s_ =
       -std::numeric_limits<double>::infinity();
   bool recovery_wrong_geometry_response_observed_ = false;
+  // The endpoint geometry can be restorative even though the measured
+  // 30 -> 20 -> 10 -> 0-kPa path crosses a non-restoring lever.  In that
+  // case pressure may move, but rotor thrust stays zero until the measured
+  // lever itself becomes restorative.
+  bool recovery_selected_path_requires_zero_thrust_ = false;
+  double recovery_selected_path_min_lever_m_ =
+      std::numeric_limits<double>::quiet_NaN();
   // Once velocity look-ahead starts the minimum pneumatic capture, never
   // reopen the selected chambers on a later control tick.  Without this
   // latch, the pre-update release ceiling and post-update brake command
@@ -691,6 +727,24 @@ private:
   // 30-kPa grasp.  Once all rotor commands are zero, do not reintroduce a
   // trim thrust and reopen the rear chambers because of an IMU fluctuation.
   bool hybrid_regrip_thrust_zero_latched_=false;
+  // Motion 2 can make roll diverge faster than the shared posture controller
+  // can arrest it after a late handoff.  The 8-deg value only enables the
+  // look-ahead; a sustained outward trend is stopped when its predicted roll
+  // reaches the independent 15-deg locomotion boundary.  This allows a slow,
+  // supported 8--12-deg gait excursion while still catching a fast fall.
+  double hybrid_lift_worsening_roll_stop_rad_ = 8.0 * M_PI / 180.0;
+  double hybrid_lift_worsening_roll_rate_rad_s_ = 1.0 * M_PI / 180.0;
+  double hybrid_lift_worsening_roll_confirm_sec_ = 0.10;
+  double hybrid_lift_worsening_roll_prediction_sec_ = 0.25;
+  double hybrid_lift_worsening_roll_since_ = -1.0;
+  // Reaching both independent Motion-2 safety bends without a measured
+  // unloading event is not permission to keep increasing thrust.  Allow a
+  // short body/contact-sensor lag, then restore support and retry.
+  double hybrid_lift_target_no_unload_timeout_sec_ = 0.35;
+  double hybrid_lift_target_no_unload_since_ = -1.0;
+  double hybrid_regrip_roll_recovery_rad_ = 15.0 * M_PI / 180.0;
+  double hybrid_regrip_roll_brake_fall_n_s_ = 8.0;
+  bool hybrid_regrip_fast_roll_brake_ = false;
   bool hybrid_regrip_complete_latched_=false;
   // A normal stroke may hand control to the outer regrip before the newly
   // placed front chambers physically reach their full-pressure anchor.  Keep

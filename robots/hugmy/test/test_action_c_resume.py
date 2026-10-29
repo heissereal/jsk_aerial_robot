@@ -26,8 +26,24 @@ assert 'const bool pressure_settled_timeout =' in source
 assert 'if (pressure_settled_timeout ||\n                      geometry_worsened)' in source
 assert 'Circular recovery alternate candidate:' in source
 assert 'safely selecting model-restoring alternate pair' in source
+assert 'complete discrete pressure path' in source
+assert 'recovery_selected_path_requires_zero_thrust_' in source
+assert 'selected instantaneous restoring pair' in source
+assert 'No instantaneous restoring recovery pair' in source
+assert 'const bool geometry_reestimate_ready =' in source
+assert 'grasp_pressure_ready && recovery_pressure_fresh' in source
+assert 'recovery_pressure_fresh && geometry_reestimate_ready &&' in source
+assert 'recovery_geometry_reestimate_pending_ = true;' in source
+assert 'Balanced four-arm support reached; cleared old contact-state candidate rejections' in source
+assert 'recovery_rejected_candidate_mask_ = 0;' in source.split(
+    'Balanced four-arm support reached; cleared old contact-state candidate rejections', 1
+)[0].rsplit('if (continuous_c_recovery &&', 1)[1]
+assert 'completed_recovery_restart_angle' in source
+assert 'completed_recovery_restart_allowed' in source
 assert 'continuous_roll_recovery_.target_crossed' in source
 assert 'opposite-sign selection only if the residual leaves the stop band' in source
+assert 'signed_error <= -opposite_selection_boundary;' in source
+assert 'predicted_signed_error' not in source
 assert 'requested immediate opposite-sign geometry selection' in source
 assert 'recoveryMeasuredContactPressure()' in source
 measured_freeze = source.split(
@@ -39,12 +55,16 @@ assert 'recoveryReselectionPressure()' in source
 assert 'clearing directional rejection mask' in source
 assert 'const bool handoff_candidate_stalled =' in source
 assert 'const bool handoff_candidate_stalled =\n                      abs_error > capture_error &&' in source
-assert 'full-grasp roll remained at %.2f deg' in source
+assert 'const bool flexed_handoff_response_active =' in source
+assert 'recovery_handoff_candidate_reference_rad_' in source
+assert 'handoff_candidate_stalled ||\n                      handoff_candidate_worsening' in source
+assert 'full-grasp roll %s at %.2f deg' in source
 assert 'recovery_handoff_progress_reference_rad_ -' in source
 assert 'const double handoff_retry_thrust = std::max(\n                      roll_recovery_config_.detect_thrust' in source
 assert 'rejected handoff candidate reached zero thrust' in source
 assert 'released terminal-brake deadband' in source
-assert 'const double handoff_brake_entry = recovery_stop_angle;' in source
+assert 'const double handoff_drive_stop = recovery_stop_angle +\n                  handoff_measurement_margin;' in source
+assert 'const double handoff_brake_entry = handoff_drive_stop;' in source
 assert '!recovery_handoff_braking_ && command_at_grasp &&\n                  abs_error <= (strict_target_observed_before_regrasp' in source
 assert 'const bool terminal_contact_plateau =' in source
 assert 'if (terminal_contact_plateau)' in source
@@ -57,7 +77,7 @@ assert 'pressure_distance_from_best' in source
 assert 'const double terminal_reopen_margin =' in source
 assert 'const bool strict_target_observed_before_regrasp =' in source
 assert 'recovery_handoff_best_error_rad_ <= handoff_settle_error' in source
-assert 'std::min(1.0 * M_PI / 180.0,\n                           roll_recovery_config_.stop_margin)' in source
+assert 'const double handoff_measurement_margin = std::min(\n                  0.25 * M_PI / 180.0,\n                  0.25 * roll_recovery_config_.stop_margin);' in source
 assert 'const double active_handoff_settle_error =' in source
 assert 'active_handoff_settle_error + terminal_reopen_margin' in source
 assert 'abs_error >= terminal_reopen_error' in source
@@ -90,7 +110,7 @@ code=r'''
 #define ROS_INFO(...) ((void)0)
 #define ROS_WARN(...) ((void)0)
 #define ROS_ERROR(...) ((void)0)
-namespace ros {struct Time {double t=0.;double toSec()const{return t;}bool isZero()const{return t==0.;}static Time now(){return {10.};}};
+namespace ros {struct Time {double t;Time(double value=0.):t(value){}double toSec()const{return t;}bool isZero()const{return t==0.;}static Time now(){return {10.};}};
 Time operator-(Time a,Time b){return {a.t-b.t};}}
 class AttitudePressureController {
 public:
@@ -116,19 +136,22 @@ public:
  bool recovery_preferred_pair_used_fallback_=false;
  bool recovery_candidate_reselect_pending_=false;
  bool recovery_pair_selection_available_=true;
+ bool recovery_geometry_reestimate_attempted_=false;
+ bool recovery_geometry_reestimate_pending_=false;
  size_t recovery_selected_pair_index_=0;
  hugmy::ContinuousRollRecovery continuous_roll_recovery_;
  struct Gate {int resets=0;void reset(){++resets;}} action_c_resume_gate_, action_c_boundary_settle_gate_;
  ros::Time state_start_{0};double prepare_timeout_=60.;
  double action_c_requested_recovery_trigger_rad_=NAN;
  std::array<double,4> prepare_shape_thrust_{{2.,2.,2.,2.}}, grasp_pressure_{{30.,30.,30.,30.}};
+ std::array<double,4> prepare_pressure_{{30.,30.,30.,30.}};
  std::array<double,4> measured_pressure_{{30.,30.,30.,30.}};
  std::array<double,4> recovery_selected_release_start_pressure_{{30.,30.,30.,30.}};
  std::array<double,4> angles{{M_PI/2,M_PI/2,M_PI/2,M_PI/2}};
  std::array<double,4> recovery_handoff_target_pressure_{};
  double recovery_handoff_min_pressure_kpa_=15.,base_pressure_kpa_=30.,maximum_pressure_kpa_=40.;
  double minimum_prepare_pressure_kpa_=0.,mass_kg_=1.244;
- int publications=0, state=0;enum {RECOVER=1};
+ int publications=0, state=0;enum {RECOVER=1,GRASP=2};
  void publishCorrectionThrust(const std::array<double,4>& t) {
    for(double v:t) assert(v==0.);++publications;
  }
@@ -162,8 +185,18 @@ public:
  std::array<double,4> recovery_circle_pressure_candidates_kpa_{{0.,10.,20.,30.}};
  double recovery_circle_release_support_scale_=.20;
  double recovery_selected_support_loss_moment_nm_=0.;
+ bool recovery_selected_path_requires_zero_thrust_=false;
+ double recovery_selected_path_min_lever_m_=NAN;
+ ros::Time recovery_wrong_geometry_since_,recovery_wrong_geometry_transition_bad_since_;
+ ros::Time recovery_candidate_retained_worsening_since_;
+ ros::Time recovery_wrong_geometry_pressure_settled_since_;
+ double recovery_wrong_geometry_reference_error_rad_=NAN;
+ double recovery_wrong_geometry_reference_rate_rad_s_=NAN;
+ double recovery_wrong_geometry_best_rate_rad_s_=-INFINITY;
+ bool recovery_wrong_geometry_response_observed_=false;
  double roll_moment_kp_=.1,target_roll_=0.,roll_=-.2;
  Vector3 gravity_body_{{0.,0.,-9.81}};
+ Vector3 contact_position_{{0.,0.,-.07}};
  double recovery_release_pressure_kpa_=0.,correction_planning_thrust_n_=2.,bend_model_thrust_offset_n_=1.8;
  hugmy::CircularGraspEstimate recovery_circle_estimate_;ros::Time recovery_circle_stamp_{};
  hugmy::RollRecoveryConfig roll_recovery_config_;hugmy::PressureThrustBendModel bend_model_;

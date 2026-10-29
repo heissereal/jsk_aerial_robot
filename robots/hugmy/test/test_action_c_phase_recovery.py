@@ -6,6 +6,10 @@ import tempfile
 
 root=Path(__file__).resolve().parents[1]
 source=(root/'src/control/hybrid_locomotion.cpp').read_text()
+config=(root/'config/attitude_pressure_controller.yaml').read_text()
+# Automatic locomotion recovery accepts a true +/-3-deg roll band; it must
+# not silently regress to an exact-zero completion test.
+assert 'action_c_posture_resume_rad: 0.05235987755982989' in config
 start=source.index('  const double measured_roll_rate=')
 # The reverse-travel guard immediately following the posture guard belongs to
 # retained-position validation and needs the full controller fixture.  Keep
@@ -24,7 +28,10 @@ assert 'publishBottomTarget(0.0)' in recovery
 # exhaust.  Inflation is resumed by phase 0 for the next pulse, rather than
 # being held across a terminal endpoint.
 assert 'hybrid_hold_bottom_=false' in controller
-assert 'publishBottomTarget(0.)' in source
+# Ordinary terminal scoring still deflates the bottom, while an emergency
+# Motion-2 roll handoff retains bottom support until four-arm pressure is back.
+assert 'hybrid_regrip_bottom_=fast_roll_brake ?' in source
+assert 'publishBottomTarget(hybrid_regrip_bottom_)' in source
 assert 'hybrid_preinflate_measured_' in source
 assert 'hybrid_regrip_bottom_=slew' not in source
 assert 'retained_handoff_error +' in controller
@@ -34,7 +41,8 @@ assert 'std::max(3.0, recovery_handoff_thrust_fall_n_s_)' in controller
 assert 'const double handoff_settle_error = recovery_stop_angle' in controller
 assert 'const bool strict_target_observed_before_regrasp =' in controller
 assert 'abs_error <= active_handoff_settle_error' in controller
-assert 'abs_error > handoff_control_error' in controller
+assert 'continuous_recovery_waiting_for_settle_ = false;' in controller
+assert 'action_c_requested_recovery_trigger_rad_ =' in controller
 code=r"""
 #include <hugmy/control/hybrid_locomotion_mpc.h>
 #include <hugmy/control/hybrid_single_pass.h>
@@ -43,6 +51,7 @@ code=r"""
 #include <cassert>
 #include <iostream>
 #define ROS_WARN_THROTTLE(...)
+#define ROS_WARN(...)
 struct Controller {
  hugmy::hybrid::Config hybrid_config_;
  struct {struct {double bottom=30.;} current;} hybrid_search_;
@@ -58,7 +67,15 @@ struct Controller {
  double action_c_posture_settle_sec_=.5,action_c_posture_recovery_trigger_rad_=10*M_PI/180.;
  double correction_trigger_confirm_sec_=.3;
  double hybrid_roll_rate_confirm_sec_=.10,hybrid_roll_rate_limit_since_=-1.;
+ double hybrid_lift_worsening_roll_stop_rad_=8.*M_PI/180.;
+ double hybrid_lift_worsening_roll_rate_rad_s_=1.*M_PI/180.;
+ double hybrid_lift_worsening_roll_confirm_sec_=.10;
+ double hybrid_lift_worsening_roll_prediction_sec_=.25;
+ double hybrid_lift_worsening_roll_since_=-1.;
+ double hybrid_regrip_roll_recovery_rad_=15.*M_PI/180.;
  double hybrid_regrip_roll_emergency_rad_=30.*M_PI/180.;
+ double recovery_handoff_min_pressure_kpa_=15.;
+ bool hybrid_regrip_fast_roll_brake_=false;
  hugmy::RollTrendGate action_c_roll_trend_;
  hugmy::PostureRecoveryGate action_c_boundary_settle_gate_,action_c_recovery_gate_;
  int hybrid_phase_=0;bool arms_ready=true,ready=false,recovery=false,terminal=false;
@@ -69,7 +86,7 @@ struct Controller {
  Controller(){hybrid_config_.roll_limit=15.*M_PI/180.;}
  bool pressureReached(const std::array<double,4>&){return arms_ready;}
  void requestActionCPostureRecovery(double,const char*,double=NAN){recovery=true;}
- void beginHybridTerminalSettle(double,const char*){terminal=true;}
+ void beginHybridTerminalSettle(double,const char*,bool=false){terminal=true;}
  void tick(double clock,double roll,double rate=0.){
    using hugmy::hybrid::bottomPressureReady;
    using hugmy::hybrid::SinglePass;
@@ -97,7 +114,14 @@ int main(){
    Controller powered;powered.hybrid_phase_=1;
    powered.hybrid_single_.phase=hugmy::hybrid::SinglePass::Lift;
    powered.inchworm_thrust_={{3,0,0,3}};
-   assert(!powered.drive(0.,1.2,9.*sign,3.*sign));
+   // Eight degrees only arms the look-ahead.  Slow supported motion whose
+   // 0.25-s prediction remains inside 15 deg must be allowed to reach Motion
+   // 3; a fast outward motion predicted beyond 15 deg restores support.
+   powered.tick(0.,8.1*sign,2.*sign);assert(!powered.terminal);
+   powered.tick(.12,8.34*sign,2.*sign);assert(!powered.terminal);
+   powered.tick(.24,11.0*sign,20.*sign);assert(!powered.terminal);
+   powered.tick(.36,13.4*sign,20.*sign);
+   assert(powered.terminal && !powered.recovery);
    Controller inflation;inflation.bottom=10.;assert(!inflation.drive(0.,1.2,9.*sign,3.*sign));assert(!inflation.ready);
    inflation.bottom=30.;assert(!inflation.drive(2.,1.2,10.*sign));assert(inflation.ready);
    Controller regrip;regrip.hybrid_phase_=2;regrip.arms_ready=false;
@@ -114,11 +138,10 @@ int main(){
    // posture error and can use the normal shared recovery path.
    assert(regrip.drive(4.,1.2,14.*sign,3.*sign));
    Controller loaded_regrip;loaded_regrip.hybrid_phase_=2;
-   // A fully loaded regrip keeps all four pressures and uses the local rotor
-   // trim above the ordinary locomotion limit. Shared recovery is reserved
-   // for the independent emergency angle.
-   loaded_regrip.tick(6.,16.*sign);assert(!loaded_regrip.recovery);
-   loaded_regrip.tick(6.1,31.*sign);assert(loaded_regrip.recovery);
+   // Once all four arms are load-bearing, hand off at 15 deg rather than
+   // waiting until the old 30-deg emergency angle.
+   loaded_regrip.tick(6.,14.*sign);assert(!loaded_regrip.recovery);
+   loaded_regrip.tick(6.1,16.*sign);assert(loaded_regrip.recovery);
    // Absolute roll remains immediate. Angular rate keeps the same limit but
    // requires persistence so one impact/IMU sample cannot hand off control.
    powered.tick(4.,16.*sign);assert(powered.terminal && !powered.recovery);

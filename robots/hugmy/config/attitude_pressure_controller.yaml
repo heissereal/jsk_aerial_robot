@@ -43,6 +43,15 @@ hybrid_stop_roll_recovery_confirm_sec: 0.75
 hybrid_pre_stroke_roll_limit_rad: 0.10471975511965977 # 6 deg
 hybrid_inner_roll_threshold_rad: 0.05235987755982989  # start differential thrust at 3-deg stroke-relative roll; no phase abort
 hybrid_roll_rate_confirm_sec: 0.10
+# Motion 2 arms predictive braking above 8 deg, but is stopped only when the
+# outward rate predicts crossing the ordinary 15-deg hard boundary.  Thus a
+# slow supported 8--12-deg excursion can finish Motion 2, whereas a fast fall
+# is caught before the measured angle itself reaches 15 deg.
+hybrid_lift_worsening_roll_stop_rad: 0.13962634015954636 # 8 deg
+hybrid_lift_worsening_roll_rate_rad_s: 0.017453292519943295 # 1 deg/s
+hybrid_lift_worsening_roll_confirm_sec: 0.10
+hybrid_lift_worsening_roll_prediction_sec: 0.25
+hybrid_lift_target_no_unload_timeout_sec: 0.35 # after both safe bend targets, allow only sensor/contact lag before regrip
 hybrid_lift_probe_sec: 20.0  # long absolute-bend reach; rate FB normally finishes earlier
 hybrid_front_vent_timeout_sec: 30.0
 hybrid_front_vent_tolerance_kpa: 5.0  # target remains exactly zero
@@ -100,7 +109,7 @@ hybrid_pull_golden_roll_limit_rad: 0.20943951023931953 # 12 deg
 # maximum-extension event.  During regrip it stays at 10 kPa until rotor
 # thrust is zero; only then is the 30-kPa four-arm grasp restored.
 hybrid_lift_rear_release_start_ratio: 0.10 # begin relaxing rear support after 10% of paired Motion-2 extension
-hybrid_lift_rear_pressure_floor_kpa: 0.0
+hybrid_lift_rear_pressure_floor_kpa: 15.0
 # The slip probe and first unloading stroke initialize one signed rear-support
 # coordinate. -1 is release plus positive assist, +1 is pressure support plus
 # reverse assist when pressure is late. Subsequent changes are candidates in
@@ -115,20 +124,18 @@ hybrid_rear_pressure_adaptation_up_step_kpa: 5.0
 hybrid_rear_pressure_adaptation_down_step_kpa: 2.5
 hybrid_rear_pressure_adaptation_roll_limit_rad: 0.20943951023931953 # 12 deg
 hybrid_rear_pressure_adaptation_progress_m: 0.002
+hybrid_slip_preserve_rear_grasp: true # classify sliding without opening the rear anchor
 hybrid_rear_support_probe_sliding: -1.0
-hybrid_rear_support_probe_stable: -0.75 # no sustained slip: release enough for the first unloading test (3.75 kPa with a 0--30-kPa range)
+hybrid_rear_support_probe_stable: 0.0 # no sustained slip: begin Motion 2 at a safe 15-kPa rear hold
 hybrid_rear_support_probe_unstable: 0.25
 # A worsening roll can only increase support. At 4 deg it starts cancelling
 # release; by 10 deg it requests the full pressure/reverse-support end.
 hybrid_rear_support_roll_start_rad: 0.06981317007977318 # 4 deg
 hybrid_rear_support_roll_full_rad: 0.17453292519943295 # 10 deg
-# Motion 2/3 keep the old rear contact compliant; only the explicit outer
-# regrip may restore pressure above this cap. Physical release is verified by
-# the two rear Neuron angles rather than inferred from pressure. The optimizer
-# selects a target inside the 3--5-deg corridor. After a 0.1-s sustained
-# deficit at low measured pressure, a bounded positive rear assist is enabled
-# and is removed as soon as the limiting rear arm reaches the target.
-hybrid_rear_motion_pressure_cap_kpa: 7.5
+# Motion 2 starts from the safe 15-kPa prior. Its measured extension/roll
+# result and the outer candidate search may then use the complete 0--30-kPa
+# range; the pressure is no longer clipped below the optimizer's request.
+hybrid_rear_motion_pressure_cap_kpa: 30.0
 hybrid_rear_release_angle_min_rad: 0.05235987755982989 # 3 deg
 hybrid_rear_release_angle_max_rad: 0.08726646259971647 # 5 deg
 hybrid_rear_release_angle_filter_tau_sec: 0.06
@@ -463,6 +470,9 @@ recovery_wrong_geometry_timeout_sec: 1.5 # reject a pressure-settled pair whose 
 recovery_wrong_geometry_worsening_rad: 0.03490658503988659 # reject 2-deg growth only after pressure settling and rate-response confirmation
 recovery_wrong_geometry_response_confirm_sec: 0.30
 recovery_wrong_geometry_rate_improvement_rad_s: 0.03490658503988659 # 2 deg/s reduction of outward motion is useful response
+recovery_wrong_geometry_transition_confirm_sec: 0.25 # reject a worsening wrong-sign pressure path before a slow exhaust finishes
+recovery_wrong_geometry_transition_worsening_rad: 0.008726646259971648 # require 0.5-deg real growth, not one noisy sample
+recovery_wrong_geometry_transition_outward_rate_rad_s: 0.017453292519943295 # and at least 1 deg/s outward motion
 recovery_circle_max_age_sec: 30.0
 # Delay-aligned local response learning, separately for each correction pair.
 # No learning while pressure/bend change; at least 3 accepted windows to use it.
@@ -960,7 +970,9 @@ hybrid_locomotion_pitch_change_limit_rad: 0.3490658503988659 # 20 deg; deep wind
 # gradually. This avoids exciting roll while returning to the empty-bottom
 # endpoint used for retained-displacement measurement.
 hybrid_regrip_bottom_ramp_kpa_s: 2.5
+hybrid_regrip_roll_recovery_rad: 0.2617993877991494 # 15 deg, after measured four-arm support is restored
 hybrid_regrip_roll_emergency_rad: 0.5235987755982988 # 30 deg
+hybrid_regrip_roll_brake_fall_n_s: 8.0 # fast but ramped Motion-2 abort; ordinary regrip remains 2 N/s
 # Count residual roll only at PREPARE/SETTLE, after measured arm/bottom
 # pressures and roll rate have settled continuously for this interval.
 # No pulse/recoil/inflation history is carried into the 0.3-s confirmation.

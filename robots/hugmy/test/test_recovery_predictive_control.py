@@ -14,6 +14,12 @@ assert 'braking this cycle and replanning from measured contact state' in branch
 assert 'predictive_target,' in branch
 assert 'recovery_response_faults_enabled &&' in branch
 assert 'recovery_wrong_geometry_response_observed_' in branch
+assert 'transition_geometry_worsened' in branch
+assert 'without waiting for target pressure' in branch
+assert 'const bool retained_candidate_worsening =' in branch
+assert 'Recovery candidate lost retained progress:' in branch
+assert 'recovery_selected_path_requires_zero_thrust_' in branch
+assert '? 0.0 : recovery_wrong_sign_shaping_thrust_n_' in branch
 assert 'geometry_authority_limit)' in branch
 assert 'recovery_predictive_.reset();' in source
 assert 'recoveryRotorLever(arms[j],angle)' in branch
