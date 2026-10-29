@@ -459,6 +459,10 @@ recovery_circle_min_signed_lever_m: 0.005
 recovery_circle_pressure_candidates_kpa: [0.0, 10.0, 20.0, 30.0]
 recovery_circle_release_support_scale: 0.05 # deliberately light pressure-share proxy; thrust need remains the primary score
 recovery_wrong_sign_shaping_thrust_n: 0.6 # released pair: extend gently until its measured roll lever becomes restorative
+recovery_wrong_geometry_timeout_sec: 1.5 # reject a pressure-settled pair whose measured lever never becomes restorative
+recovery_wrong_geometry_worsening_rad: 0.03490658503988659 # reject 2-deg growth only after pressure settling and rate-response confirmation
+recovery_wrong_geometry_response_confirm_sec: 0.30
+recovery_wrong_geometry_rate_improvement_rad_s: 0.03490658503988659 # 2 deg/s reduction of outward motion is useful response
 recovery_circle_max_age_sec: 30.0
 # Delay-aligned local response learning, separately for each correction pair.
 # No learning while pressure/bend change; at least 3 accepted windows to use it.
@@ -977,7 +981,7 @@ action_c_pressure_max_deviation_kpa: 8.0
 # Confirmation time is shared
 # with correction_trigger_confirm_sec above, not applied to the rate guard.
 # Progress-timeout waiting uses the same band and a settled gyro.
-action_c_posture_resume_rad: 0.05235987755982989           # resume only after roll returns inside +/-3 deg
+action_c_posture_resume_rad: 0.05235987755982989           # +/-3-deg deadband; do not demand exact zero roll
 action_c_posture_rate_trigger_rad_s: 0.8
 action_c_emergency_stop_roll_rad: 1.5707963267948966 # 90 deg: autonomous retry stops here
 action_c_max_posture_recoveries: 5 # legacy diagnostic only; hybrid C retries until goal/stop/90 deg

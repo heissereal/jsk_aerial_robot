@@ -32,14 +32,18 @@ assert 'crossed_recovery_target' not in branch
 assert 'roll_recovery_response_[correction_axis_[0] > 0.0 ? 0 : 1]' in branch
 assert '(now - state_start_).toSec() >= prepare_timeout_' in branch
 assert 'state_start_ =' not in branch # progress must not restart the overall deadline
-handoff_start = branch.index('!continuous_roll_recovery_.pressureHandoffReady())')
+handoff_start = branch.index('const double pressure_brake_horizon')
 pressure_handoff = branch[handoff_start:
                           branch.index('// The pair sign is fixed by the verified',
                                        handoff_start)]
-assert 'continuous_roll_recovery_.progress_observed &&' in pressure_handoff
+assert 'pneumatic_capture_imminent' in pressure_handoff
+assert 'recovery_predictive_config_.pressure_tau' in pressure_handoff
+assert 'continuous_roll_recovery_.progress_observed ||' in pressure_handoff
 assert 'continuous_roll_recovery_.speed_braking ||' in pressure_handoff
 assert 'continuous_roll_recovery_.predicted_braking' in pressure_handoff
-assert 'thrust <= 0.35' in pressure_handoff
+assert '0.25 * roll_recovery_config_.limit' in pressure_handoff
+assert 'thrust <= pressure_brake_thrust_gate' in pressure_handoff
+assert 'recovery_pressure_brake_started_ = true' in pressure_handoff
 assert 'std::abs(signed_error) <= correction_slowdown_angle_' not in pressure_handoff
 
 code = r'''

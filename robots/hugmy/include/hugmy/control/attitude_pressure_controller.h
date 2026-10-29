@@ -379,6 +379,34 @@ private:
   // While a released pair still has a measured wrong-sign moment arm, use
   // only a small shaping force until pneumatic extension makes it restorative.
   double recovery_wrong_sign_shaping_thrust_n_ = 0.6;
+  // A small shaping command is intentionally below the ordinary rotor
+  // response-identification threshold.  Supervise this geometry separately:
+  // once pressure has reached its candidate state, a lever which remains
+  // non-restoring must be rejected instead of being held until the global
+  // recovery timeout while roll continues to deteriorate.
+  double recovery_wrong_geometry_timeout_sec_ = 1.5;
+  double recovery_wrong_geometry_worsening_rad_ = 2.0 * M_PI / 180.0;
+  // A released pair can keep moving outward for a short time after its
+  // pressure has settled even though the new rotor/contact moment is already
+  // decelerating that motion.  Observe signed rate after the pneumatic
+  // transient before rejecting the candidate from angle growth alone.
+  double recovery_wrong_geometry_response_confirm_sec_ = 0.30;
+  double recovery_wrong_geometry_rate_improvement_rad_s_ =
+      2.0 * M_PI / 180.0;
+  ros::Time recovery_wrong_geometry_since_;
+  ros::Time recovery_wrong_geometry_pressure_settled_since_;
+  double recovery_wrong_geometry_reference_error_rad_ =
+      std::numeric_limits<double>::quiet_NaN();
+  double recovery_wrong_geometry_reference_rate_rad_s_ =
+      std::numeric_limits<double>::quiet_NaN();
+  double recovery_wrong_geometry_best_rate_rad_s_ =
+      -std::numeric_limits<double>::infinity();
+  bool recovery_wrong_geometry_response_observed_ = false;
+  // Once velocity look-ahead starts the minimum pneumatic capture, never
+  // reopen the selected chambers on a later control tick.  Without this
+  // latch, the pre-update release ceiling and post-update brake command
+  // published alternating pressure targets at the controller rate.
+  bool recovery_pressure_brake_started_ = false;
   double recovery_circle_max_age_sec_ = 30.0;
   hugmy::CircularGraspEstimate recovery_circle_estimate_;
   ros::Time recovery_circle_stamp_;

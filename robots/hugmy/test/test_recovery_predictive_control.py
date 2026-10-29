@@ -11,7 +11,9 @@ assert 'if(!config.shadow)' in branch
 assert 'continuous_roll_recovery_.fault=true;' in branch
 assert 'predictive_target = 0.0;' in branch
 assert 'braking this cycle and replanning from measured contact state' in branch
-assert 'predictive_target, recovery_response_faults_enabled,' in branch
+assert 'predictive_target,' in branch
+assert 'recovery_response_faults_enabled &&' in branch
+assert 'recovery_wrong_geometry_response_observed_' in branch
 assert 'geometry_authority_limit)' in branch
 assert 'recovery_predictive_.reset();' in source
 assert 'recoveryRotorLever(arms[j],angle)' in branch

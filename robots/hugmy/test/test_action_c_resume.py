@@ -20,6 +20,12 @@ assert 'recovery_handoff_best_error_rad_ = abs_error;' in source
 assert 'continuous_recovery_retry_opposite_pending_ =\n                      !recovery_candidate_reselect_pending_ &&' in source
 assert 'recovery_rejected_candidate_mask_ |= candidate_bit;' in source
 assert 'recovery_candidate_reselect_pending_ = true;' in source
+assert 'Recovery pair %zu+%zu retained a non-restoring measured lever' in source
+assert 'const bool wrong_geometry_candidate =' in source
+assert 'const bool pressure_settled_timeout =' in source
+assert 'if (pressure_settled_timeout ||\n                      geometry_worsened)' in source
+assert 'Circular recovery alternate candidate:' in source
+assert 'safely selecting model-restoring alternate pair' in source
 assert 'continuous_roll_recovery_.target_crossed' in source
 assert 'opposite-sign selection only if the residual leaves the stop band' in source
 assert 'requested immediate opposite-sign geometry selection' in source
@@ -51,6 +57,7 @@ assert 'pressure_distance_from_best' in source
 assert 'const double terminal_reopen_margin =' in source
 assert 'const bool strict_target_observed_before_regrasp =' in source
 assert 'recovery_handoff_best_error_rad_ <= handoff_settle_error' in source
+assert 'std::min(1.0 * M_PI / 180.0,\n                           roll_recovery_config_.stop_margin)' in source
 assert 'const double active_handoff_settle_error =' in source
 assert 'active_handoff_settle_error + terminal_reopen_margin' in source
 assert 'abs_error >= terminal_reopen_error' in source
@@ -65,6 +72,11 @@ assert '!hybrid_preinflate_measured_' in hybrid_source
 assert 'worsening_residual || pre_stroke_budget_exhausted' in hybrid_source
 assert 'hybrid_single_config_.pre_stroke_roll_limit :' in hybrid_source
 assert 'action_c_requested_recovery_trigger_rad_' in source
+handoff_complete = source[source.index('const bool handoff_settled ='):
+    source.index('// Do not reopen a partly regrasped pair',
+                 source.index('const bool handoff_settled ='))]
+assert 'continuous_recovery_waiting_for_settle_ = false;' in handoff_complete
+assert 'action_c_requested_recovery_trigger_rad_ =\n                          std::numeric_limits<double>::quiet_NaN();' in handoff_complete
 code=r'''
 #include <hugmy/control/continuous_roll_recovery.h>
 #include <hugmy/control/circular_grasp_geometry.h>
