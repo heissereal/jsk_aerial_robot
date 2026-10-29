@@ -116,6 +116,9 @@ void AttitudePressureController::startHybridLocomotion(const ros::Time& now)
   hybrid_terminal_settle_=false;
   hybrid_terminal_retry_=false;hybrid_identification_settle_=false;
   hybrid_regrip_thrust_zero_latched_=false;
+  hybrid_regrip_fast_roll_brake_=false;
+  hybrid_lift_worsening_roll_since_=-1.;
+  hybrid_lift_target_no_unload_since_=-1.;
   hybrid_regrip_complete_latched_=false;
   hybrid_regrip_terminal_rear_lift_requested_=false;
   hybrid_terminal_rear_lift_sign_.fill(0.);
@@ -160,6 +163,9 @@ void AttitudePressureController::resetRecoveryHandoffState()
   recovery_handoff_progress_reference_rad_ =
       std::numeric_limits<double>::infinity();
   recovery_handoff_last_progress_time_ = -1.0;
+  recovery_handoff_candidate_reference_rad_ =
+      std::numeric_limits<double>::infinity();
+  recovery_handoff_candidate_worsening_since_ = -1.0;
   recovery_handoff_braking_ = false;
   // A circle-model recovery may deliberately keep the selected pair flexed
   // and load bearing.  In that mode all four chambers already share support;
@@ -191,6 +197,9 @@ void AttitudePressureController::resetRecoveryHandoffState()
 
 void AttitudePressureController::beginHybridRegrip(const ros::Time& now,bool prediction_limited)
 {
+  hybrid_regrip_fast_roll_brake_=false;
+  hybrid_lift_worsening_roll_since_=-1.;
+  hybrid_lift_target_no_unload_since_=-1.;
   hybrid_regrip_thrust_=inchworm_thrust_;
   // Reverse thrust is a transient pitch/traction input, not a support force.
   // Retaining it through a failed windup or normal regrip left the rear pair
@@ -266,7 +275,7 @@ void AttitudePressureController::beginHybridRegrip(const ros::Time& now,bool pre
 }
 
 void AttitudePressureController::beginHybridTerminalSettle(
-    const ros::Time& now,const char* reason)
+    const ros::Time& now,const char* reason,bool fast_roll_brake)
 {
   if(!hybrid_trial_active_) {
     stopInchwormToGrasp(now,reason);return;
@@ -277,14 +286,25 @@ void AttitudePressureController::beginHybridTerminalSettle(
       std::string(reason).find("identification-only")!=std::string::npos;
   hybrid_terminal_reason_=reason;
   beginHybridRegrip(now,false);
-  hybrid_regrip_bottom_=0.;
+  hybrid_regrip_fast_roll_brake_=fast_roll_brake;
+  // During an emergency Motion-2 handoff, exhausting the bottom at the same
+  // instant as front-thrust rundown and rear regrasp removes three supports
+  // at once.  Retain the measured/commanded bottom support until four arm
+  // chambers have been verified load-bearing; the ordinary regrip state then
+  // exhausts it gradually before endpoint scoring.  Non-emergency terminal
+  // settling keeps the original immediate-deflation behaviour.
+  hybrid_regrip_bottom_=fast_roll_brake ? std::max(
+      hybrid_regrip_bottom_,
+      std::isfinite(bottom_pressure_kpa_) ? bottom_pressure_kpa_ : 0.0) : 0.0;
+  hybrid_regrip_bottom_=std::max(0.0,std::min(
+      hybrid_single_config_.bottom_kpa,hybrid_regrip_bottom_));
   hybrid_inflated_boundary_=false;
-  // Restore grasp and begin bottom exhaust immediately. The usual phase-2
-  // rundown removes thrust without an impulse; scoring waits for a quiet,
-  // deflated mocap window.
+  // Restore grasp immediately. Normal terminal settling begins bottom
+  // exhaust here; the emergency path postpones it until four-arm support is
+  // measured. In both cases scoring waits for a quiet, deflated mocap window.
   inchworm_pressure_=hybrid_grasp_pressure_;
   publishPressureTarget(inchworm_pressure_,std::numeric_limits<double>::infinity());
-  publishBottomTarget(0.);
+  publishBottomTarget(hybrid_regrip_bottom_);
   publishCorrectionThrust(inchworm_thrust_);
   ROS_WARN("Hybrid trajectory ended; waiting for grasp and deflated endpoint before scoring: %s",
       reason);
@@ -590,6 +610,44 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
   const bool roll_rate_limit_confirmed=roll_rate_over_limit &&
       hybrid_roll_rate_limit_since_>=0. &&
       clock-hybrid_roll_rate_limit_since_>=hybrid_roll_rate_confirm_sec_;
+  // Motion-2 extension can create an unrecoverable roll excursion before the
+  // ordinary 15-deg hard guard.  The old guard stopped every sustained trend
+  // as soon as |roll| exceeded 8 deg; the 2026-10-30 real-arm bag therefore
+  // aborted five otherwise slow reaches at 8.9--12.6 deg before Motion 3.
+  // Use 8 deg only to arm a velocity look-ahead.  Restore support when the
+  // outward motion is predicted to cross the independent locomotion roll
+  // limit during the actuator/regrip reaction horizon.  A static bias, a slow
+  // supported gait excursion and a single IMU spike remain permissible.
+  const double lift_predicted_roll=s.roll+
+      hybrid_lift_worsening_roll_prediction_sec_*measured_roll_rate;
+  const bool lift_roll_worsening_sample=hybrid_phase_==1 &&
+      hybrid_single_.phase==SinglePass::Lift &&
+      std::abs(s.roll)>=hybrid_lift_worsening_roll_stop_rad_ &&
+      std::abs(measured_roll_rate)>=
+          hybrid_lift_worsening_roll_rate_rad_s_ &&
+      s.roll*measured_roll_rate>0. &&
+      std::abs(lift_predicted_roll)>=hybrid_config_.roll_limit;
+  if(lift_roll_worsening_sample) {
+    if(hybrid_lift_worsening_roll_since_<0.)
+      hybrid_lift_worsening_roll_since_=clock;
+  } else {
+    hybrid_lift_worsening_roll_since_=-1.;
+  }
+  if(hybrid_lift_worsening_roll_since_>=0. &&
+     clock-hybrid_lift_worsening_roll_since_>=
+         hybrid_lift_worsening_roll_confirm_sec_) {
+    ROS_WARN("Hybrid Motion-2 roll is predicted to cross the safety boundary: measured %.1f deg / %.1f deg/s, %.2f-s prediction %.1f deg (limit %.1f); braking front thrust and restoring four-arm support before recovery",
+        s.roll*180./M_PI,measured_roll_rate*180./M_PI,
+        hybrid_lift_worsening_roll_prediction_sec_,
+        lift_predicted_roll*180./M_PI,
+        hybrid_config_.roll_limit*180./M_PI);
+    hybrid_lift_worsening_roll_since_=-1.;
+    hybrid_roll_rate_limit_since_=-1.;
+    beginHybridTerminalSettle(now,
+        "hybrid sustained worsening roll during lift; fast regrip before recovery",
+        true);
+    return;
+  }
   // Pull has already created the new front support when BOTH front chambers
   // carry pressure and both arms have reversed from extension into flexion.
   // At that point a hard-roll handoff to the shared posture controller is the
@@ -630,7 +688,7 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
   }
   const bool hard_roll_or_rate=std::abs(s.roll)>=hybrid_config_.roll_limit ||
       roll_rate_limit_confirmed;
-  if(hard_roll_or_rate && hybrid_phase_==2) {
+  if(hybrid_phase_==2) {
     // Do not open a correcting pair while rear support is still rebuilding.
     // Once all four chambers are measurably load-bearing and rotor force is
     // off, however, phase 2 is no longer an unsupported transient.  Waiting
@@ -639,14 +697,22 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
     const bool four_arm_support=std::all_of(measured_pressure_.begin(),
         measured_pressure_.end(),[&](double p) {
           return std::isfinite(p) &&
-              p>=hybrid_single_config_.pull_loaded_catch_pressure;
+              p>=(hybrid_regrip_fast_roll_brake_
+                  ? recovery_handoff_min_pressure_kpa_
+                  : hybrid_single_config_.pull_loaded_catch_pressure);
         });
+    const double predicted_regrip_roll = std::abs(
+        s.roll + .30 * measured_roll_rate);
     if(four_arm_support &&
-       std::abs(s.roll)>=hybrid_regrip_roll_emergency_rad_) {
+       (std::abs(s.roll)>=hybrid_regrip_roll_recovery_rad_ ||
+        (hybrid_regrip_fast_roll_brake_ &&
+         predicted_regrip_roll>=hybrid_regrip_roll_recovery_rad_))) {
       hybrid_roll_rate_limit_since_=-1.;
       requestActionCPostureRecovery(now,
-          "hybrid emergency roll during four-arm support transfer");return;
+          "hybrid predicted early roll recovery after four-arm support transfer");return;
     }
+  }
+  if(hard_roll_or_rate && hybrid_phase_==2) {
     ROS_WARN_THROTTLE(1.0,
         "Hybrid support transfer continuing through roll %.1f deg/rate %.1f deg/s; preserving four-arm pressure during bottom exhaust",
         s.roll*180./M_PI,measured_roll_rate*180./M_PI);
@@ -663,7 +729,8 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
     // goal. This guarded interval cannot receive completed-gait credit.
     hybrid_roll_rate_limit_since_=-1.;
     beginHybridTerminalSettle(now,
-        "hybrid lift roll/rate limit; restore four-arm support before recovery");
+        "hybrid lift roll/rate limit; restore four-arm support before recovery",
+        true);
     return;
   }
   if(hard_roll_or_rate && hybrid_phase_!=2) {
@@ -1005,6 +1072,29 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
     command=hybrid_single_.update(input,hybrid_config_,hybrid_single_config_,
         hybrid_planner_.model,geometry,equilibrium);
     s.bottom_command=command.bottom;
+    const bool lift_targets_without_unload=
+        hybrid_single_.phase==SinglePass::Lift &&
+        hybrid_single_.lift_target_reached[0] &&
+        hybrid_single_.lift_target_reached[1] &&
+        !hybrid_single_.unload_event_detected;
+    if(lift_targets_without_unload) {
+      if(hybrid_lift_target_no_unload_since_<0.)
+        hybrid_lift_target_no_unload_since_=clock;
+    } else {
+      hybrid_lift_target_no_unload_since_=-1.;
+    }
+    if(hybrid_lift_target_no_unload_since_>=0. &&
+       clock-hybrid_lift_target_no_unload_since_>=
+           hybrid_lift_target_no_unload_timeout_sec_) {
+      ROS_WARN("Hybrid Motion-2 reached both independent safe bend targets [%.1f %.1f] deg without a measured unloading event for %.2f s; stopping extension thrust and restoring support instead of pushing beyond the planned reach",
+          hybrid_single_.active_bend_target[0]*180./M_PI,
+          hybrid_single_.active_bend_target[1]*180./M_PI,
+          clock-hybrid_lift_target_no_unload_since_);
+      hybrid_lift_target_no_unload_since_=-1.;
+      beginHybridTerminalSettle(now,
+          "hybrid Motion-2 safe bend reached without load relief; regrip and retry");
+      return;
+    }
     if(previous_phase==SinglePass::VentFront && hybrid_single_.phase==SinglePass::Lift)
       hybrid_start_bend_=s.bend;
     if(command.recover_roll) {
@@ -1194,10 +1284,13 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
         std::abs(s.roll+.3*s.roll_rate)>hybrid_single_config_.soft_roll &&
         std::abs(s.roll_rate)>.02 &&
         s.roll*s.roll_rate>0.;
+    const double regrip_thrust_fall=hybrid_regrip_fast_roll_brake_?
+        hybrid_regrip_roll_brake_fall_n_s_:2.;
     if(hybrid_regrip_anchor_phase_==0 &&
        !hybrid_regrip_thrust_zero_latched_)
       for(size_t arm=0;arm<ARM_COUNT;++arm)
-        inchworm_thrust_[arm]=slew(inchworm_thrust_[arm],0.,0.,2.,dt);
+        inchworm_thrust_[arm]=slew(inchworm_thrust_[arm],0.,0.,
+            regrip_thrust_fall,dt);
     // While thrust is being removed, roll feedback may preserve/add only the
     // measured restoring front side, bounded well below the gait limit.  It
     // never causes the rear pressure to jump to full grasp prematurely.
@@ -1224,7 +1317,8 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
       // decayed while rear pressure was still near zero, so roll grew during
       // the very handoff intended to make recovery safe.
       inchworm_thrust_[arms[j]]=slew(transfer_thrust[j],balanced[j],
-          hybrid_single_config_.identification_tracking_rise,2.,dt);
+          hybrid_single_config_.identification_tracking_rise,
+          regrip_thrust_fall,dt);
     // A normal Motion-3 catch may be recognized at a load-bearing pressure
     // below the requested 30-kPa grasp.  The real front anchor reaches its
     // full pressure here, in the outer regrip controller.  Preserve the rear
@@ -1383,7 +1477,8 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
         inchworm_thrust_.end(),[](double value){return std::abs(value)<=.01;});
     if(thrust_off && !terminal_sequence_active)
       hybrid_regrip_thrust_zero_latched_=true;
-    if(!hybrid_regrip_thrust_zero_latched_) {
+    if(!hybrid_regrip_thrust_zero_latched_ &&
+       !hybrid_regrip_fast_roll_brake_) {
       const double rear_hold=terminal_sequence_active?
           hybrid_single_config_.rear_low_kpa:clamp(
               hybrid_single_config_.regrip_rear_hold_pressure,

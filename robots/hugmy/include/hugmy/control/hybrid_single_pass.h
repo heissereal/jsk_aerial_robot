@@ -501,16 +501,21 @@ struct SinglePassConfig {
   double rear_pressure_adaptation_down_step=2.5;
   double rear_pressure_adaptation_roll_limit=.20943951; // 12 deg
   double rear_pressure_adaptation_progress=.002;
+  // The one-off horizontal probe estimates whether whole-body sliding is
+  // useful; it must not simultaneously identify how far the rear anchor can
+  // be released. Keep the rear pair grasped during this diagnostic and let
+  // the following powered Lift identify rear compliance under a real
+  // unloading event.
+  bool slip_preserve_rear_grasp=true;
   double rear_support_probe_sliding=-1.;
-  double rear_support_probe_stable=-.75;
+  double rear_support_probe_stable=0.;
   double rear_support_probe_unstable=.25;
   double rear_support_roll_start=.06981317; // 4 deg
   double rear_support_roll_full=.17453293;  // 10 deg
-  // Motion 2 and Motion 3 intentionally keep the rear pair compliant.  The
-  // outer all-arm regrip is the only normal path which may exceed this cap.
-  // This prevents a soft roll correction from recreating the old rear
-  // contact during the short lift/flex/pull interval.
-  double rear_motion_pressure_cap=7.5;
+  // Motion 2 and Motion 3 may use the complete optimizer-selected pressure
+  // range. Compliance comes from the signed support prior and measured rear
+  // bend loop, not from silently clipping every candidate to 7.5 kPa.
+  double rear_motion_pressure_cap=30.;
   // The signed rear-support coordinate is a feed-forward request.  Close an
   // inner loop around the two measured rear bends so the same pressure means
   // the same physical release on a rigid fixture and on compliant skin.  A
@@ -1108,7 +1113,7 @@ struct SinglePassConfig {
       rear_support_roll_start<rear_support_roll_full &&
       rear_support_roll_full<=rear_pressure_adaptation_roll_limit &&
       rear_motion_pressure_cap>=rear_low_kpa &&
-      rear_motion_pressure_cap<=15. &&
+      rear_motion_pressure_cap<=rear_pressure_adaptation_max &&
       rear_release_angle_min>=.0349066 &&
       rear_release_angle_min<=.0872665 &&
       rear_release_angle_max>=.0349066 &&
@@ -1735,8 +1740,8 @@ class SinglePass {
     return pressureFromSupport(rear_support_command,k);
   }
   // The slip probe gives a coarse prior, not an optimizer reward.  Retained
-  // sliding favours release; a stable but stuck contact keeps a moderate
-  // release for Motion 2; an outward-roll rejection starts on the support
+  // sliding favours release; a stable but stuck contact starts at the neutral
+  // 15-kPa hold for Motion 2; an outward-roll rejection starts on the support
   // side of the coordinate.
   void identifyRearSupportFromSlip(const SinglePassConfig& k) {
     if(!k.rear_pressure_adaptation_enabled) return;
@@ -2086,7 +2091,7 @@ class SinglePass {
     rear_candidate_distinct=selectedRearCandidateDistinct();
     rear_candidate_realized=false;
     rear_candidate_realization_time=0.;
-    pressure_target=in.s.command;initial_x=in.x;rear_time=0.;rear_low=true;
+    pressure_target=in.s.command;initial_x=in.x;rear_time=0.;rear_low=false;
     release_seen=false;slip_measurement_started=false;
     onset_time.fill(0.);onset_this_stroke.fill(false);fast_approach.fill(false);
     ramp=std::max(in.s.thrust[0],in.s.thrust[1]);
@@ -2427,11 +2432,21 @@ class SinglePass {
         }
       }
     } else if(phase==SlipProbe || phase==Slide) {
-      // Only horizontal motion cycles the rear pair. No pressure-ready gate
-      // incorrectly interprets the intentional regrasp as a release fault.
-      rear_time+=dt;
-      if(rear_time>=(rear_low?k.rear_low_seconds:k.rear_grasp_seconds)) {
-        rear_low=!rear_low;rear_time=0.;
+      // The horizontal classifier and rear-support identification are two
+      // different experiments. On a rigid/high-friction cylinder, opening
+      // the rear anchor here can make the robot fall before Motion 2 starts.
+      // The default therefore keeps a full rear grasp throughout the probe;
+      // the subsequent powered Lift varies rear pressure using measured
+      // extension and roll. Retain the legacy cycle only as an explicit
+      // opt-out for low-friction fixtures.
+      if(k.slip_preserve_rear_grasp) {
+        rear_low=false;
+        rear_time=0.;
+      } else {
+        rear_time+=dt;
+        if(rear_time>=(rear_low?k.rear_low_seconds:k.rear_grasp_seconds)) {
+          rear_low=!rear_low;rear_time=0.;
+        }
       }
       // Keep two independent pieces of evidence.  A velocity trace alone can
       // be mocap noise, while net displacement alone can be fixture/hand
@@ -2442,10 +2457,12 @@ class SinglePass {
       // settling.  Reset it exactly once when the rear pair is measurably
       // released, so those passive motions cannot produce a low-thrust
       // "successful" slip such as the 0.26-N event in the real-arm bag.
-      if(!release_seen && in.rear_released) {
+      const bool probe_support_ready=k.slip_preserve_rear_grasp?
+          in.rear_grasped:in.rear_released;
+      if(!release_seen && probe_support_ready) {
         initial_x=in.x;motion_time=0.;stall_time=0.;
       }
-      release_seen=release_seen || in.rear_released;
+      release_seen=release_seen || probe_support_ready;
       const bool deliberate_thrust=
           std::max(s.thrust[0],s.thrust[1])>=k.slip_min_thrust;
       if(release_seen && deliberate_thrust && !slip_measurement_started) {

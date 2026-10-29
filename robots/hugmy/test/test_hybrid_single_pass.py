@@ -164,7 +164,7 @@ int main(){
  bad=k;bad.rear_pressure_adaptation_max=31.;assert(!bad.valid());
  bad=k;bad.rear_pressure_adaptation_roll_limit=.05;assert(!bad.valid());
  bad=k;bad.rear_motion_pressure_cap=-.1;assert(!bad.valid());
- bad=k;bad.rear_motion_pressure_cap=15.1;assert(!bad.valid());
+ bad=k;bad.rear_motion_pressure_cap=30.1;assert(!bad.valid());
  bad=k;bad.rear_release_angle_min=.01;assert(!bad.valid());
  bad=k;bad.rear_release_angle_max=.01;assert(!bad.valid());
  bad=k;bad.rear_release_angle_min=.08;
@@ -605,14 +605,25 @@ int main(){
  assert(anchored_rear.rear_reverse_thrust>=0. &&
         anchored_rear.rear_reverse_thrust<=
             k.trajectory_windup_rear_reverse_max+1e-9);
+ // The production default keeps the rear anchor fully grasped during the
+ // classifier. Rear release is identified by the following powered Lift.
+ SinglePass held_probe;held_probe.begin(in);
+ for(int i=0;i<180 && held_probe.phase==SinglePass::SlipProbe;++i) {
+   const auto held=held_probe.update(in,c,k,model,geom);
+   assert(held.rear_pressure==in.base_pressure);
+   in.s.thrust=held.thrust;in.s.command=held.pressure;in.s.now+=in.dt;
+ }
+ // Retain the old cycle only as an explicit opt-out and cover it separately.
+ k.slip_preserve_rear_grasp=false;
+ in.s.thrust={{0.,0.}};in.s.command={{30.,30.}};in.s.now=0.;
  SinglePass p;p.begin(in);bool high=false,low=false;
  for(int i=0;i<1600 && p.phase==SinglePass::SlipProbe;++i){
    const auto previous=in.s.thrust;auto o=p.update(in,c,k,model,geom);
-   // The slip probe begins released for two seconds, grasps for one second,
-   // then repeats. These samples stay clear of the switching boundaries.
-   if(i==0 || i==80) assert(o.rear_pressure==0.);
-   if(i==110 || i==140) assert(o.rear_pressure==30.);
-   if(i==160) assert(o.rear_pressure==0.);
+   // The explicit legacy mode begins grasped, then repeats the configured
+   // release/grasp cycle. These samples stay clear of the boundaries.
+   if(i==0 || i==40) assert(o.rear_pressure==30.);
+   if(i==80 || i==120) assert(o.rear_pressure==0.);
+   if(i==160) assert(o.rear_pressure==30.);
    high=high || o.rear_pressure==30.;low=low || o.rear_pressure==0.;
    for(int j=0;j<2;++j){assert(o.thrust[j]>=0 && o.thrust[j]<=k.slip_thrust_max+1e-8);assert(o.thrust[j]-previous[j]<=c.thrust_rise*in.dt+1e-8);}
    in.s.thrust=o.thrust;in.s.command=o.pressure;in.s.now+=in.dt;
@@ -2165,7 +2176,7 @@ int main(){
    pressure_roll_in.s.command=roll_shaped.pressure;
  }
  assert(roll_shaped.pressure[0]<roll_shaped.pressure[1]);
- std::cout<<"PASS: one slip/lift pass, cyclic horizontal rear, rear held low through actual front catch, bounded outputs and timeout\n";
+ std::cout<<"PASS: rear-grasped slip classifier, explicit legacy cycle, one lift pass, bounded outputs and timeout\n";
 }
 '''
 with tempfile.TemporaryDirectory(prefix='hugmy_single_pass_') as folder:
