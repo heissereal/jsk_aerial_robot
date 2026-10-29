@@ -412,14 +412,22 @@ action_c_continuous_recovery_enabled: true
 # The configured 0.50 N/s value below caps the sole PI integrator, not an
 # additional constant ramp. Breakaway thrust is logged, never held forever.
 recovery_angle_gain_s_inv: 0.65 # reduce only the final approach rate; far-error rate cap is unchanged
-recovery_max_thrust_n: 5.0 # continuous Action-C posture recovery only; locomotion remains independently capped
+recovery_max_thrust_n: 5.5 # continuous Action-C posture recovery only; locomotion remains independently capped
 recovery_measurement_rate_limit_rad_s: 1.5 # gait hands over at 0.8; recovery still accepts a finite faster roll state
 recovery_target_rate_rad_s: 0.12 # slightly slower than the overshooting 0.14-rad/s real-arm trial
+recovery_prediction_acceleration_limit_rad_s2: 2.0 # bounded stick-slip breakaway term in stopping prediction
+recovery_prediction_acceleration_horizon_sec: 0.20 # do not extrapolate a short breakaway acceleration over the full rundown
 recovery_rate_kp_n_s_rad: 3.0   # avoid reacting to each short gyro spike
 recovery_rate_ki_n_rad: 4.0
 recovery_integral_slew_n_s: 0.5 # reach the measured breakaway thrust sooner after a real stall
 recovery_thrust_rise_n_s: 2.0
 recovery_thrust_fall_n_s: 3.0   # avoid unloading the extended pair as an impulse
+recovery_terminal_brake_fall_n_s: 8.0 # only a predicted target crossing uses the faster latched rundown
+recovery_reapproach_max_thrust_n: 1.5 # after zero-force confirmation, clear I and retry gently
+recovery_reapproach_rate_rad_s: 0.04
+recovery_reapproach_authority_rise_n_s: 0.8 # if the 1.5-N retry remains stuck, recover breakaway authority gradually
+recovery_reapproach_escalation_delay_sec: 0.50
+recovery_response_fault_min_thrust_n: 1.5 # pressure transfer and sub-authority motion are not rotor wrong-way evidence
 recovery_settle_rate_rad_s: 0.05 # do not hand regrasp a body still coasting through the roll target
 recovery_settle_sec: 0.08       # catch/regrip in one pass once actually inside +/-3 deg
 recovery_stop_margin_rad: 0.017453292519943295 # 1 deg tolerance around the 3-deg target
@@ -441,12 +449,16 @@ recovery_circle_max_rms_m: 0.015
 recovery_circle_min_confidence: 0.35 # reject sparse/poor circle fits; use verified fallback instead
 recovery_circle_contact_pressure_kpa: 10.0
 recovery_circle_side_margin_rad: 0.08726646259971647 # 5 deg
+recovery_circle_pair_depth_ambiguity_rad: 0.08726646259971647 # below 5-deg pair separation, use measured roll side
 recovery_circle_small_radius_m: 0.035 # release pressure itself creates appreciable roll below this inferred radius
 recovery_circle_small_radius_capture_margin_factor: 3.0 # start regrasp about 6 deg from target instead of waiting for 3.5 deg
 recovery_circle_small_radius_support_pressure_kpa: 25.0 # keep deep wraps supported while the released pair is bent back
 recovery_circle_flexed_max_error_rad: 0.2617993877991494 # 15 deg; larger corrections transfer support and use the released long-arm geometry
-recovery_circle_release_penalty_n: 0.75
+recovery_circle_release_penalty_n: 0.10 # full 30->0 kPa release penalty; partial release is scaled by pressure drop
 recovery_circle_min_signed_lever_m: 0.005
+recovery_circle_pressure_candidates_kpa: [0.0, 10.0, 20.0, 30.0]
+recovery_circle_release_support_scale: 0.05 # deliberately light pressure-share proxy; thrust need remains the primary score
+recovery_wrong_sign_shaping_thrust_n: 0.6 # released pair: extend gently until its measured roll lever becomes restorative
 recovery_circle_max_age_sec: 30.0
 # Delay-aligned local response learning, separately for each correction pair.
 # No learning while pressure/bend change; at least 3 accepted windows to use it.
@@ -615,6 +627,12 @@ pwm_test_neutral_pwm: 0.75
 pwm_test_max_pwm: 0.975
 pwm_test_voltage: 21.2
 pwm_test_reference_voltage: 21.2
+# Final hardware boundary applied after every gait/recovery/model calculation.
+# Invalid input latches explicit neutral PWM until this node is restarted.
+pwm_test_hard_forward_thrust_n: 6.0
+pwm_test_hard_reverse_thrust_n: 4.4
+pwm_test_output_rise_n_s: 20.0
+pwm_test_output_fall_n_s: 30.0
 # MotorInfo_3D_V has positive thrust below neutral. These are its 21.2 V
 # low-PWM positive and high-PWM negative branches, respectively.
 pwm_test_positive_thrust_below_neutral: true
@@ -910,7 +928,7 @@ action_c_abort_reverse_travel_m: 0.03   # large retreat remains a hard stop
 # Action C uses predictive locomotion only; see doc/hybrid_locomotion.md.
 # Relative gyro integration is anchored by the settled rotor/Neuron bend.
 # Per-arm predictive commands may differ; shared posture recovery is separate.
-action_c_max_thrust_n: 6.0  # locomotion only; recovery remains capped at 4 N
+action_c_max_thrust_n: 6.0  # locomotion only; recovery is independently capped at 5.5 N
 action_c_extension_target_rad: 0.13962634015954636  # 8-deg allowance used by the frozen bend floor
 action_c_max_extension_rad: 0.3490658503988659      # cut if either extends 20 deg
 action_c_max_extension_mismatch_rad: 0.2617993877991494  # maximum relative extension mismatch: 15 deg
@@ -925,6 +943,7 @@ action_c_extension_rate_limit_rad_s: 3.141592653589793  # cut above 180 deg/s ex
 action_c_pre_roll_rate_tolerance_rad_s: 0.17453292519943295  # 10 deg/s
 action_c_prepare_timeout_sec: 20.0
 action_c_posture_recovery_trigger_rad: 0.17453292519943295 # 10 deg
+action_c_preload_recovery_trigger_rad: 0.2617993877991494 # 15 deg during grasp-pressure inflation, symmetric in roll sign
 # Above 10 deg, ordinary recovery requires worsening |roll| AND outward gyro.
 # Stable/improving offsets below the hard limit can continue (either sign).
 action_c_roll_trend_window_sec: 0.5

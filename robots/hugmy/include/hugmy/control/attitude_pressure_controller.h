@@ -89,6 +89,7 @@ private:
   void publishBottomDirection(double direction_scale = 1.0);
   void publishCorrectionThrust(const PressureArray& thrust);
   void publishPwmTest(const PressureArray& thrust);
+  void publishNeutralPwmTest();
   double signedThrustToPwm(double thrust_n) const;
   double pwmModelForce(double pwm, bool reverse) const;
   void publishArmShapeDebug(const PressureArray& current_relative_angle) const;
@@ -355,6 +356,9 @@ private:
   double recovery_circle_min_confidence_ = 0.35;
   double recovery_circle_contact_pressure_kpa_ = 10.0;
   double recovery_circle_side_margin_rad_ = 5.0 * M_PI / 180.0;
+  // If the inferred pair depths are closer than this uncertainty, select the
+  // lower side from measured body roll instead of locking to circle-fit noise.
+  double recovery_circle_pair_depth_ambiguity_rad_ = 5.0 * M_PI / 180.0;
   double recovery_circle_small_radius_m_ = 0.035;
   double recovery_circle_small_radius_capture_margin_factor_ = 3.0;
   double recovery_circle_small_radius_support_pressure_kpa_ = 25.0;
@@ -364,6 +368,17 @@ private:
   double recovery_circle_flexed_max_error_rad_ = 15.0 * M_PI / 180.0;
   double recovery_circle_release_penalty_n_ = 0.75;
   double recovery_circle_min_signed_lever_m_ = 0.005;
+  // Finite pressure choices for the correcting pair.  They turn the old
+  // grasp/release binary decision into a small, mechanically interpretable
+  // search without adding a second online optimizer.
+  std::array<double, 4> recovery_circle_pressure_candidates_kpa_{{
+      0.0, 10.0, 20.0, 30.0}};
+  // Pressure is only a proxy for contact load; this bounded factor maps the
+  // pressure share removed from the lower pair to an equivalent support force.
+  double recovery_circle_release_support_scale_ = 0.20;
+  // While a released pair still has a measured wrong-sign moment arm, use
+  // only a small shaping force until pneumatic extension makes it restorative.
+  double recovery_wrong_sign_shaping_thrust_n_ = 0.6;
   double recovery_circle_max_age_sec_ = 30.0;
   hugmy::CircularGraspEstimate recovery_circle_estimate_;
   ros::Time recovery_circle_stamp_;
@@ -375,9 +390,16 @@ private:
   size_t recovery_preferred_pair_index_ = 0;
   bool recovery_preferred_pair_used_fallback_ = false;
   bool recovery_selected_pair_release_ = true;
+  double recovery_selected_pair_pressure_kpa_ = 0.0;
+  size_t recovery_selected_pressure_candidate_index_ = 0;
   bool recovery_selected_contact_pivot_enabled_ = false;
   double recovery_selected_pair_mean_depth_rad_ =
       std::numeric_limits<double>::quiet_NaN();
+  // Releasing the lower pair removes part of the load-bearing contact force.
+  // Keep that adverse roll moment separate from the rotor lever and scale it
+  // by the measured pressure-release progress in measuredRecoveryModel().
+  double recovery_selected_support_loss_moment_nm_ = 0.0;
+  PressureArray recovery_selected_release_start_pressure_{{0.0, 0.0, 0.0, 0.0}};
   // Candidate failures are directional. A pair/contact state which produced
   // the wrong moment before regrasp may be the restoring candidate after the
   // pressure-induced contact shift carries roll across the target.
@@ -386,11 +408,14 @@ private:
   void updateCircularGraspGeometry(const ros::Time& now);
   PressureArray recoveryReselectionPressure() const;
   PressureArray recoveryMeasuredContactPressure() const;
+  double recoverySelectedPairPressure(size_t arm) const;
   double recoverySupportPressure() const;
   hugmy::RollRecoveryModel measuredRecoveryModel() const;
   Vector3 recoveryContactPivot(
       const std::array<bool, ARM_COUNT>& selected_pair,
-      bool selected_pair_release) const;
+      bool selected_pair_release,
+      const PressureArray* pressure_override = nullptr,
+      const PressureArray* bend_override = nullptr) const;
   double recoveryRotorRawLeverAbout(
       size_t arm, double bend, const Vector3& pivot) const;
   double recoveryRotorRawLever(size_t arm, double bend) const;
@@ -436,6 +461,16 @@ private:
   double pwm_test_max_reverse_thrust_n_, pwm_test_min_pwm_;
   double pwm_test_neutral_pwm_, pwm_test_max_pwm_;
   double pwm_test_voltage_, pwm_test_reference_voltage_;
+  // This is the final actuator boundary.  It is intentionally independent of
+  // gait/model limits so no upstream NaN, stale integral or state transition
+  // can become the 11.2-N MotorInfo calibration edge on hardware.
+  double pwm_test_hard_forward_thrust_n_ = 6.0;
+  double pwm_test_hard_reverse_thrust_n_ = 4.4;
+  double pwm_test_output_rise_n_s_ = 20.0;
+  double pwm_test_output_fall_n_s_ = 30.0;
+  PressureArray pwm_test_safe_thrust_{{0.0, 0.0, 0.0, 0.0}};
+  ros::Time pwm_test_safe_stamp_;
+  bool correction_output_fault_latched_ = false;
   bool pwm_test_positive_thrust_below_neutral_ = true;
   std::array<double, 3> pwm_test_forward_polynomial_{{65.0663776343,
                                                        -14.931187117,
@@ -682,6 +717,9 @@ private:
   double action_c_pre_roll_rate_tolerance_rad_s_;
   double action_c_prepare_timeout_sec_;
   double action_c_posture_recovery_trigger_rad_;
+  // During nominal grasp inflation the contact moment itself is changing.
+  // Begin a sign-symmetric recovery before the ordinary 20-deg hard limit.
+  double action_c_preload_recovery_trigger_rad_ = 15.0 * M_PI / 180.0;
   double action_c_posture_resume_rad_;
   double action_c_posture_rate_trigger_rad_s_;
   double action_c_emergency_stop_roll_rad_ = M_PI / 2.0;

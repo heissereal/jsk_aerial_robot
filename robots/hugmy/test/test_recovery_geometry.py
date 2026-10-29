@@ -18,6 +18,7 @@ def function(name, result):
 
 functions = '\n'.join(function(name, result) for name, result in [
     ('measuredRecoveryModel', 'hugmy::RollRecoveryModel'),
+    ('recoverySelectedPairPressure', 'double'),
     ('recoveryRotorLever', 'double'),
     ('recoveryContactPivot', 'AttitudePressureController::Vector3'),
     ('recoveryRotorRawLeverAbout', 'double'),
@@ -39,6 +40,7 @@ code = r'''
 class AttitudePressureController {
 public:
  using Vector3=std::array<double,3>;
+ using PressureArray=std::array<double,4>;
  static constexpr size_t ARM_COUNT=4;
  hugmy::RollRecoveryConfig roll_recovery_config_;
  bool gravity_compensation_=true;
@@ -48,8 +50,15 @@ public:
  std::array<double,2> correction_axis_{{1.,0.}};
  std::array<bool,4> prepare_arm_active_{{false,false,true,true}};
  bool recovery_selected_pair_release_=true;
+ double recovery_selected_pair_pressure_kpa_=0.;
  bool recovery_selected_contact_pivot_enabled_=true;
  std::array<double,4> measured_pressure_{{10,11,30,31}}, angles{{1.57,1.57,1.57,1.57}};
+ std::array<double,4> grasp_pressure_{{30,30,30,30}};
+ std::array<double,4> recovery_selected_release_start_pressure_{{30,30,30,30}};
+ double recovery_selected_support_loss_moment_nm_=0.;
+ double minimum_prepare_pressure_kpa_=0.,recovery_release_pressure_kpa_=0.;
+ double base_pressure_kpa_=30.,maximum_pressure_kpa_=40.;
+ double recovery_circle_contact_pressure_kpa_=10.;
  std::array<double,4> arm_yaw_{{-3*M_PI/4,-M_PI/4,M_PI/4,3*M_PI/4}};
  std::array<Vector3,4> arm_base_position_{{{{.03812,.03812,-.039}},{{-.03812,.03812,-.039}},
      {{-.03812,-.03812,-.039}},{{.03812,-.03812,-.039}}}};
@@ -63,7 +72,9 @@ public:
  static Vector3 cross(const Vector3&,const Vector3&);
  static double wrapAngle(double);
  hugmy::RollRecoveryModel measuredRecoveryModel()const;
- Vector3 recoveryContactPivot(const std::array<bool,4>&,bool)const;
+ double recoverySelectedPairPressure(size_t)const;
+ Vector3 recoveryContactPivot(const std::array<bool,4>&,bool,
+     const PressureArray* = nullptr,const PressureArray* = nullptr)const;
  double recoveryRotorRawLeverAbout(size_t,double,const Vector3&)const;
  double recoveryRotorRawLever(size_t,double)const;
  double recoveryRotorLever(size_t,double)const;
@@ -92,14 +103,27 @@ int main() {
  assert(m.moment>.0306 && m.moment<.0308); // bag c13: previously 0.415 Nm
  assert(m.moment/.017<1.81); // about 1.80 N, not gravity-saturated 4 N
  c.roll_=-.3;
- // Pressure alone cannot modify geometry/moment; uses actual rotor/Neuron bend.
+ // Pressure does not change the measured bend, but it now moves the estimated
+ // load-weighted CoP. The requested restoring moment itself is unchanged.
  c.measured_pressure_.fill(50);m=c.measuredRecoveryModel();
- assert(m.lever==first.lever && m.moment==first.moment);
+ assert(std::abs(m.lever-first.lever)>1e-6 && m.moment==first.moment);
  c.angles[0]=1.0;m=c.measuredRecoveryModel();assert(std::abs(m.lever-first.lever)>.001);
- c.angles.fill(1.57);c.roll_=.3;c.correction_axis_[0]=-1.;
+ // A larger measured load on one retained contact moves the CoP toward that
+ // contact instead of using the old arithmetic midpoint.
+ c.angles.fill(1.57);c.measured_pressure_={{10.,0.,30.,0.}};
+ const auto weighted=c.recoveryContactPivot(c.prepare_arm_active_,true);
+ c.measured_pressure_={{20.,0.,20.,0.}};
+ const auto equal=c.recoveryContactPivot(c.prepare_arm_active_,true);
+ assert(std::abs(weighted[1]-equal[1])>1e-4 ||
+        std::abs(weighted[2]-equal[2])>1e-4);
+ c.measured_pressure_.fill(30.);c.angles.fill(1.57);
+ c.prepare_arm_active_={{false,false,true,true}};
+ c.correction_axis_[0]=1.;c.roll_=-.3;
+ const auto symmetric_reference=c.measuredRecoveryModel();
+ c.roll_=.3;c.correction_axis_[0]=-1.;
  c.prepare_arm_active_={{true,true,false,false}};
  m=c.measuredRecoveryModel();assert(m.lever>.015);
- assert(std::abs(m.lever-first.lever)<1e-8); // mirrored correcting pair
+ assert(std::abs(m.lever-symmetric_reference.lever)<1e-8); // mirrored correcting pair
  c.prepare_arm_active_={{false,false,true,true}};
  // Signed geometry rejects a pair which would drive away from the target.
  m=c.measuredRecoveryModel();assert(m.lever<0.);

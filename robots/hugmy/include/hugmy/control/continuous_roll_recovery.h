@@ -23,6 +23,14 @@ struct RollRecoveryConfig {
   bool learn_response = true;
   double angle_gain = 0.65; // (rad/s)/rad; gentler final approach near the roll target
   double max_target_rate = 0.12; // rad/s; distinct from emergency limit
+  // Include only bounded, filtered acceleration in stopping prediction so a
+  // stick-slip breakaway is seen before velocity alone reaches the target.
+  double max_prediction_acceleration = 2.0; // rad/s^2
+  // Contact breakaway acceleration is short lived.  Extrapolating it over
+  // the complete rotor-rundown horizon predicted a target crossing while the
+  // body was still more than 20 deg away.  Limit only the acceleration term
+  // to this short horizon; velocity still uses the full rundown time.
+  double prediction_acceleration_horizon = 0.20; // s
   double rate_kp = 4.0, rate_ki = 3.0; // N/(rad/s), N/rad
   double integral_rate = 0.30; // N/s; the ONE integrator's slew ceiling
   double stop = 0.08726646, horizon = 0.20;
@@ -39,8 +47,23 @@ struct RollRecoveryConfig {
   // the nominal 8-deg resume band.
   double contact_minimum_limit = 0.0;
   double limit = 4.0, rise = 1.5, fall = 6.0;
+  // Once stopping-distance prediction requests a terminal brake, keep the
+  // brake latched until rotor force has actually reached zero.  A short gyro
+  // reversal must not re-apply the accumulated PI command during rundown.
+  double terminal_brake_fall = 8.0;
+  // If appreciable roll error remains after the zero-force dwell, approach it
+  // again with freshly reset integral state and deliberately low authority.
+  double reapproach_limit = 1.5, reapproach_rate = 0.04;
+  // Start a post-brake retry gently, but do not hold it below static-friction
+  // breakaway forever.  If retained roll does not improve, grow the retry
+  // authority monotonically toward the ordinary recovery limit.
+  double reapproach_authority_rise = 0.8; // N/s
+  double reapproach_escalation_delay = 0.50; // s
   double fallback_thrust = 0.5, min_lever = 0.015;
   double start_rate = 0.05, detect_thrust = 0.5;
+  // Do not identify a wrong-sign contact response from the pressure-release
+  // transient or before the rotors have meaningful authority.
+  double response_fault_min_thrust = 1.5;
   double confirm_sec = 0.15, confirm_angle = 0.0174533;
   double progress_angle = 0.00872665, stall_sec = 0.50;
   double progress_window = 1.0; // compare averaged ends of the recent window
@@ -84,7 +107,11 @@ struct RollRecoveryResponse {
 struct ContinuousRollRecovery {
   double thrust = 0.0, hold = 0.0, boost = 0.0;
   double target_rate = 0.0, filtered_rate = 0.0, feedforward = 0.0;
+  double filtered_acceleration = 0.0, previous_filtered_rate = 0.0;
   double target_thrust = 0.0, effective_kp = 0.0;
+  double reapproach_authority = 0.0;
+  double reapproach_best_error = std::numeric_limits<double>::infinity();
+  double reapproach_last_improvement = -1.0;
   double braking_horizon = 0.0;
   double best_error = 0.0, last_progress = 0.0, last_update = 0.0;
   double candidate_start = -1.0, candidate_error = 0.0;
@@ -92,9 +119,11 @@ struct ContinuousRollRecovery {
   double stable_since = -1.0, last_learning = -1.0;
   bool moving = false, finished = false, fault = false, stalled = false;
   bool integrating = false, model_valid = false, learned_response = false;
-  bool rate_initialized = false;
+  bool rate_initialized = false, acceleration_initialized = false;
   bool speed_braking = false, predicted_braking = false;
   bool timed_out = false, wrong_way = false, feedforward_initialized = false;
+  bool terminal_brake_latched = false;
+  bool low_authority_reapproach = false;
   // The selected pair can only generate moment in one direction.  Crossing
   // beyond the capture hysteresis therefore requires a fresh pair selection,
   // even if the old rotor command has already reached zero.
@@ -184,6 +213,15 @@ struct ContinuousRollRecovery {
       progress_observed = true;
     }
   }
+  void resetResponseWindow(double error, double now) {
+    progress_history.clear();
+    progress_history.push_back({now, std::abs(error), thrust});
+    recent_progress = recent_thrust_change = 0.0;
+    last_progress = now;
+    candidate_start = -1.0;
+    unresponsive_since = -1.0;
+    retained_reversal_since = -1.0;
+  }
   void observe(double now, const RollRecoveryModel& m, const RollRecoveryConfig& c,
                RollRecoveryResponse& response, bool allow_learning) {
     bool stable = stable_since >= 0.0;
@@ -223,7 +261,10 @@ struct ContinuousRollRecovery {
   double update(double error, double omega, double now, double dt,
                 const RollRecoveryModel& m, const RollRecoveryConfig& c,
                 RollRecoveryResponse& response,
-                double predictive_target = std::numeric_limits<double>::quiet_NaN()) {
+                double predictive_target = std::numeric_limits<double>::quiet_NaN(),
+                bool allow_response_faults = true,
+                double external_authority_limit =
+                    std::numeric_limits<double>::infinity()) {
     integrating = false;
     speed_braking = predicted_braking = false;
     if (fault) return thrust = 0.0;
@@ -231,6 +272,10 @@ struct ContinuousRollRecovery {
         !std::isfinite(dt) || dt < 0.0 || now < last_update || now - last_update > 0.25 ||
         std::abs(omega) >= c.max_rate || !std::isfinite(c.fall) || c.fall <= 0.0 ||
         !std::isfinite(c.max_target_rate) || c.max_target_rate <= 0.0 ||
+        !std::isfinite(c.max_prediction_acceleration) ||
+        c.max_prediction_acceleration <= 0.0 ||
+        !std::isfinite(c.prediction_acceleration_horizon) ||
+        c.prediction_acceleration_horizon <= 0.0 ||
         !std::isfinite(c.progress_window) || c.progress_window <= 0.0 ||
         !std::isfinite(c.progress_angle) || c.progress_angle <= 0.0 ||
         !std::isfinite(c.contact_minimum_limit) ||
@@ -240,11 +285,36 @@ struct ContinuousRollRecovery {
         !std::isfinite(c.pair_retry_sec) || c.pair_retry_sec <= c.stall_sec ||
         !std::isfinite(c.pair_retry_thrust_fraction) ||
         c.pair_retry_thrust_fraction < 0.0 ||
-        c.pair_retry_thrust_fraction > 1.0) {
+        c.pair_retry_thrust_fraction > 1.0 ||
+        !std::isfinite(c.terminal_brake_fall) ||
+        c.terminal_brake_fall < c.fall ||
+        !std::isfinite(c.reapproach_limit) || c.reapproach_limit <= 0.0 ||
+        !std::isfinite(c.reapproach_rate) || c.reapproach_rate <= 0.0 ||
+        !std::isfinite(c.reapproach_authority_rise) ||
+        c.reapproach_authority_rise <= 0.0 ||
+        !std::isfinite(c.reapproach_escalation_delay) ||
+        c.reapproach_escalation_delay < 0.0 ||
+        !std::isfinite(c.response_fault_min_thrust) ||
+        c.response_fault_min_thrust < 0.0 ||
+        std::isnan(external_authority_limit) ||
+        external_authority_limit < 0.0) {
       fault = true; boost = 0.0; return thrust = 0.0;
     }
     dt = std::min(0.1, dt); last_update = now;
-    filtered_rate = rate_initialized ? filtered_rate + dt / (0.08 + dt) * (omega - filtered_rate) : omega;
+    previous_filtered_rate = filtered_rate;
+    filtered_rate = rate_initialized
+        ? filtered_rate + dt / (0.08 + dt) * (omega - filtered_rate)
+        : omega;
+    if (rate_initialized && dt > 1.0e-6) {
+      const double measured_acceleration = recoveryClamp(
+          (filtered_rate - previous_filtered_rate) / dt,
+          -c.max_prediction_acceleration, c.max_prediction_acceleration);
+      filtered_acceleration = acceleration_initialized
+          ? filtered_acceleration + dt / (0.12 + dt) *
+              (measured_acceleration - filtered_acceleration)
+          : measured_acceleration;
+      acceleration_initialized = true;
+    } else filtered_acceleration = 0.0;
     rate_initialized = true;
     if (finished) {
       boost = 0.0;
@@ -394,7 +464,8 @@ struct ContinuousRollRecovery {
     }
     capture_active = false;
     stop_band_since = -1.0;
-    updateProgress(error, now, c);
+    if (allow_response_faults) updateProgress(error, now, c);
+    else resetResponseWindow(error, now);
     if (!moving) {
       // Once thrust has started a plausible body response, allow the
       // confirmation window to finish while predictive braking ramps thrust
@@ -449,20 +520,48 @@ struct ContinuousRollRecovery {
     // least twice that loss. The raised thrust threshold used for inherited
     // motion is temporary; keeping it for the whole retry hid a genuine
     // reversal until the new pair had climbed above 3 N.
-    const double wrong_way_thrust = now <= wrong_way_detection_until
-        ? std::max(c.detect_thrust, wrong_way_detection_thrust)
-        : c.detect_thrust;
+    // A terminal brake is a state, not a one-cycle target override.  The
+    // walk_arm_20261028 trial briefly reversed gyro sign near 6 deg; the old
+    // controller interpreted that as permission to restore a 2.5-N integral
+    // command and then crossed the target.  Run completely to zero, clear the
+    // PI state, and only then permit a bounded re-approach.
+    if (terminal_brake_latched) {
+      target_rate = target_thrust = 0.0;
+      speed_braking = predicted_braking = true;
+      integrating = false;
+      thrust = std::max(0.0, thrust - c.terminal_brake_fall * dt);
+      if (thrust > 0.05) return thrust;
+      thrust = 0.0;
+      boost = 0.0;
+      running_feedforward = 0.0;
+      feedforward_initialized = false;
+      // Positive filtered rate is still carrying the body toward/through the
+      // target.  Keep force at zero until that coast has stopped.  A negative
+      // rate is a residual error growing again and may be corrected at once.
+      if (filtered_rate > c.settle_rate) return thrust;
+      terminal_brake_latched = false;
+      low_authority_reapproach = true;
+      reapproach_authority = std::min(c.limit, c.reapproach_limit);
+      reapproach_best_error = std::abs(error);
+      reapproach_last_improvement = now;
+      resetResponseWindow(error, now);
+    }
+    const double wrong_way_thrust = std::max(
+        c.response_fault_min_thrust,
+        now <= wrong_way_detection_until
+            ? std::max(c.detect_thrust, wrong_way_detection_thrust)
+            : c.detect_thrust);
     const double wrong_way_progress = 2.0 * c.progress_angle;
     const double pair_retry_thrust = std::max(c.detect_thrust,
         recoveryClamp(c.pair_retry_thrust_fraction, 0.0, 1.0) * c.limit);
     const bool correction_authority_not_decreasing =
         recent_thrust_change >= -0.1;
-    wrong_way = wrong_way ||
+    wrong_way = wrong_way || (allow_response_faults &&
         ((moving || progress_observed ||
           filtered_rate <= -0.1 * c.start_rate) &&
          recent_progress <= -wrong_way_progress &&
          correction_authority_not_decreasing &&
-         thrust >= wrong_way_thrust);
+         thrust >= wrong_way_thrust));
     // A changed contact pivot can also create a bounded oscillation rather
     // than a monotonic wrong-way response.  In that case consecutive
     // one-second windows alternate between positive and negative progress,
@@ -471,7 +570,8 @@ struct ContinuousRollRecovery {
     // after one real improvement, require it to recover to within one
     // progress quantum of that best pose.  Only reject after the larger
     // two-quantum loss persists for the full loaded retry dwell.
-    const bool retained_reversal_loaded = progress_observed &&
+    const bool retained_reversal_loaded = allow_response_faults &&
+        progress_observed &&
         std::abs(error) >= best_error + wrong_way_progress &&
         thrust >= pair_retry_thrust;
     if (retained_reversal_loaded && retained_reversal_since < 0.0)
@@ -484,7 +584,7 @@ struct ContinuousRollRecovery {
       wrong_way = true;
     if (wrong_way) timed_out = true;
     stalled = now - last_progress >= c.stall_sec && filtered_rate < c.start_rate;
-    const bool pair_retry_loaded = stalled &&
+    const bool pair_retry_loaded = allow_response_faults && stalled &&
         thrust >= pair_retry_thrust &&
         std::abs(error) > stable_contact_limit;
     if (pair_retry_loaded) {
@@ -520,8 +620,14 @@ struct ContinuousRollRecovery {
     // improving.  Gross raw-rate safety is still enforced independently by
     // the `abs(omega) >= max_rate` fault above.
     const double helpful_rate = std::max(0.0, filtered_rate);
+    const double helpful_acceleration = std::max(0.0,
+        std::min(c.max_prediction_acceleration, filtered_acceleration));
     braking_horizon = c.horizon + std::max(0.0, thrust) / c.fall;
-    const double predicted = error - helpful_rate * braking_horizon;
+    const double acceleration_horizon = std::min(
+        braking_horizon, c.prediction_acceleration_horizon);
+    const double predicted = error - helpful_rate * braking_horizon -
+        0.5 * helpful_acceleration * acceleration_horizon *
+            acceleration_horizon;
     const double remaining = std::max(0.0, error - c.stop);
     // Prediction limits velocity smoothly instead of toggling between full
     // speed and zero at the stop-band edge. The controlled distance is the
@@ -531,8 +637,23 @@ struct ContinuousRollRecovery {
     const double approach_rate = remaining / std::max(0.05, braking_horizon);
     target_rate = std::min(c.max_target_rate,
         std::min(c.angle_gain * remaining, approach_rate));
+    if (low_authority_reapproach)
+      target_rate = std::min(target_rate, c.reapproach_rate);
     speed_braking = helpful_rate > target_rate;
     predicted_braking = predicted <= 0.0;
+    // Static friction can hold several newtons and then release abruptly.
+    // That transition is whole-body motion even before the slower retained-
+    // progress detector has completed its window.  A clearly supercritical
+    // rate under meaningful rotor authority therefore requests the same
+    // latched rundown as the stopping-distance predictor.
+    const bool severe_overspeed = thrust >= c.detect_thrust &&
+        helpful_rate >= std::max(2.0 * target_rate,
+                                 1.5 * c.max_target_rate) &&
+        helpful_rate >= c.start_rate;
+    // Far from the target, an overspeed is a request to reduce thrust, not to
+    // run it all the way to zero.  A full terminal brake is reserved for the
+    // bounded stopping-distance prediction below.
+    speed_braking = speed_braking || severe_overspeed;
     model_valid = m.valid && std::isfinite(m.moment) && std::isfinite(m.lever) && m.lever >= c.min_lever;
     // Blend near the geometry-validity boundary: no 0.5 -> 4 N switch.
     const double confidence = model_valid ? recoveryClamp(
@@ -590,6 +711,34 @@ struct ContinuousRollRecovery {
     target_thrust = recoveryClamp(base + boost, 0.0, c.limit);
     if(std::isfinite(predictive_target))
       target_thrust = recoveryClamp(predictive_target, 0.0, c.limit);
+    if (low_authority_reapproach) {
+      if (reapproach_authority <= 0.0)
+        reapproach_authority = std::min(c.limit, c.reapproach_limit);
+      // This progress clock is deliberately independent of the response-
+      // identification gate.  Pressure and bend are changing during a
+      // retry, so that gate resets its own history every cycle; using the
+      // shared `last_progress` held hardware at 1.5 N for 20--40 seconds.
+      if (!std::isfinite(reapproach_best_error)) {
+        reapproach_best_error = std::abs(error);
+        reapproach_last_improvement = now;
+      }
+      if (reapproach_best_error - std::abs(error) >= c.progress_angle) {
+        reapproach_best_error = std::abs(error);
+        reapproach_last_improvement = now;
+      }
+      const bool retry_stalled =
+          reapproach_last_improvement >= 0.0 &&
+          now - reapproach_last_improvement >=
+              c.reapproach_escalation_delay &&
+          helpful_rate < c.start_rate &&
+          std::abs(error) > stable_contact_limit;
+      if (retry_stalled)
+        reapproach_authority = std::min(c.limit,
+            reapproach_authority + c.reapproach_authority_rise * dt);
+      target_thrust = std::min(target_thrust, reapproach_authority);
+    }
+    if (std::isfinite(external_authority_limit))
+      target_thrust = std::min(target_thrust, external_authority_limit);
     if (speed_braking) {
       // Priority over model FF and retained I, before motion confirms too.
       // Reduce smoothly in proportion to overspeed, not an OFF pulse or an
@@ -598,8 +747,16 @@ struct ContinuousRollRecovery {
       const double speed_cap = std::max(0.0, thrust - c.fall * fraction * dt);
       target_thrust = std::min(target_thrust, speed_cap);
     }
-    // Predictive braking must NOT erase learned contact support. Resetting I
-    // caused re-bend/stall/rebuilding cycles in c14. Finish/fault resets it.
+    // A predicted target crossing latches a complete rundown.  Retain the PI
+    // value during the mechanical rundown for diagnostics, but never use it
+    // again: it is cleared only after zero thrust is confirmed above.
+    if (predicted_braking && thrust >= c.detect_thrust &&
+        helpful_rate >= c.start_rate) {
+      terminal_brake_latched = true;
+      target_thrust = 0.0;
+      thrust = std::max(0.0, thrust - c.terminal_brake_fall * dt);
+      return thrust;
+    }
     if (predicted_braking) target_thrust = 0.0;
     thrust += recoveryClamp(target_thrust - thrust, -c.fall * dt, c.rise * dt);
     return thrust = recoveryClamp(thrust, 0.0, c.limit);

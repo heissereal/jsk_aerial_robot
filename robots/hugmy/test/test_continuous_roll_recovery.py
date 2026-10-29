@@ -6,6 +6,19 @@ import tempfile
 
 root = pathlib.Path(__file__).resolve().parents[1]
 source = (root / 'src/control/attitude_pressure_controller.cpp').read_text()
+output_start = source.index('void AttitudePressureController::publishCorrectionThrust(')
+output_end = source.index('double AttitudePressureController::pwmModelForce(',
+                          output_start)
+output_safety = source[output_start:output_end]
+assert 'std::isfinite(value)' in output_safety
+assert 'correction_output_fault_latched_' in output_safety
+assert 'publishNeutralPwmTest()' in output_safety
+assert 'publishPwmTest(pwm_test_safe_thrust_)' in output_safety
+assert 'pwm_test_hard_forward_thrust_n_' in output_safety
+assert 'pwm_test_output_rise_n_s_' in output_safety
+assert 'publishPwmTest(thrust);' not in output_safety
+assert 'const bool c_preload_roll = continuous_c_recovery &&' in source
+assert 'action_c_preload_recovery_trigger_rad_' in source
 start = source.index('case PREPARE:')
 branch = source[start:source.index('publishCorrectionThrust(fixed_arm_test_enabled_', start)]
 assert 'continuous_roll_recovery_.update(' in branch
@@ -159,7 +172,7 @@ int main() {
   for(int i=1;i<=220 && !retained_reversal.wrong_way;++i) {
     retained_reversal.thrust=4.;
     retained_reversal.update((8.+.2*std::sin(i*.3))*deg,
-        .2*std::sin(i*.3),i*.02,.02,m,cfg,response);
+        0.,i*.02,.02,m,cfg,response);
   }
   assert(retained_reversal.wrong_way && retained_reversal.timed_out);
   ContinuousRollRecovery steady;steady.reset(.5,0.);steady.thrust=2.48;
@@ -191,7 +204,8 @@ int main() {
     const double before=fast.thrust, old_i=fast.boost;
     fast.update(25*deg,rate,.02,.02,m,cfg,response);
     assert(fast.speed_braking && fast.thrust<before);
-    assert(before-fast.thrust<=cfg.fall*.02+1e-10 && fast.boost<=old_i);
+    assert(before-fast.thrust<=cfg.terminal_brake_fall*.02+1e-10 &&
+           fast.boost<=old_i);
     assert(fast.target_thrust<=before && !fast.fault);
   }
   // Include command rundown: at 15 deg and 0.384 rad/s, a fixed 0.2-s
@@ -200,7 +214,27 @@ int main() {
   early.update(15*deg,.384,.02,.02,m,cfg,response);
   assert(15*deg-.384*cfg.horizon>cfg.stop);
   assert(early.predicted_braking && early.target_thrust==0. && early.thrust<3.17);
+  assert(early.terminal_brake_latched); // no retained-progress latch required
   assert(std::abs(early.braking_horizon-(.2+3.17/6.))<1e-9);
+  // A short stick-slip acceleration contributes only over its bounded
+  // forecast horizon.  It may trigger an early terminal brake near the
+  // target, but must not extrapolate over the complete actuator rundown and
+  // stop a correction which is still more than 20 deg away.
+  ContinuousRollRecovery far_acceleration;far_acceleration.reset(23.4*deg,0.);
+  far_acceleration.thrust=3.;far_acceleration.filtered_rate=.08;
+  far_acceleration.rate_initialized=true;
+  far_acceleration.update(23.4*deg,.21,.02,.02,m,cfg,response);
+  assert(far_acceleration.filtered_acceleration>0. &&
+         !far_acceleration.predicted_braking &&
+         !far_acceleration.terminal_brake_latched);
+  ContinuousRollRecovery accelerating;accelerating.reset(8*deg,0.);
+  accelerating.thrust=2.;accelerating.filtered_rate=.08;
+  accelerating.rate_initialized=true;
+  accelerating.update(8*deg,.65,.02,.02,m,cfg,response);
+  assert(accelerating.filtered_acceleration>0. &&
+         accelerating.predicted_braking &&
+         accelerating.terminal_brake_latched && !accelerating.moving &&
+         !accelerating.progress_observed);
   // An invalid down-rate cannot disable braking and leave the motors running.
   RollRecoveryConfig no_brake=cfg;no_brake.fall=0.;
   ContinuousRollRecovery invalid;invalid.reset(.5,0.);invalid.thrust=2.;
@@ -407,7 +441,7 @@ int main() {
   for(;margin_step<70 && !margin.finished;++margin_step)
     margin.update(4.4*deg,0.,margin_step*.02,.02,m,three,response);
   assert(margin.capture_active && margin.finished);
-  retained.update(9*deg,.2,.02,.02,m,three,response);
+  retained.update(9*deg,.15,.02,.02,m,three,response);
   assert(retained.speed_braking && !retained.predicted_braking && retained.boost>1.49);
   assert(retained.thrust>1.9 && retained.thrust<2.1);
   for(int i=2;i<=8 && !retained.predicted_braking;++i)
@@ -477,6 +511,61 @@ int main() {
     braking_candidate.update((7.8-.1*i)*deg,.08,i*.02,.02,m,cfg,response);
   }
   assert(braking_candidate.moving);
+  // Once stopping-distance prediction starts a terminal brake, a brief rate
+  // reversal cannot restore the old integral command.  Force must reach zero
+  // first, after which any remaining error uses a bounded fresh approach.
+  ContinuousRollRecovery latched_brake;latched_brake.reset(20*deg,0.);
+  latched_brake.progress_observed=true;latched_brake.moving=true;
+  latched_brake.thrust=3.;latched_brake.boost=2.5;
+  latched_brake.filtered_rate=.30;latched_brake.rate_initialized=true;
+  latched_brake.update(12*deg,.30,.02,.02,m,cfg,response);
+  assert(latched_brake.terminal_brake_latched &&
+         latched_brake.thrust<3. && latched_brake.boost>2.49);
+  double brake_last=latched_brake.thrust;
+  for(int i=2;i<=30 && latched_brake.terminal_brake_latched;++i) {
+    const double v=latched_brake.update(11*deg,-.02,i*.02,.02,m,cfg,response);
+    assert(v<=brake_last+1e-12);brake_last=v;
+  }
+  assert(!latched_brake.terminal_brake_latched &&
+         latched_brake.low_authority_reapproach &&
+         latched_brake.thrust<=cfg.reapproach_limit &&
+         latched_brake.target_thrust<=cfg.reapproach_limit &&
+         latched_brake.boost<.02);
+  // The gentle retry is an initial bound, not a permanent 1.5-N ceiling.
+  // If retained roll does not improve, restore breakaway authority smoothly;
+  // the normal rate/prediction guards remain active once motion resumes.
+  const double retry_start=latched_brake.last_update;
+  for(int i=1;i<=100;++i)
+    latched_brake.update(11*deg,0.,retry_start+i*.02,.02,m,cfg,response,
+                         std::numeric_limits<double>::quiet_NaN(),false);
+  assert(latched_brake.reapproach_authority>cfg.reapproach_limit+.5 &&
+         latched_brake.thrust>cfg.reapproach_limit &&
+         latched_brake.thrust<=latched_brake.reapproach_authority+1e-9);
+  // A released pair whose currently measured moment arm still has the wrong
+  // sign receives shaping force only.  The cap is removed by the caller once
+  // measured geometry—not merely the predicted final bend—is restorative.
+  ContinuousRollRecovery geometry_gate;geometry_gate.reset(20*deg,0.);
+  for(int i=1;i<=200;++i)
+    geometry_gate.update(20*deg,0.,i*.02,.02,m,cfg,response,
+                         std::numeric_limits<double>::quiet_NaN(),false,.6);
+  assert(geometry_gate.thrust<=.600001 &&
+         geometry_gate.target_thrust<=.600001);
+  // Pressure-release support transfer is not evidence about rotor moment
+  // sign. Clear the response window while the caller keeps the gate closed;
+  // after pressure settles, the same loaded sustained response is detected.
+  ContinuousRollRecovery release_gate;release_gate.reset(15*deg,0.);
+  for(int i=1;i<=80;++i) {
+    release_gate.thrust=2.;
+    release_gate.update((15.+.04*i)*deg,-.04,i*.02,.02,m,cfg,response,
+                        std::numeric_limits<double>::quiet_NaN(),false);
+  }
+  assert(!release_gate.wrong_way && !release_gate.unresponsive);
+  for(int i=81;i<=170 && !release_gate.wrong_way;++i) {
+    release_gate.thrust=2.;
+    release_gate.update((15.+.04*i)*deg,-.04,i*.02,.02,m,cfg,response,
+                        std::numeric_limits<double>::quiet_NaN(),true);
+  }
+  assert(release_gate.wrong_way);
   puts("PASS: model FF, signed rate PI, overspeed priority despite saturated FF/I, rundown prediction, 4N/slew limits, faults and learning gates");
 }
 '''

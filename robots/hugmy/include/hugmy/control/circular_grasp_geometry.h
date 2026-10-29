@@ -62,7 +62,8 @@ inline CircularRecoveryPairChoice chooseCircularRecoveryPair(
     const std::array<double, 4>& depth_angle,
     const std::array<double, 4>& downward_projection,
     int roll_lower_pair,
-    double side_angle = 0.5 * 3.14159265358979323846) {
+    double side_angle = 0.5 * 3.14159265358979323846,
+    double pair_depth_ambiguity = 0.0) {
   CircularRecoveryPairChoice choice;
   const std::array<std::array<size_t, 2>, 2> pairs{{
       std::array<size_t, 2>{{0, 1}},
@@ -84,6 +85,22 @@ inline CircularRecoveryPairChoice chooseCircularRecoveryPair(
   const bool depth0 = std::isfinite(choice.pair_depth[0]);
   const bool depth1 = std::isfinite(choice.pair_depth[1]);
   if (depth0 && depth1) {
+    // A sub-degree depth difference is smaller than the uncertainty of the
+    // Neuron-angle/circle reconstruction on the real arm.  Treating it as a
+    // hard topological decision selected pair 0+1 at +21-deg roll although
+    // both the measured roll and the signed moment required pair 2+3.  In an
+    // ambiguous geometry, the measured body roll is the independent and
+    // better-conditioned observation of which side is lower.
+    const bool ambiguous = std::isfinite(pair_depth_ambiguity) &&
+        pair_depth_ambiguity > 0.0 &&
+        std::abs(choice.pair_depth[0] - choice.pair_depth[1]) <
+            pair_depth_ambiguity;
+    if (ambiguous && (roll_lower_pair == 0 || roll_lower_pair == 1)) {
+      choice.pair_index = static_cast<size_t>(roll_lower_pair);
+      choice.valid = true;
+      choice.used_gravity_or_roll_fallback = true;
+      return choice;
+    }
     const bool below0 = choice.pair_depth[0] >= side_angle;
     const bool below1 = choice.pair_depth[1] >= side_angle;
     if (below0 != below1)

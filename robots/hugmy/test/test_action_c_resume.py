@@ -84,6 +84,7 @@ class AttitudePressureController {
 public:
  static constexpr size_t ARM_COUNT=4;
  using Vector3=std::array<double,3>;
+ using PressureArray=std::array<double,4>;
  bool action_c_resume_pending_=true, hybrid_trial_active_=true;
  bool mocap_received_=true, action_c_preserve_adaptation_on_start_=false;
  bool active=false;
@@ -109,9 +110,12 @@ public:
  ros::Time state_start_{0};double prepare_timeout_=60.;
  double action_c_requested_recovery_trigger_rad_=NAN;
  std::array<double,4> prepare_shape_thrust_{{2.,2.,2.,2.}}, grasp_pressure_{{30.,30.,30.,30.}};
+ std::array<double,4> measured_pressure_{{30.,30.,30.,30.}};
+ std::array<double,4> recovery_selected_release_start_pressure_{{30.,30.,30.,30.}};
  std::array<double,4> angles{{M_PI/2,M_PI/2,M_PI/2,M_PI/2}};
  std::array<double,4> recovery_handoff_target_pressure_{};
  double recovery_handoff_min_pressure_kpa_=15.,base_pressure_kpa_=30.,maximum_pressure_kpa_=40.;
+ double minimum_prepare_pressure_kpa_=0.,mass_kg_=1.244;
  int publications=0, state=0;enum {RECOVER=1};
  void publishCorrectionThrust(const std::array<double,4>& t) {
    for(double v:t) assert(v==0.);++publications;
@@ -133,12 +137,19 @@ public:
  std::array<bool,4> prepare_arm_active_{};
  bool correction_pair_reverse_spinal_mapping_=false;
  bool recovery_circle_selection_enabled_=false,recovery_selected_pair_release_=true;
+ double recovery_selected_pair_pressure_kpa_=0.;
+ size_t recovery_selected_pressure_candidate_index_=0;
  bool recovery_selected_contact_pivot_enabled_=false;
  double recovery_selected_pair_mean_depth_rad_=NAN;
  double recovery_circle_min_confidence_=.35,recovery_circle_max_age_sec_=30.;
  double recovery_circle_side_margin_rad_=5*M_PI/180.;
+ double recovery_circle_pair_depth_ambiguity_rad_=5*M_PI/180.;
  double recovery_circle_flexed_max_error_rad_=15*M_PI/180.;
+ double recovery_circle_contact_pressure_kpa_=10.;
  double recovery_circle_release_penalty_n_=.75,recovery_circle_min_signed_lever_m_=.005;
+ std::array<double,4> recovery_circle_pressure_candidates_kpa_{{0.,10.,20.,30.}};
+ double recovery_circle_release_support_scale_=.20;
+ double recovery_selected_support_loss_moment_nm_=0.;
  double roll_moment_kp_=.1,target_roll_=0.,roll_=-.2;
  Vector3 gravity_body_{{0.,0.,-9.81}};
  double recovery_release_pressure_kpa_=0.,correction_planning_thrust_n_=2.,bend_model_thrust_offset_n_=1.8;
@@ -159,7 +170,9 @@ public:
  Vector3 armContactPointFromAngle(size_t arm,double bend)const{
    return {{0.,arm<2?.04:-.04,-.07-.01*std::sin(bend)}};
  }
- Vector3 recoveryContactPivot(const std::array<bool,4>&,bool)const{
+ Vector3 recoveryContactPivot(const std::array<bool,4>&,bool,
+                              const PressureArray* = nullptr,
+                              const PressureArray* = nullptr)const{
    return {{0.,0.,-.07}};
  }
  double recoveryRotorRawLeverAbout(size_t arm,double bend,const Vector3&)const{
@@ -168,6 +181,8 @@ public:
  double recoveryRotorRawLever(size_t arm,double bend)const{
    return recoveryRotorRawLeverAbout(arm,bend,{{0.,0.,-.07}});
  }
+ static Vector3 cross(const Vector3&a,const Vector3&b){return {{
+   a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]}};}
  bool hybridResumeAllowed(const ros::Time&) {return true;} // deadline tested separately
  void finishHybridRecovery(const ros::Time& now) {finishHybridLocomotion(now,false,true);}
  void resetRecoveryHandoffState() {}
@@ -207,17 +222,19 @@ int main() {
  circle.recovery_circle_stamp_={9.9};
  circle.select(.2);
  assert(circle.prepare_arm_active_[0] && circle.prepare_arm_active_[1]);
- assert(!circle.recovery_selected_pair_release_);
- // Reject only the measured flexed 0+1 contact state. Re-selection keeps
- // the geometrically correct pair but changes it to released/extended.
- circle.recovery_rejected_candidate_mask_=1u;
+ const size_t first_pressure=circle.recovery_selected_pressure_candidate_index_;
+ assert(first_pressure<4);
+ // Reject only the selected 0+1 pressure state. Re-selection keeps the
+ // geometrically correct pair but tries another of 0/10/20/30 kPa.
+ circle.recovery_rejected_candidate_mask_=static_cast<unsigned char>(
+     1u<<first_pressure);
  circle.select(.2);
  assert(circle.recovery_pair_selection_available_);
  assert(circle.prepare_arm_active_[0] && circle.prepare_arm_active_[1]);
- assert(circle.recovery_selected_pair_release_);
- // Once both usable 0+1 states are disproved, this synthetic geometry has no
+ assert(circle.recovery_selected_pressure_candidate_index_!=first_pressure);
+ // Once all four 0+1 pressure states are disproved, this synthetic geometry has no
  // signed restoring 2+3 candidate and must refuse the fixed-map fallback.
- circle.recovery_rejected_candidate_mask_=3u;
+ circle.recovery_rejected_candidate_mask_=0x0fu;
  circle.select(.2);
  assert(!circle.recovery_pair_selection_available_);
  circle.recovery_rejected_candidate_mask_=0;

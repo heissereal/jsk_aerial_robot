@@ -48,6 +48,14 @@ int main() {
       {{70*pi/180,72*pi/180,80*pi/180,82*pi/180}},
       no_projection,0);
   assert(choice.valid && choice.pair_index==1);
+  // Nearly equal reconstructed depths are not enough to override the
+  // independently measured body-roll side. This reproduces the +21-deg
+  // hardware case which had only a 0.8-deg pair-depth separation.
+  choice=hugmy::chooseCircularRecoveryPair(
+      {{69.4*pi/180,69.6*pi/180,68.6*pi/180,68.8*pi/180}},
+      no_projection,1,0.5*pi,5*pi/180);
+  assert(choice.valid && choice.pair_index==1 &&
+         choice.used_gravity_or_roll_fallback);
   // Both below the side: keep the deeper pair as anchor and actuate the
   // shallower pair.
   choice=hugmy::chooseCircularRecoveryPair(
