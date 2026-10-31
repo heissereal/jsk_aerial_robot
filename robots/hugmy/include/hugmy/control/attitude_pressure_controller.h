@@ -744,7 +744,16 @@ private:
   double hybrid_lift_target_no_unload_since_ = -1.0;
   double hybrid_regrip_roll_recovery_rad_ = 15.0 * M_PI / 180.0;
   double hybrid_regrip_roll_brake_fall_n_s_ = 8.0;
+  double hybrid_regrip_roll_brake_thrust_max_n_ = 1.5;
   bool hybrid_regrip_fast_roll_brake_ = false;
+  // During a fast Motion-2 abort, preview the geometry-aware recovery pair.
+  // Only its opposite pair must become a load-bearing anchor before the
+  // shared recovery controller takes ownership; the selected pair will be
+  // depressurised again immediately and need not first reach full grasp.
+  bool hybrid_recovery_pair_preview_valid_ = false;
+  size_t hybrid_recovery_pair_preview_index_ = 0;
+  int hybrid_recovery_pair_preview_direction_ = 0;
+  double hybrid_recovery_pair_preview_last_attempt_ = -1.0;
   bool hybrid_regrip_complete_latched_=false;
   // A normal stroke may hand control to the outer regrip before the newly
   // placed front chambers physically reach their full-pressure anchor.  Keep

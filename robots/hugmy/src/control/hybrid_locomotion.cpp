@@ -117,6 +117,9 @@ void AttitudePressureController::startHybridLocomotion(const ros::Time& now)
   hybrid_terminal_retry_=false;hybrid_identification_settle_=false;
   hybrid_regrip_thrust_zero_latched_=false;
   hybrid_regrip_fast_roll_brake_=false;
+  hybrid_recovery_pair_preview_valid_=false;
+  hybrid_recovery_pair_preview_direction_=0;
+  hybrid_recovery_pair_preview_last_attempt_=-1.;
   hybrid_lift_worsening_roll_since_=-1.;
   hybrid_lift_target_no_unload_since_=-1.;
   hybrid_regrip_complete_latched_=false;
@@ -198,6 +201,9 @@ void AttitudePressureController::resetRecoveryHandoffState()
 void AttitudePressureController::beginHybridRegrip(const ros::Time& now,bool prediction_limited)
 {
   hybrid_regrip_fast_roll_brake_=false;
+  hybrid_recovery_pair_preview_valid_=false;
+  hybrid_recovery_pair_preview_direction_=0;
+  hybrid_recovery_pair_preview_last_attempt_=-1.;
   hybrid_lift_worsening_roll_since_=-1.;
   hybrid_lift_target_no_unload_since_=-1.;
   hybrid_regrip_thrust_=inchworm_thrust_;
@@ -689,27 +695,75 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
   const bool hard_roll_or_rate=std::abs(s.roll)>=hybrid_config_.roll_limit ||
       roll_rate_limit_confirmed;
   if(hybrid_phase_==2) {
-    // Do not open a correcting pair while rear support is still rebuilding.
-    // Once all four chambers are measurably load-bearing and rotor force is
-    // off, however, phase 2 is no longer an unsupported transient.  Waiting
-    // for the full endpoint-settle sequence let a -20-deg residual grow past
-    // -30 deg before recovery could own the actuators.
-    const bool four_arm_support=std::all_of(measured_pressure_.begin(),
-        measured_pressure_.end(),[&](double p) {
-          return std::isfinite(p) &&
-              p>=(hybrid_regrip_fast_roll_brake_
-                  ? recovery_handoff_min_pressure_kpa_
-                  : hybrid_single_config_.pull_loaded_catch_pressure);
-        });
+    // A recovery event releases or softens one of the two circumferential
+    // arm pairs (0+1 or 2+3).  Requiring that very pair to reach 15 kPa before
+    // immediately venting it again added a full pneumatic delay.  Preview the
+    // same geometry-aware pair selector used by shared recovery and wait only
+    // for the opposite, load-bearing anchor pair.  While that anchor fills,
+    // the bounded transfer controller below is allowed to brake worsening
+    // roll, so pressure restoration and posture braking proceed in parallel.
     const double predicted_regrip_roll = std::abs(
         s.roll + .30 * measured_roll_rate);
-    if(four_arm_support &&
-       (std::abs(s.roll)>=hybrid_regrip_roll_recovery_rad_ ||
+    const bool recovery_demand=
+        std::abs(s.roll)>=hybrid_regrip_roll_recovery_rad_ ||
         (hybrid_regrip_fast_roll_brake_ &&
-         predicted_regrip_roll>=hybrid_regrip_roll_recovery_rad_))) {
+         predicted_regrip_roll>=hybrid_regrip_roll_recovery_rad_);
+    const int recovery_direction=s.roll>=0. ? 1 : -1;
+    if(recovery_demand &&
+       (!hybrid_recovery_pair_preview_valid_ ||
+        hybrid_recovery_pair_preview_direction_!=recovery_direction) &&
+       (hybrid_recovery_pair_preview_last_attempt_<0. ||
+        clock-hybrid_recovery_pair_preview_last_attempt_>=.25)) {
+      hybrid_recovery_pair_preview_last_attempt_=clock;
+      hybrid_recovery_pair_preview_valid_=false;
+      hybrid_recovery_pair_preview_direction_=recovery_direction;
+      recovery_rejected_candidate_mask_=0;
+      recovery_rejected_direction_sign_=0;
+      recovery_circle_event_locked_=false;
+      recovery_preferred_pair_locked_=false;
+      continuous_recovery_use_opposite_pair_=false;
+      correction_axis_={{s.roll>=0. ? 1. : -1.,0.}};
+      selectContinuousRecoveryPair(s.roll);
+      if(recovery_pair_selection_available_) {
+        hybrid_recovery_pair_preview_valid_=true;
+        hybrid_recovery_pair_preview_index_=recovery_selected_pair_index_;
+      }
+    }
+    bool anchor_pair_ready=false;
+    if(hybrid_recovery_pair_preview_valid_) {
+      static const std::array<std::array<size_t,2>,2> recovery_pairs{{
+          {{0,1}},{{2,3}}}};
+      const size_t anchor_pair=1-hybrid_recovery_pair_preview_index_;
+      anchor_pair_ready=std::all_of(
+          recovery_pairs[anchor_pair].begin(),
+          recovery_pairs[anchor_pair].end(),[&](size_t arm) {
+            return std::isfinite(measured_pressure_[arm]) &&
+                measured_pressure_[arm]>=recovery_handoff_min_pressure_kpa_;
+          });
+      if(!anchor_pair_ready)
+        ROS_WARN_THROTTLE(0.5,
+            "Hybrid recovery overlap: braking roll while anchor pair %zu+%zu builds support [%.1f %.1f] / %.1f kPa; selected recovery pair %zu+%zu is not awaited",
+            recovery_pairs[anchor_pair][0],recovery_pairs[anchor_pair][1],
+            measured_pressure_[recovery_pairs[anchor_pair][0]],
+            measured_pressure_[recovery_pairs[anchor_pair][1]],
+            recovery_handoff_min_pressure_kpa_,
+            recovery_pairs[hybrid_recovery_pair_preview_index_][0],
+            recovery_pairs[hybrid_recovery_pair_preview_index_][1]);
+    }
+    const bool four_arm_fallback=std::all_of(measured_pressure_.begin(),
+        measured_pressure_.end(),[&](double p) {
+          return std::isfinite(p) &&
+              p>=recovery_handoff_min_pressure_kpa_;
+        });
+    if(recovery_demand &&
+       (anchor_pair_ready ||
+        (!hybrid_recovery_pair_preview_valid_ && four_arm_fallback))) {
       hybrid_roll_rate_limit_since_=-1.;
       requestActionCPostureRecovery(now,
-          "hybrid predicted early roll recovery after four-arm support transfer");return;
+          anchor_pair_ready ?
+              "hybrid early roll recovery after two-arm anchor support" :
+              "hybrid early roll recovery after four-arm fallback support");
+      return;
     }
   }
   if(hard_roll_or_rate && hybrid_phase_==2) {
@@ -1303,10 +1357,14 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
         std::abs(s.roll_rate)>.05;
     const Pair verified_transfer_moment=verifiedPairRollMoments(
         transfer_moment,hybrid_single_config_.reverse_geometry_roll_moment);
+    const bool overlap_brake_enabled=!hybrid_terminal_settle_ ||
+        hybrid_regrip_fast_roll_brake_;
     const Pair balanced=!hybrid_regrip_thrust_zero_latched_ &&
-        transfer_roll_worsening && !hybrid_terminal_settle_?
+        transfer_roll_worsening && overlap_brake_enabled?
         addRestoringRollSupport(transfer_thrust,verified_transfer_moment,
-            s.roll,s.roll_rate,std::min(2.,hybrid_config_.thrust_max)):
+            s.roll,s.roll_rate,std::min(
+                hybrid_regrip_roll_brake_thrust_max_n_,
+                hybrid_config_.thrust_max)):
         (!hybrid_regrip_thrust_zero_latched_ && transfer_roll_worsening?
             reduceAdverseRoll(transfer_thrust,verified_transfer_moment,
                 s.roll,s.roll_rate):transfer_thrust);

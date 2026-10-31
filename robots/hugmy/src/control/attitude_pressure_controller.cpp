@@ -76,6 +76,8 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
              hybrid_regrip_roll_emergency_rad_, 30.0 * M_PI / 180.0);
   pnh_.param("hybrid_regrip_roll_brake_fall_n_s",
              hybrid_regrip_roll_brake_fall_n_s_, 8.0);
+  pnh_.param("hybrid_regrip_roll_brake_thrust_max_n",
+             hybrid_regrip_roll_brake_thrust_max_n_, 1.5);
   pnh_.param("hybrid_keep_bottom_between_strokes",
              hybrid_keep_bottom_between_strokes_, false);
   if (!std::isfinite(hybrid_regrip_bottom_ramp_kpa_s_) ||
@@ -87,6 +89,7 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       !std::isfinite(hybrid_regrip_roll_recovery_rad_) ||
       !std::isfinite(hybrid_regrip_roll_emergency_rad_) ||
       !std::isfinite(hybrid_regrip_roll_brake_fall_n_s_) ||
+      !std::isfinite(hybrid_regrip_roll_brake_thrust_max_n_) ||
       hybrid_regrip_bottom_ramp_kpa_s_ <= 0.0 ||
       hybrid_lift_worsening_roll_stop_rad_ <= 0.0 ||
       hybrid_lift_worsening_roll_rate_rad_s_ < 0.0 ||
@@ -101,7 +104,9 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       hybrid_regrip_roll_emergency_rad_ <
           hybrid_regrip_roll_recovery_rad_ ||
       hybrid_regrip_roll_brake_fall_n_s_ < 2.0 ||
-      hybrid_regrip_roll_brake_fall_n_s_ > 30.0)
+      hybrid_regrip_roll_brake_fall_n_s_ > 30.0 ||
+      hybrid_regrip_roll_brake_thrust_max_n_ <= 0.0 ||
+      hybrid_regrip_roll_brake_thrust_max_n_ > 3.0)
     throw std::runtime_error("invalid hybrid regrip transfer parameters");
   pnh_.param("allocation_iterations", allocation_iterations_, 6);
   pnh_.param("allocation_damping", allocation_damping_, 1e-5);
@@ -2578,6 +2583,58 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                               "no restoring recovery pair after balanced-support geometry re-estimation");
                         }
                       break;
+                    }
+                  // Hybrid locomotion may hand recovery ownership over as
+                  // soon as the opposite two-arm anchor reaches the measured
+                  // support floor.  Recheck that condition after the shared
+                  // controller performs its own geometry selection: if its
+                  // selected pair differs from the preview, keep all four
+                  // chambers filling in GRASP instead of releasing the only
+                  // established anchor.  Full 30-kPa grasp is not required.
+                  if (hybridLocomotionActive() && action_c_resume_pending_)
+                    {
+                      static const std::array<std::array<size_t, 2>, 2>
+                          recovery_pairs{{{{0, 1}}, {{2, 3}}}};
+                      const size_t anchor_pair =
+                          1 - recovery_selected_pair_index_;
+                      const bool anchor_ready = std::all_of(
+                          recovery_pairs[anchor_pair].begin(),
+                          recovery_pairs[anchor_pair].end(),
+                          [&](size_t arm) {
+                            return std::isfinite(measured_pressure_[arm]) &&
+                                measured_pressure_[arm] >=
+                                    recovery_handoff_min_pressure_kpa_;
+                          });
+                      if (!anchor_ready)
+                        {
+                          continuous_recovery_started_ = false;
+                          prepare_arm_active_.fill(false);
+                          prepare_shape_thrust_.fill(0.0);
+                          for (size_t arm = 0; arm < ARM_COUNT; ++arm)
+                            prepare_pressure_[arm] = std::min(
+                                maximum_pressure_kpa_,
+                                std::max(base_pressure_kpa_,
+                                         grasp_pressure_[arm]));
+                          publishCorrectionThrust(prepare_shape_thrust_);
+                          publishPressureTarget(
+                              prepare_pressure_,
+                              std::numeric_limits<double>::infinity());
+                          enterState(GRASP, now);
+                          ROS_WARN_THROTTLE(0.5,
+                              "Shared recovery waiting only for anchor pair %zu+%zu [%.1f %.1f] / %.1f kPa after geometry re-selection; selected pair %zu+%zu remains free to release",
+                              recovery_pairs[anchor_pair][0],
+                              recovery_pairs[anchor_pair][1],
+                              measured_pressure_[
+                                  recovery_pairs[anchor_pair][0]],
+                              measured_pressure_[
+                                  recovery_pairs[anchor_pair][1]],
+                              recovery_handoff_min_pressure_kpa_,
+                              recovery_pairs[
+                                  recovery_selected_pair_index_][0],
+                              recovery_pairs[
+                                  recovery_selected_pair_index_][1]);
+                          break;
+                        }
                     }
                   continuous_roll_recovery_.reset(attitude_error, now.toSec());
                   recovery_wrong_geometry_since_ = ros::Time(0);

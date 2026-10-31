@@ -16,6 +16,9 @@ assert 'transfer_roll_worsening?' in transfer
 assert 'slew(transfer_thrust[j],balanced[j],' in transfer
 assert 'const double regrip_thrust_fall=hybrid_regrip_fast_roll_brake_?' in transfer
 assert 'hybrid_regrip_roll_brake_fall_n_s_:2.;' in transfer
+assert 'hybrid_regrip_roll_brake_thrust_max_n_' in transfer
+assert 'overlap_brake_enabled' in transfer
+assert 'hybrid_regrip_fast_roll_brake_' in transfer
 assert 'hybrid_single_config_.identification_tracking_rise,\n          regrip_thrust_fall,dt)' in transfer
 assert 'hybrid_single_config_.regrip_rear_hold_pressure' in transfer
 assert 'if(thrust_off && !terminal_sequence_active)\n      hybrid_regrip_thrust_zero_latched_=true;' in transfer
@@ -28,6 +31,23 @@ assert 'finishHybridLocomotion(now,!terminal,true)' in transfer
 assert 'startInchwormCycle(now);return;' in transfer
 assert 'hybrid_terminal_retry_' in transfer
 assert 'beginHybridTerminalSettle(now,"hybrid measured bend/rate/tilt guard; score retained endpoint and retry")' in hybrid
+# Fast recovery overlaps bounded restoring thrust with pneumatic support
+# restoration, then waits only for the pair opposite the selected recovery
+# pair.  It must not regress to an all-four pressure prerequisite.
+handoff=hybrid[hybrid.index('  if(hybrid_phase_==2) {'):
+    hybrid.index('  if(hard_roll_or_rate && hybrid_phase_==2) {')]
+assert 'selectContinuousRecoveryPair(s.roll)' in handoff
+assert 'const size_t anchor_pair=1-hybrid_recovery_pair_preview_index_;' in handoff
+assert 'measured_pressure_[arm]>=recovery_handoff_min_pressure_kpa_' in handoff
+assert 'anchor_pair_ready ||' in handoff
+assert 'four_arm_fallback' in handoff
+assert 'four_arm_support' not in handoff
+shared_anchor=src[src.index('// Hybrid locomotion may hand recovery ownership over'):
+    src.index('continuous_roll_recovery_.reset(attitude_error, now.toSec());',
+              src.index('// Hybrid locomotion may hand recovery ownership over'))]
+assert '1 - recovery_selected_pair_index_' in shared_anchor
+assert 'recovery_handoff_min_pressure_kpa_' in shared_anchor
+assert 'enterState(GRASP, now);' in shared_anchor
 # Regrip is an intentional pressure-driven return, not another powered gait
 # excursion.  Its bend must not be compared with Motion-2's old start pose.
 regrip_guard=hybrid[hybrid.index('  hugmy::hybrid::State safety_state=s;'):
