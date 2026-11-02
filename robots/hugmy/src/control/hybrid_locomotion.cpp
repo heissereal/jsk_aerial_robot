@@ -121,6 +121,9 @@ void AttitudePressureController::startHybridLocomotion(const ros::Time& now)
   hybrid_recovery_pair_preview_direction_=0;
   hybrid_recovery_pair_preview_last_attempt_=-1.;
   hybrid_lift_worsening_roll_since_=-1.;
+  hybrid_preinflate_roll_reference_rad_=
+      std::numeric_limits<double>::quiet_NaN();
+  hybrid_preinflate_roll_gate_.reset();
   hybrid_lift_target_no_unload_since_=-1.;
   hybrid_regrip_complete_latched_=false;
   hybrid_regrip_terminal_rear_lift_requested_=false;
@@ -178,6 +181,7 @@ void AttitudePressureController::resetRecoveryHandoffState()
       !recovery_selected_pair_release_;
   recovery_handoff_pair_was_wrong_ = false;
   recovery_handoff_pressure_trimmed_ = false;
+  recovery_handoff_rollback_before_reselect_ = false;
   recovery_handoff_thrust_wrong_way_ = false;
   recovery_handoff_finalizing_regrasp_ = false;
   // A previous recovery may have retained an asymmetric minimum-support
@@ -616,23 +620,62 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
   const bool roll_rate_limit_confirmed=roll_rate_over_limit &&
       hybrid_roll_rate_limit_since_>=0. &&
       clock-hybrid_roll_rate_limit_since_>=hybrid_roll_rate_confirm_sec_;
-  // Motion-2 extension can create an unrecoverable roll excursion before the
-  // ordinary 15-deg hard guard.  The old guard stopped every sustained trend
-  // as soon as |roll| exceeded 8 deg; the 2026-10-30 real-arm bag therefore
-  // aborted five otherwise slow reaches at 8.9--12.6 deg before Motion 3.
-  // Use 8 deg only to arm a velocity look-ahead.  Restore support when the
-  // outward motion is predicted to cross the independent locomotion roll
-  // limit during the actuator/regrip reaction horizon.  A static bias, a slow
-  // supported gait excursion and a single IMU spike remain permissible.
+  // Bottom inflation is intentionally performed before the powered stroke,
+  // but on a deeply wrapped arm it can also shift the contact equilibrium
+  // toward a fall.  Compare against the quiet, bottom-deflated pose captured
+  // immediately before inflation.  This is more selective than lowering the
+  // global roll limit: a static 10--15 deg grasp bias is accepted, whereas a
+  // small persistent outward change caused by the bladder is interrupted.
+  const double preinflate_reference_abs =
+      std::abs(hybrid_preinflate_roll_reference_rad_);
+  const double preinflate_roll_abs = std::abs(s.roll);
+  const double preinflate_outward_rate =
+      s.roll >= 0.0 ? measured_roll_rate : -measured_roll_rate;
+  const double preinflate_predicted_abs = std::abs(
+      s.roll + hybrid_preinflate_roll_prediction_sec_ * measured_roll_rate);
+  const bool preinflate_roll_worsening =
+      hybrid_phase_ == 0 && hybrid_preinflate_measured_ &&
+      std::isfinite(hybrid_preinflate_roll_reference_rad_) &&
+      s.bottom_command > action_c_bottom_deflation_tolerance_kpa_ &&
+      preinflate_roll_abs >= hybrid_preinflate_roll_min_angle_rad_ &&
+      preinflate_outward_rate >= hybrid_preinflate_roll_rate_rad_s_ &&
+      (preinflate_roll_abs >= preinflate_reference_abs +
+           hybrid_preinflate_roll_growth_rad_ ||
+       preinflate_predicted_abs >= preinflate_reference_abs +
+           hybrid_preinflate_roll_growth_rad_);
+  if (hybrid_preinflate_roll_gate_.update(
+          preinflate_roll_worsening, clock,
+          hybrid_preinflate_roll_confirm_sec_))
+    {
+      ROS_WARN("Hybrid bottom pre-inflation worsened roll: reference %.2f deg, measured %.2f deg / %.2f deg/s, %.2f-s prediction %.2f deg; exhausting bottom and starting urgent shared recovery",
+          hybrid_preinflate_roll_reference_rad_ * 180.0 / M_PI,
+          s.roll * 180.0 / M_PI,
+          measured_roll_rate * 180.0 / M_PI,
+          hybrid_preinflate_roll_prediction_sec_,
+          (s.roll + hybrid_preinflate_roll_prediction_sec_ *
+              measured_roll_rate) * 180.0 / M_PI);
+      hybrid_preinflate_roll_gate_.reset();
+      hybrid_roll_rate_limit_since_ = -1.0;
+      requestActionCPostureRecovery(now,
+          "bottom pre-inflation caused outward roll; exhaust immediately",
+          hybrid_preinflate_roll_min_angle_rad_, true);
+      return;
+    }
+  // A posture fault is independent of the locomotion phase. Apply the same
+  // velocity look-ahead during preparation, Motion 2, Motion 3 and regrip.
+  // Eight degrees only arms the detector: a static contact bias and a single
+  // IMU/contact impulse are still ignored. A sustained outward rate which is
+  // predicted to cross the ordinary 10-deg recovery boundary hands ownership
+  // directly to shared recovery. Anchor filling and correction then overlap.
   const double lift_predicted_roll=s.roll+
       hybrid_lift_worsening_roll_prediction_sec_*measured_roll_rate;
-  const bool lift_roll_worsening_sample=hybrid_phase_==1 &&
-      hybrid_single_.phase==SinglePass::Lift &&
+  const bool lift_roll_worsening_sample=
       std::abs(s.roll)>=hybrid_lift_worsening_roll_stop_rad_ &&
       std::abs(measured_roll_rate)>=
           hybrid_lift_worsening_roll_rate_rad_s_ &&
       s.roll*measured_roll_rate>0. &&
-      std::abs(lift_predicted_roll)>=hybrid_config_.roll_limit;
+      std::abs(lift_predicted_roll)>=
+          action_c_posture_recovery_trigger_rad_;
   if(lift_roll_worsening_sample) {
     if(hybrid_lift_worsening_roll_since_<0.)
       hybrid_lift_worsening_roll_since_=clock;
@@ -642,27 +685,43 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
   if(hybrid_lift_worsening_roll_since_>=0. &&
      clock-hybrid_lift_worsening_roll_since_>=
          hybrid_lift_worsening_roll_confirm_sec_) {
-    ROS_WARN("Hybrid Motion-2 roll is predicted to cross the safety boundary: measured %.1f deg / %.1f deg/s, %.2f-s prediction %.1f deg (limit %.1f); braking front thrust and restoring four-arm support before recovery",
+    ROS_WARN("Hybrid outward roll requests all-phase recovery: phase %d/motion %d, measured %.1f deg / %.1f deg/s, %.2f-s prediction %.1f deg (recovery %.1f); stopping locomotion and correcting while anchor pressure rebuilds",
+        hybrid_phase_,int(hybrid_single_.phase),
         s.roll*180./M_PI,measured_roll_rate*180./M_PI,
         hybrid_lift_worsening_roll_prediction_sec_,
         lift_predicted_roll*180./M_PI,
-        hybrid_config_.roll_limit*180./M_PI);
+        action_c_posture_recovery_trigger_rad_*180./M_PI);
     hybrid_lift_worsening_roll_since_=-1.;
     hybrid_roll_rate_limit_since_=-1.;
-    beginHybridTerminalSettle(now,
-        "hybrid sustained worsening roll during lift; fast regrip before recovery",
-        true);
+    requestActionCPostureRecovery(now,
+        "hybrid sustained outward roll in active locomotion state",
+        hybrid_lift_worsening_roll_stop_rad_,true);
     return;
   }
-  // Pull has already created the new front support when BOTH front chambers
-  // carry pressure and both arms have reversed from extension into flexion.
-  // At that point a hard-roll handoff to the shared posture controller is the
-  // wrong topology: it releases another arm pair while the old rear anchors
-  // are still exhausted.  In the high-friction MuJoCo run this happened at
-  // 26--29 kPa front pressure and turned a retained +25 mm stroke into a fall.
-  // Complete the four-arm support transfer first.  This does not relax the
-  // hard guard before a new support exists; any missing pressure/flexion
-  // evidence still takes the ordinary posture-recovery branch below.
+  // The absolute angle/rate guard is a posture-safety boundary, not a gait
+  // phase transition.  Hand it directly to the same shared recovery in every
+  // state (preparation, Motion 2, Motion 3 and regrip).  Recovery restores the
+  // non-selected anchor pressure while the selected pair starts correcting,
+  // so waiting for a separate four-arm-ready state only lets the fall grow.
+  const bool hard_roll_or_rate=
+      std::abs(s.roll)>=hybrid_config_.roll_limit ||
+      roll_rate_limit_confirmed;
+  if(hard_roll_or_rate) {
+    const double confirmed_trigger=std::max(0.5*M_PI/180.0,
+        std::min(action_c_posture_recovery_trigger_rad_,
+                 0.9*std::abs(s.roll)));
+    ROS_WARN("Hybrid all-phase hard posture guard: phase %d/motion %d, roll %.1f deg/rate %.1f deg/s; starting shared recovery immediately",
+        hybrid_phase_,int(hybrid_single_.phase),
+        s.roll*180./M_PI,measured_roll_rate*180./M_PI);
+    hybrid_roll_rate_limit_since_=-1.;
+    requestActionCPostureRecovery(now,
+        "hybrid all-phase hard roll/rate limit",
+        confirmed_trigger,true);
+    return;
+  }
+  // Below the hard boundary, a nearly completed pull may finish its support
+  // transfer rather than opening another contact pair.  The all-phase guard
+  // above still has priority at the absolute angle/rate safety boundary.
   bool front_support_available=false;
   if(hybrid_phase_==1 &&
      (hybrid_single_.phase==SinglePass::Pull ||
@@ -692,8 +751,6 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
     hybrid_regrip_bottom_=hybrid_single_config_.bottom_kpa;
     return;
   }
-  const bool hard_roll_or_rate=std::abs(s.roll)>=hybrid_config_.roll_limit ||
-      roll_rate_limit_confirmed;
   if(hybrid_phase_==2) {
     // A recovery event releases or softens one of the two circumferential
     // arm pairs (0+1 or 2+3).  Requiring that very pair to reach 15 kPa before
@@ -765,31 +822,6 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
               "hybrid early roll recovery after four-arm fallback support");
       return;
     }
-  }
-  if(hard_roll_or_rate && hybrid_phase_==2) {
-    ROS_WARN_THROTTLE(1.0,
-        "Hybrid support transfer continuing through roll %.1f deg/rate %.1f deg/s; preserving four-arm pressure during bottom exhaust",
-        s.roll*180./M_PI,measured_roll_rate*180./M_PI);
-    hybrid_roll_rate_limit_since_=-1.;
-  }
-  if(hard_roll_or_rate && hybrid_phase_==1 &&
-     (hybrid_single_.phase==SinglePass::Lift ||
-      hybrid_single_.phase==SinglePass::VentFront)) {
-    // Front support is absent or only partly established here. Opening a
-    // second pair for posture recovery can leave no reliable anchor and was
-    // the direct cause of the simulated fall after an unreleased Motion-2
-    // search. Restore four-arm support first, score the retained endpoint,
-    // then let the ordinary boundary logic recover roll and retry the same
-    // goal. This guarded interval cannot receive completed-gait credit.
-    hybrid_roll_rate_limit_since_=-1.;
-    beginHybridTerminalSettle(now,
-        "hybrid lift roll/rate limit; restore four-arm support before recovery",
-        true);
-    return;
-  }
-  if(hard_roll_or_rate && hybrid_phase_!=2) {
-    hybrid_roll_rate_limit_since_=-1.;
-    requestActionCPostureRecovery(now,"hybrid hard roll/rate limit");return;
   }
   // Use the same empty-bottom endpoint for the reverse-travel guard as for
   // retained progress.  The inflated preparation pose can be 10--20 mm
@@ -1074,6 +1106,8 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
         hybrid_trial_x_=empty_x;
         hybrid_start_mean_valid_=true;
         hybrid_preinflate_measured_=true;
+        hybrid_preinflate_roll_reference_rad_=s.roll;
+        hybrid_preinflate_roll_gate_.reset();
         hybrid_settled_window_.reset();hybrid_bottom_window_.reset();
         hybrid_endpoint_pitch_window_.reset();
         action_c_boundary_settle_gate_.reset();

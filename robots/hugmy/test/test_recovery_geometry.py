@@ -52,6 +52,9 @@ public:
  bool recovery_selected_pair_release_=true;
  double recovery_selected_pair_pressure_kpa_=0.;
  bool recovery_selected_contact_pivot_enabled_=true;
+ bool recovery_event_contact_pivot_locked_=true;
+ Vector3 recovery_event_contact_pivot_{{0.,0.,-.07}};
+ Vector3 recovery_selected_contact_pivot_{{0.,0.,-.07}};
  std::array<double,4> measured_pressure_{{10,11,30,31}}, angles{{1.57,1.57,1.57,1.57}};
  std::array<double,4> grasp_pressure_{{30,30,30,30}};
  std::array<double,4> recovery_selected_release_start_pressure_{{30,30,30,30}};
@@ -82,10 +85,23 @@ public:
 FUNCTIONS
 int main() {
  AttitudePressureController c;
+ // The recovery event freezes a geometry-derived object centre before any
+ // chamber command changes.  Use the same frozen centre for the selected
+ // candidate and for every subsequent measured-model update.
+ std::array<std::array<double,2>,4> initial_contact{};
+ for(size_t arm=0;arm<4;++arm) {
+   const auto point=c.armContactPointFromAngle(arm,c.angles[arm]);
+   initial_contact[arm]={{point[1],point[2]}};
+ }
+ const auto initial_circle=hugmy::estimateCircularGrasp(initial_contact,
+     {{true,true,true,true}},{{0.,-.07}},{{0.,-9.81}},.025,.15,.015);
+ assert(initial_circle.valid);
+ c.recovery_event_contact_pivot_={{0.,initial_circle.center_y,initial_circle.center_z}};
+ c.recovery_selected_contact_pivot_=c.recovery_event_contact_pivot_;
  auto m=c.measuredRecoveryModel();
  assert(m.valid && m.lever>0.015 && m.moment>0.);
  // About the old fixed bottom pivot this pair has the opposite sign.  The
- // retained 0+1 contacts are the physical pivot when 2+3 are released.
+ // fitted object centre is the physical geometry pivot for this event.
  const double fixed_pair_lever=c.recoveryRotorRawLever(2,c.angles[2])+
      c.recoveryRotorRawLever(3,c.angles[3]);
  assert(fixed_pair_lever<0. && m.lever>0.);
@@ -93,29 +109,29 @@ int main() {
  auto first=m;
  // Perched correction requests only additional restoring moment. Gravity,
  // mass/COM and the legacy flag cannot inflate the model thrust.
- assert(std::abs(first.moment-.1*(.3-c.roll_recovery_config_.stop))<1e-10);
+ assert(std::abs(first.moment-.1*.3)<1e-10);
  c.mass_kg_=10.;c.gravity_body_={{3.,5.,-8.}};c.center_of_mass_={{1.,2.,3.}};
  m=c.measuredRecoveryModel();assert(m.moment==first.moment);
  c.gravity_compensation_=false;m=c.measuredRecoveryModel();assert(m.moment==first.moment);
  c.gravity_compensation_=true;
  c.roll_=-22.58*M_PI/180.;m=c.measuredRecoveryModel();
- assert(std::abs(m.moment-.1*(22.58*M_PI/180.-c.roll_recovery_config_.stop))<1e-10);
- assert(m.moment>.0306 && m.moment<.0308); // bag c13: previously 0.415 Nm
- assert(m.moment/.017<1.81); // about 1.80 N, not gravity-saturated 4 N
+ assert(std::abs(m.moment-.1*(22.58*M_PI/180.))<1e-10);
+ assert(m.moment>.0393 && m.moment<.0395); // zero-roll target, still far below gravity moment
+ assert(m.moment/.017<2.33); // about 2.32 N, not gravity-saturated 4 N
  c.roll_=-.3;
- // Pressure does not change the measured bend, but it now moves the estimated
- // load-weighted CoP. The requested restoring moment itself is unchanged.
+ // Pressure does not change either the measured bend or the geometry pivot.
+ // The lever and requested restoring moment therefore remain unchanged.
  c.measured_pressure_.fill(50);m=c.measuredRecoveryModel();
- assert(std::abs(m.lever-first.lever)>1e-6 && m.moment==first.moment);
- c.angles[0]=1.0;m=c.measuredRecoveryModel();assert(std::abs(m.lever-first.lever)>.001);
- // A larger measured load on one retained contact moves the CoP toward that
- // contact instead of using the old arithmetic midpoint.
+ assert(std::abs(m.lever-first.lever)<1e-12 && m.moment==first.moment);
+ c.angles[2]=1.0;m=c.measuredRecoveryModel();assert(std::abs(m.lever-first.lever)>1e-6);
+ // Actively commanded chamber pressure must not move the frozen object
+ // centre.  Both pressure distributions return the same event pivot.
  c.angles.fill(1.57);c.measured_pressure_={{10.,0.,30.,0.}};
  const auto weighted=c.recoveryContactPivot(c.prepare_arm_active_,true);
  c.measured_pressure_={{20.,0.,20.,0.}};
  const auto equal=c.recoveryContactPivot(c.prepare_arm_active_,true);
- assert(std::abs(weighted[1]-equal[1])>1e-4 ||
-        std::abs(weighted[2]-equal[2])>1e-4);
+ assert(std::abs(weighted[1]-equal[1])<1e-12 &&
+        std::abs(weighted[2]-equal[2])<1e-12);
  c.measured_pressure_.fill(30.);c.angles.fill(1.57);
  c.prepare_arm_active_={{false,false,true,true}};
  c.correction_axis_[0]=1.;c.roll_=-.3;
@@ -128,7 +144,7 @@ int main() {
  // Signed geometry rejects a pair which would drive away from the target.
  m=c.measuredRecoveryModel();assert(m.lever<0.);
  c.correction_axis_[0]=1.;c.gravity_compensation_=false;c.roll_=-.3;
- m=c.measuredRecoveryModel();assert(std::abs(m.moment-.1*(.3-c.roll_recovery_config_.stop))<1e-8);
+ m=c.measuredRecoveryModel();assert(std::abs(m.moment-.1*.3)<1e-8);
  // Validate cant for each motor against an independent matrix calculation.
  for(size_t arm=0;arm<4;++arm) {
    c.prepare_arm_active_.fill(false);c.prepare_arm_active_[arm]=true;

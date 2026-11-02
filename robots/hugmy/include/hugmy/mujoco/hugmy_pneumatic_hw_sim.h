@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <limits>
 #include <mutex>
 #include <random>
 #include <string>
@@ -78,6 +79,7 @@ private:
   std::array<int, ARM_COUNT> acc_sensor_ids_{};
   std::array<int, ARM_COUNT> gyro_sensor_ids_{};
   std::array<int, ARM_COUNT> grip_body_ids_{};
+  std::vector<int> arm_contact_geom_ids_;
   int grip_target_body_id_ = -1;
   int grip_target_geom_id_ = -1;
   int main_body_id_ = -1;
@@ -159,6 +161,17 @@ private:
   double human_arm_yaw_rad_ = 0.0;
   double grip_range_m_ = 0.035;
   double perching_initial_clearance_m_ = 0.0;
+  // Native mesh contact remains the primary collision model.  These values
+  // make it sufficiently stiff for the light articulated arms, while the
+  // signed-distance guard below prevents a released tip from tunnelling
+  // through the fixed forearm between solver steps.
+  double forearm_contact_margin_m_ = 0.002;
+  double forearm_contact_time_constant_s_ = 0.004;
+  double forearm_contact_damping_ratio_ = 1.0;
+  double penetration_tolerance_m_ = 0.001;
+  double penetration_stiffness_n_m_ = 2500.0;
+  double penetration_damping_ns_m_ = 15.0;
+  double penetration_force_limit_n_ = 20.0;
   double grip_stiffness_n_m_ = 180.0;
   double grip_damping_ns_m_ = 2.0;
   double grip_force_per_kpa_n_ = 0.08;
@@ -176,6 +189,9 @@ private:
   std::array<double, ARM_COUNT> grip_axis_coordinate_m_{};
   std::array<double, ARM_COUNT> grip_azimuth_rad_{};
   std::array<double, ARM_COUNT> grip_surface_gap_m_{};
+  std::array<double, ARM_COUNT> grip_signed_surface_gap_m_{};
+  double native_contact_min_distance_m_ =
+      std::numeric_limits<double>::quiet_NaN();
   std::vector<double> previous_grip_qfrc_;
   std::vector<double> previous_bottom_qfrc_;
   double bottom_force_per_kpa_n_ = 0.12;

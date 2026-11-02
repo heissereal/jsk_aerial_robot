@@ -212,7 +212,7 @@ def main():
         parser.error('--mix is no longer a commanded search variable; omit it for single-pass motion')
     if args.grasp_only and args.recovery_only:
         parser.error('--grasp-only and --recovery-only are mutually exclusive')
-    if not (math.isfinite(args.seconds) and 0.<args.seconds<=300. and
+    if not (math.isfinite(args.seconds) and 0.<args.seconds<=600. and
             math.isfinite(args.distance) and 0.<args.distance<=.1 and
             math.isfinite(args.lateral_limit) and .01<=args.lateral_limit<=.1 and
             math.isfinite(args.bottom) and 0.<=args.bottom<=30. and
@@ -277,7 +277,7 @@ def main():
             0<=args.require_unload_events<=20 and
             0<=args.require_optimizer_observations<=20 and
             math.isfinite(args.pressure_limit) and 30.<=args.pressure_limit<=50.):
-        parser.error('require seconds in (0,300], distance in (0,0.1] m, bottom 0..30, rear 0..6, arm limit 30..50 kPa')
+        parser.error('require seconds in (0,600], distance in (0,0.1] m, bottom 0..30, rear 0..6, arm limit 30..50 kPa')
     requested_recovery_step=(args.target_roll_offset_deg
         if args.target_roll_offset_deg is not None else args.target_roll_deg)
     if args.recovery_only and abs(requested_recovery_step) < 5.:
@@ -721,6 +721,20 @@ def main():
             slip_tail=[p[0] for t,p in samples['pose'] if slip and slip[-1]-.5<=t<=slip[-1]]
             result['initial_slip_dx_mm']=1000*(sum(slip_tail)/len(slip_tail)-inflated_start) if slip_tail else None
             result['slide_hold_seen']=any(is_hybrid_plan(v) and v[1]==1 and v[2]==1 for _,v in samples['plan'])
+            signed_gaps=[gap for _,value in samples['grip'] if len(value)>=40
+                         for gap in value[36:40] if math.isfinite(gap)]
+            result['minimum_signed_surface_gap_mm']=(
+                1000.*min(signed_gaps) if signed_gaps else None)
+            result['maximum_analytic_penetration_mm']=(
+                max(0., -result['minimum_signed_surface_gap_mm'])
+                if result['minimum_signed_surface_gap_mm'] is not None else None)
+            native_distances=[value[40] for _,value in samples['grip']
+                              if len(value)>=41 and math.isfinite(value[40])]
+            result['minimum_native_contact_distance_mm']=(
+                1000.*min(native_distances) if native_distances else None)
+            result['maximum_native_contact_penetration_mm']=(
+                max(0., -result['minimum_native_contact_distance_mm'])
+                if result['minimum_native_contact_distance_mm'] is not None else None)
             uniform_ellipse=(abs(args.forearm_proximal_width-args.forearm_distal_width)<1e-9 and
                 abs(args.forearm_proximal_depth-args.forearm_distal_depth)<1e-9)
             result['fixture']={'shape':('uniform_elliptic_forearm' if uniform_ellipse else

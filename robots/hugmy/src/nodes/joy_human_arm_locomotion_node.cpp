@@ -27,8 +27,8 @@ public:
         &JoyHumanArmLocomotion::joyCallback, this);
 
     publishZeroAttitude();
-    ROS_WARN("Human-arm Joy control: button %d=enable, %d=disable, "
-             "%d=toward-hand %.0f mm, %d=stop",
+    ROS_WARN("Locomotion Joy control: button %d=enable, %d=disable, "
+             "%d=body-forward %.0f mm, %d=stop",
              enable_button_, disable_button_, forward_button_,
              1000.0 * forward_distance_m_, stop_button_);
   }
@@ -91,12 +91,12 @@ private:
     publishZeroAttitude();
     geometry_msgs::Vector3Stamped command;
     command.header.stamp = ros::Time::now();
-    command.header.frame_id = "body_toward_hand";
+    command.header.frame_id = "body";
     command.vector.x = 1.0;
     command.vector.y = 0.0;
     command.vector.z = forward_distance_m_;
     command_pub_.publish(command);
-    ROS_WARN("Joy requested %.1f-mm travel toward the hand marker",
+    ROS_WARN("Joy requested %.1f-mm travel in the robot-forward direction",
              1000.0 * forward_distance_m_);
   }
 
@@ -113,7 +113,7 @@ private:
     else if (stop && !previous_stop_)
       {
         publishStop();
-        ROS_WARN("Human-arm locomotion stop requested; pressure remains enabled");
+        ROS_WARN("Locomotion stop requested; pressure remains enabled");
       }
     else if (enable && !previous_enable_)
       setEnabled(true);

@@ -108,7 +108,8 @@ private:
   void requestActionCPostureRecovery(const ros::Time& now,
                                      const char* reason,
                                      double confirmed_trigger_rad =
-                                         std::numeric_limits<double>::quiet_NaN());
+                                         std::numeric_limits<double>::quiet_NaN(),
+                                     bool urgent_thrust_rise = false);
   bool resumeActionCAfterRecovery(const ros::Time& now);
   bool actionCRearReleased(const ros::Time& now);
   bool hybridLocomotionActive() const;
@@ -296,6 +297,13 @@ private:
   size_t recovery_selected_pair_index_ = 0;
   hugmy::ContinuousRollRecovery continuous_roll_recovery_;
   hugmy::RollRecoveryConfig roll_recovery_config_;
+  // Bottom-bladder inflation can move a highly wrapped contact from a quiet
+  // roll bias into a fall in less than one ordinary trend window.  Urgency
+  // starts recovery earlier; both paths retain the experimentally stable
+  // 2026-10-07 thrust slew instead of adding a larger thrust step.
+  double recovery_nominal_thrust_rise_n_s_ = 2.0;
+  double recovery_preinflate_thrust_rise_n_s_ = 2.0;
+  bool action_c_recovery_urgent_thrust_rise_ = false;
   hugmy::RecoveryPredictiveConfig recovery_predictive_config_;
   hugmy::RecoveryPredictiveControl recovery_predictive_;
   std::array<hugmy::RollRecoveryResponse, 2> roll_recovery_response_;
@@ -351,6 +359,10 @@ private:
   // transfer does not invalidate the pair which already corrected roll.
   bool recovery_handoff_pair_was_wrong_ = false;
   bool recovery_handoff_pressure_trimmed_ = false;
+  // If regrasp carries the body through zero roll, first restore the measured
+  // pressure at the best posture.  Only reselect a rotor pair if the residual
+  // remains outside the target after that rollback has settled.
+  bool recovery_handoff_rollback_before_reselect_ = false;
   bool recovery_handoff_thrust_wrong_way_ = false;
   bool recovery_handoff_finalizing_regrasp_ = false;
   // A successful monitored handoff may end at an asymmetric but
@@ -447,16 +459,36 @@ private:
   hugmy::CircularGraspEstimate recovery_circle_estimate_;
   ros::Time recovery_circle_stamp_;
   bool recovery_circle_event_locked_ = false;
+  // Freeze the object geometry which was observed under stable support at
+  // recovery entry.  Chamber pressure is an actively commanded state, not a
+  // contact-force measurement, so it must not move the moment pivot while a
+  // pair is being exhausted or re-pressurised.
+  hugmy::CircularGraspEstimate recovery_circle_event_estimate_;
+  bool recovery_event_contact_pivot_locked_ = false;
+  Vector3 recovery_event_contact_pivot_{{0.0, 0.0, 0.0}};
   // The lower-side pair is selected from the inferred contact geometry once
   // per recovery event.  Contact-state/moment evaluation may change that
   // pair between flexed and released, but may not jump to the upper pair.
   bool recovery_preferred_pair_locked_ = false;
   size_t recovery_preferred_pair_index_ = 0;
   bool recovery_preferred_pair_used_fallback_ = false;
+  // Recovery has two physical contact modes only.  A pair which is safely
+  // below the inferred object side may remain fully grasped; every other
+  // useful correction releases that same topology-selected pair completely.
+  // Once release is selected, noisy live bend/contact estimates may not turn
+  // it back into a partial-contact candidate during the same recovery event.
+  bool recovery_extension_mode_latched_ = false;
+  bool recovery_rate_arrest_active_ = false;
+  ros::Time recovery_rate_arrest_nonoutward_since_;
+  double recovery_extension_prediction_sec_ = 0.30;
+  double recovery_rate_arrest_min_thrust_n_ = 2.0;
+  double recovery_rate_arrest_max_thrust_n_ = 4.0;
+  double recovery_rate_arrest_release_sec_ = 0.10;
   bool recovery_selected_pair_release_ = true;
   double recovery_selected_pair_pressure_kpa_ = 0.0;
   size_t recovery_selected_pressure_candidate_index_ = 0;
   bool recovery_selected_contact_pivot_enabled_ = false;
+  Vector3 recovery_selected_contact_pivot_{{0.0, 0.0, 0.0}};
   double recovery_selected_pair_mean_depth_rad_ =
       std::numeric_limits<double>::quiet_NaN();
   // Releasing the lower pair removes part of the load-bearing contact force.
@@ -727,16 +759,26 @@ private:
   // 30-kPa grasp.  Once all rotor commands are zero, do not reintroduce a
   // trim thrust and reopen the rear chambers because of an IMU fluctuation.
   bool hybrid_regrip_thrust_zero_latched_=false;
-  // Motion 2 can make roll diverge faster than the shared posture controller
-  // can arrest it after a late handoff.  The 8-deg value only enables the
-  // look-ahead; a sustained outward trend is stopped when its predicted roll
-  // reaches the independent 15-deg locomotion boundary.  This allows a slow,
-  // supported 8--12-deg gait excursion while still catching a fast fall.
+  // Every locomotion phase uses the same outward-roll look-ahead.  The 8-deg
+  // value only arms the detector; a short contact impulse is rejected by the
+  // rate and confirmation gates, while a sustained trend hands control to the
+  // shared posture recovery before the ordinary 15-deg hard boundary.
   double hybrid_lift_worsening_roll_stop_rad_ = 8.0 * M_PI / 180.0;
   double hybrid_lift_worsening_roll_rate_rad_s_ = 1.0 * M_PI / 180.0;
   double hybrid_lift_worsening_roll_confirm_sec_ = 0.10;
   double hybrid_lift_worsening_roll_prediction_sec_ = 0.25;
   double hybrid_lift_worsening_roll_since_ = -1.0;
+  // This guard is specific to the quiet-bottom -> inflated-bottom boundary.
+  // It compares roll with the measured pre-inflation contact pose, so a
+  // static grasp bias is accepted but a bladder-induced outward drift is not.
+  double hybrid_preinflate_roll_min_angle_rad_ = 8.0 * M_PI / 180.0;
+  double hybrid_preinflate_roll_growth_rad_ = 0.1 * M_PI / 180.0;
+  double hybrid_preinflate_roll_rate_rad_s_ = 0.4 * M_PI / 180.0;
+  double hybrid_preinflate_roll_prediction_sec_ = 0.30;
+  double hybrid_preinflate_roll_confirm_sec_ = 0.08;
+  double hybrid_preinflate_roll_reference_rad_ =
+      std::numeric_limits<double>::quiet_NaN();
+  hugmy::PostureRecoveryGate hybrid_preinflate_roll_gate_;
   // Reaching both independent Motion-2 safety bends without a measured
   // unloading event is not permission to keep increasing thrust.  Allow a
   // short body/contact-sensor lag, then restore support and retry.

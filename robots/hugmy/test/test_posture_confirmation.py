@@ -40,7 +40,9 @@ struct Controller {
   bool continuous_recovery_waiting_for_settle_=false, model_c_recovery=false;
   bool continuous_recovery_started_=false, c_hard_roll=false;
   bool recovery_candidate_reselect_pending_=false;
+  bool continuous_recovery_retry_opposite_pending_=false;
   bool retained_contact_equilibrium=false;
+  bool recovery_restart_support_ready=true;
   bool recovery_pressure_fresh=true;
   double angular_rate=0., correction_max_angular_rate_=.8;
   bool stable_c_roll=false, c_recovery_requested=true, hard_roll=false;
@@ -49,6 +51,9 @@ struct Controller {
   double action_c_posture_recovery_trigger_rad_=10*M_PI/180.;
   double action_c_requested_recovery_trigger_rad_=std::numeric_limits<double>::quiet_NaN();
   double action_c_posture_resume_rad_=8*M_PI/180., correction_stop_angle_=5*M_PI/180.;
+  double completed_recovery_restart_angle=5*M_PI/180.;
+  bool geometry_reestimate_ready=true;
+  bool completed_recovery_restart_allowed=true;
   double correction_trigger_confirm_sec_=.3;
   double action_c_pre_roll_rate_tolerance_rad_s_=10*M_PI/180.;
   double action_c_posture_rate_trigger_rad_s_=.8;
@@ -120,12 +125,13 @@ int main() {
   c.grasp_pressure_ready=true; assert(!c.resume(5*deg,0.,{5.}));
   assert(c.resume(5*deg,0.,{5.31}));
   c.action_c_resume_pending_=false; assert(!c.resume(5*deg,0.,{6.}));
-  // New C gate must be consistent at GRASP: stable >10 deg can resume,
-  // whereas worsening roll still enters correction. A/B/D keep legacy mode.
+  // A quiet double-digit roll is not a successful equilibrium. It must not
+  // resume locomotion merely because angular velocity is small; worsening
+  // roll still enters the ordinary confirmed correction path.
   Controller stable;stable.action_c_resume_pending_=true;
   stable.stable_c_roll=true;stable.c_recovery_requested=false;
   assert(!stable.entry(11*deg,{0.}));assert(!stable.entry(11*deg,{1.}));
-  assert(!stable.resume(11*deg,0.,{1.}));assert(stable.resume(11*deg,0.,{1.31}));
+  assert(!stable.resume(11*deg,0.,{1.}));assert(!stable.resume(11*deg,0.,{1.31}));
   stable.stable_c_roll=false;stable.c_recovery_requested=true;
   assert(!stable.resume(11*deg,0.,{2.}));
   assert(!stable.entry(11*deg,{2.}));assert(stable.entry(11*deg,{2.31}));
@@ -145,7 +151,23 @@ int main() {
   continuous.recovery_candidate_reselect_pending_=true;
   assert(continuous.immediate(12*deg)); // balanced contact-candidate retry owns a fresh pass
   continuous.recovery_candidate_reselect_pending_=false;
+  continuous.continuous_recovery_retry_opposite_pending_=true;
+  assert(continuous.immediate(12*deg)); // opposite-pair retry must not deadlock in GRASP
+  continuous.continuous_recovery_retry_opposite_pending_=false;
   continuous.action_c_resume_pending_=true;
+  // A timed-out pass must first rebuild its commanded support before a
+  // moderate residual can start another release.  Hard roll remains an
+  // immediate safety path.
+  continuous.continuous_recovery_waiting_for_settle_=true;
+  continuous.continuous_recovery_started_=false;
+  continuous.grasp_pressure_ready=false;
+  continuous.recovery_restart_support_ready=false;
+  assert(!continuous.immediate(6*deg));
+  continuous.grasp_pressure_ready=true;
+  continuous.recovery_restart_support_ready=true;
+  assert(continuous.immediate(6*deg));
+  continuous.continuous_recovery_waiting_for_settle_=false;
+  continuous.continuous_recovery_started_=true;
   assert(!continuous.entry(12*deg,{0.})); assert(continuous.entry(12*deg,{.31}));
   assert(!continuous.resume(5*deg,0.,{.32}));
   continuous.recovery_pressure_fresh=false; assert(!continuous.entry(12*deg,{.4}));

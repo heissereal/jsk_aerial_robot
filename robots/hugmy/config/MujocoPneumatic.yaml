@@ -24,6 +24,16 @@ simulation:
     imu_acceleration_noise: 0.017
     imu_gyro_noise: 0.0002
     grip_range: 0.035
+    # Native visual-mesh contacts are otherwise too soft for the light arm
+    # links and may visibly cross the forearm during a fast release.  The
+    # signed-distance guard acts only after genuine analytic penetration.
+    forearm_contact_margin: 0.002
+    forearm_contact_time_constant: 0.004
+    forearm_contact_damping_ratio: 1.0
+    penetration_tolerance: 0.001
+    penetration_stiffness: 2500.0
+    penetration_damping: 15.0
+    penetration_force_limit: 20.0
     grip_stiffness: 180.0
     grip_damping: 2.0
     grip_force_per_pressure: 0.08

@@ -20,7 +20,7 @@ def main():
 #include <cassert>
 #include <limits>
 #define ROS_WARN(...) ((void)0)
-namespace ros {struct Time {};}
+namespace ros {struct Time {explicit Time(double=0.){}};}
 struct AttitudePressureController {
  bool target_received_=true;
  std::array<double,3> mocap_position_{{.2,0,0}};
@@ -29,6 +29,8 @@ struct AttitudePressureController {
  bool continuous_recovery_use_opposite_pair_=false;
  bool continuous_recovery_retry_opposite_pending_=false;
  bool recovery_candidate_reselect_pending_=false;
+ bool recovery_geometry_reestimate_attempted_=false;
+ bool recovery_geometry_reestimate_pending_=false;
  bool recovery_circle_event_locked_=false;
  bool recovery_preferred_pair_locked_=false;
  unsigned continuous_recovery_pair_switches_=0;
@@ -40,6 +42,10 @@ struct AttitudePressureController {
  double base_pressure_kpa_=30.;
  double action_c_requested_recovery_trigger_rad_=std::numeric_limits<double>::quiet_NaN();
  double action_c_posture_recovery_trigger_rad_=0.2;
+ bool action_c_recovery_urgent_thrust_rise_=false;
+ bool recovery_extension_mode_latched_=false;
+ bool recovery_rate_arrest_active_=false;
+ ros::Time recovery_rate_arrest_nonoutward_since_;
  double action_c_absolute_target_x_m_=0.1;
  std::array<double,4> inchworm_thrust_{{3.,0.,0.,2.8}}, inchworm_pressure_{};
  bool inchworm_active_=true, stopped=false;
@@ -55,7 +61,7 @@ struct AttitudePressureController {
  void publishBottomTarget(double p) {assert(p==0.);publications.push_back(2);}
  void enterState(int s,ros::Time){state=s;}
  void requestActionCPostureRecovery(const ros::Time&,const char*,
-     double=std::numeric_limits<double>::quiet_NaN());
+     double=std::numeric_limits<double>::quiet_NaN(),bool=false);
  void pauseHybridLocomotion(const ros::Time&) {} // isolated accounting hook
  std::array<double,3> locomotionPosition() const {return mocap_position_;}
 };

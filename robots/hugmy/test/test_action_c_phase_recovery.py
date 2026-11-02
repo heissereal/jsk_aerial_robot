@@ -14,10 +14,7 @@ start=source.index('  const double measured_roll_rate=')
 # The reverse-travel guard immediately following the posture guard belongs to
 # retained-position validation and needs the full controller fixture.  Keep
 # this focused unit test limited to the hard roll/rate handoff.
-support_catch=source.index('  bool front_support_available=false;',start)
-hard_guard=source.index('  const bool hard_roll_or_rate=',support_catch)
-hard=source[start:support_catch]+source[hard_guard:
-    source.index('  const double reverse_reference_x',hard_guard)]
+hard=source[start:source.index('  // Below the hard boundary',start)]
 assert 'Hybrid guarded support catch' in source
 start=source.index('  const double boundary_bottom_tolerance=')
 conditions=source[start:source.index('  const bool quiet=',start)]
@@ -34,7 +31,7 @@ assert 'hybrid_regrip_bottom_=fast_roll_brake ?' in source
 assert 'publishBottomTarget(hybrid_regrip_bottom_)' in source
 assert 'hybrid_preinflate_measured_' in source
 assert 'hybrid_regrip_bottom_=slew' not in source
-assert 'retained_handoff_error +' in controller
+assert 'preserving zero thrust and requesting a fresh measured-contact pass' in controller
 assert 'recovery_handoff_reopen_angle_rad_' in controller
 assert '-handoff_fall_rate' in controller
 assert 'std::max(3.0, recovery_handoff_thrust_fall_n_s_)' in controller
@@ -72,10 +69,26 @@ struct Controller {
  double hybrid_lift_worsening_roll_confirm_sec_=.10;
  double hybrid_lift_worsening_roll_prediction_sec_=.25;
  double hybrid_lift_worsening_roll_since_=-1.;
+ double hybrid_preinflate_roll_min_angle_rad_=8.*M_PI/180.;
+ double hybrid_preinflate_roll_growth_rad_=.1*M_PI/180.;
+ double hybrid_preinflate_roll_rate_rad_s_=.4*M_PI/180.;
+ double hybrid_preinflate_roll_prediction_sec_=.30;
+ double hybrid_preinflate_roll_confirm_sec_=.08;
+ double hybrid_preinflate_roll_reference_rad_=NAN;
+ hugmy::PostureRecoveryGate hybrid_preinflate_roll_gate_;
  double hybrid_regrip_roll_recovery_rad_=15.*M_PI/180.;
  double hybrid_regrip_roll_emergency_rad_=30.*M_PI/180.;
  double recovery_handoff_min_pressure_kpa_=15.;
  bool hybrid_regrip_fast_roll_brake_=false;
+ bool hybrid_recovery_pair_preview_valid_=false;
+ size_t hybrid_recovery_pair_preview_index_=0,recovery_selected_pair_index_=0;
+ int hybrid_recovery_pair_preview_direction_=0,recovery_rejected_direction_sign_=0;
+ double hybrid_recovery_pair_preview_last_attempt_=-1.;
+ unsigned recovery_rejected_candidate_mask_=0;
+ bool recovery_circle_event_locked_=false,recovery_preferred_pair_locked_=false;
+ bool continuous_recovery_use_opposite_pair_=false;
+ bool recovery_pair_selection_available_=true;
+ std::array<double,2> correction_axis_{{0.,0.}};
  hugmy::RollTrendGate action_c_roll_trend_;
  hugmy::PostureRecoveryGate action_c_boundary_settle_gate_,action_c_recovery_gate_;
  int hybrid_phase_=0;bool arms_ready=true,ready=false,recovery=false,terminal=false;
@@ -85,7 +98,10 @@ struct Controller {
  bool hybrid_preinflate_measured_=true;
  Controller(){hybrid_config_.roll_limit=15.*M_PI/180.;}
  bool pressureReached(const std::array<double,4>&){return arms_ready;}
- void requestActionCPostureRecovery(double,const char*,double=NAN){recovery=true;}
+ void selectContinuousRecoveryPair(double){
+   recovery_pair_selection_available_=true;recovery_selected_pair_index_=0;
+ }
+ void requestActionCPostureRecovery(double,const char*,double=NAN,bool=false){recovery=true;}
  void beginHybridTerminalSettle(double,const char*,bool=false){terminal=true;}
  void tick(double clock,double roll,double rate=0.){
    using hugmy::hybrid::bottomPressureReady;
@@ -114,21 +130,27 @@ int main(){
    Controller powered;powered.hybrid_phase_=1;
    powered.hybrid_single_.phase=hugmy::hybrid::SinglePass::Lift;
    powered.inchworm_thrust_={{3,0,0,3}};
-   // Eight degrees only arms the look-ahead.  Slow supported motion whose
-   // 0.25-s prediction remains inside 15 deg must be allowed to reach Motion
-   // 3; a fast outward motion predicted beyond 15 deg restores support.
+   // Eight degrees only arms the look-ahead. Slow supported motion remains
+   // allowed; a sustained outward motion predicted beyond the ordinary
+   // recovery boundary hands directly to shared recovery in any phase.
    powered.tick(0.,8.1*sign,2.*sign);assert(!powered.terminal);
    powered.tick(.12,8.34*sign,2.*sign);assert(!powered.terminal);
    powered.tick(.24,11.0*sign,20.*sign);assert(!powered.terminal);
    powered.tick(.36,13.4*sign,20.*sign);
-   assert(powered.terminal && !powered.recovery);
-   Controller inflation;inflation.bottom=10.;assert(!inflation.drive(0.,1.2,9.*sign,3.*sign));assert(!inflation.ready);
+   assert(!powered.terminal && powered.recovery);
+   Controller inflation;inflation.bottom=10.;assert(!inflation.drive(0.,1.2,9.*sign));assert(!inflation.ready);
    inflation.bottom=30.;assert(!inflation.drive(2.,1.2,10.*sign));assert(inflation.ready);
+   // A quiet high-roll contact is not rejected by magnitude alone. Once
+   // bottom inflation produces a small persistent outward drift, however,
+   // the dedicated guard must hand off before the 15-deg hard boundary.
+   Controller preinflate;
+   preinflate.hybrid_preinflate_roll_reference_rad_=14.4*sign*M_PI/180.;
+   assert(preinflate.drive(0.,.3,14.45*sign,.8*sign));
    Controller regrip;regrip.hybrid_phase_=2;regrip.arms_ready=false;
    regrip.measured_pressure_.fill(0.);
-   // Even above the ordinary hard angle, do not release a second pair while
-   // pneumatic four-arm support transfer is still incomplete.
-   assert(!regrip.drive(0.,1.2,16.*sign,3.*sign));assert(!regrip.ready);
+   // A hard posture boundary has priority even while pneumatic support is
+   // rebuilding; shared recovery fills the anchor while correction starts.
+   assert(regrip.drive(0.,1.2,16.*sign,3.*sign));assert(!regrip.ready);
    // A stationary post-regrasp contact bias is allowed even when it is above
    // the normal recovery trigger.  Only a continuing outward trend (or the
    // independent hard guard below) starts recovery.
@@ -144,10 +166,10 @@ int main(){
    loaded_regrip.tick(6.1,16.*sign);assert(loaded_regrip.recovery);
    // Absolute roll remains immediate. Angular rate keeps the same limit but
    // requires persistence so one impact/IMU sample cannot hand off control.
-   powered.tick(4.,16.*sign);assert(powered.terminal && !powered.recovery);
+   powered.tick(4.,16.*sign);assert(!powered.terminal && powered.recovery);
    powered.tick(4.1,1.,50.*sign);assert(!powered.terminal && !powered.recovery);
    powered.filtered_quiet=true;powered.tick(4.21,1.,50.*sign);
-   assert(powered.terminal && !powered.recovery);
+   assert(!powered.terminal && powered.recovery);
  }
  Controller invalid;invalid.bottom=NAN;assert(!invalid.drive(0.,1.,11.));assert(!invalid.ready);
  Controller low;low.hybrid_search_.current.bottom=0.;low.bottom=3.;

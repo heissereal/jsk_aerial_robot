@@ -23,9 +23,10 @@
   <arg name="hybrid_trajectory_min_extension_rad" default="0.2617993877991494" />
   <arg name="hybrid_trajectory_extension_rate_rad_s" default="0.70" />
   <arg name="hybrid_lift_rear_release_start_ratio" default="0.10" />
-  <arg name="hybrid_lift_rear_pressure_floor_kpa" default="0.0" />
-  <arg name="hybrid_rear_support_probe_stable" default="-0.75" />
-  <arg name="hybrid_rear_motion_pressure_cap_kpa" default="7.5" />
+  <arg name="hybrid_lift_rear_pressure_floor_kpa" default="15.0" />
+  <arg name="hybrid_slip_preserve_rear_grasp" default="true" />
+  <arg name="hybrid_rear_support_probe_stable" default="0.0" />
+  <arg name="hybrid_rear_motion_pressure_cap_kpa" default="30.0" />
   <arg name="hybrid_rear_release_angle_min_rad" default="0.05235987755982989" />
   <arg name="hybrid_rear_release_angle_max_rad" default="0.08726646259971647" />
   <arg name="hybrid_rear_release_assist_deadband_rad" default="0.008726646259971648" />
@@ -219,6 +220,7 @@
       <param name="hybrid_trajectory_extension_rate_rad_s" value="$(arg hybrid_trajectory_extension_rate_rad_s)" />
       <param name="hybrid_lift_rear_release_start_ratio" value="$(arg hybrid_lift_rear_release_start_ratio)" />
       <param name="hybrid_lift_rear_pressure_floor_kpa" value="$(arg hybrid_lift_rear_pressure_floor_kpa)" />
+      <param name="hybrid_slip_preserve_rear_grasp" value="$(arg hybrid_slip_preserve_rear_grasp)" />
       <param name="hybrid_rear_support_probe_stable" value="$(arg hybrid_rear_support_probe_stable)" />
       <param name="hybrid_rear_motion_pressure_cap_kpa"
              value="$(arg hybrid_rear_motion_pressure_cap_kpa)" />

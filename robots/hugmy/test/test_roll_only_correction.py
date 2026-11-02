@@ -15,9 +15,9 @@ def main():
     config = (root / 'config/attitude_pressure_controller.yaml').read_text()
     assert 'correction_roll_only: true' in config
     assert 'pnh_.param("correction_roll_only", correction_roll_only_, true)' in source
-    assert ('correction_pair_reverse_spinal_mapping_\n'
-            '      ? roll_error < 0.0 : roll_error >= 0.0') in source
-    assert source.count('correction_pair_reverse_spinal_mapping_') >= 4
+    assert 'const double projection = pair_column[0] * desired[0]' in source
+    assert 'No measured-geometry rotor pair can produce' in source
+    assert source.count('correction_pair_reverse_spinal_mapping_') >= 3
 
     def function(name, result):
         start = source.index('AttitudePressureController::' + name + '(')
@@ -54,6 +54,7 @@ def main():
 #include <hugmy/control/continuous_roll_recovery.h>
 #define ROS_INFO_THROTTLE(...) ((void)0)
 #define ROS_WARN_THROTTLE(...) ((void)0)
+#define ROS_ERROR_THROTTLE(...) ((void)0)
 class AttitudePressureController {
 public:
   using Vector2=std::array<double,2>;
@@ -77,10 +78,15 @@ public:
   static Vector3 cross(const Vector3& a,const Vector3& b) {
     return {{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]}};
   }
-  Vector3 rotorPositionFromAngle(size_t i,double) const {
+  Vector3 rotorPositionFromAngle(size_t i,double angle) const {
     const std::array<Vector3,4> p{{{{.2,.1,0.}},{{-.1,.1,0.}},
                                   {{-.2,-.1,0.}},{{.1,-.1,0.}}}};
-    return p[i];
+    auto result=p[i];
+    // Synthetic object-side crossing: at a large bend the available pair
+    // moments reverse, so a fixed roll-sign lookup would choose the wrong
+    // motors. The production allocator must follow the measured geometry.
+    if(angle>1.) result[1]=-result[1];
+    return result;
   }
   Vector3 rotorDirectionFromAngle(size_t,double) const {return {{0.,0.,1.}};}
   Vector2 thrustMoment(const PressureArray& p) const {
@@ -120,6 +126,12 @@ int main() {
   assert(c.allocatePressure(desired)==c.allocatePressure(contaminated));
   c.roll_=-.2;
   thrust=c.allocateCorrectionThrustFromAngles(c.desiredThrustMoment(),{});
+  assert(thrust[0]>0. && thrust[0]==thrust[1] && thrust[2]==0. && thrust[3]==0.);
+  // The same positive body roll needs the opposite pair after the modeled
+  // arm geometry crosses the object side.
+  c.roll_=.2;
+  thrust=c.allocateCorrectionThrustFromAngles(
+      c.desiredThrustMoment(),{{1.2,1.2,1.2,1.2}});
   assert(thrust[0]>0. && thrust[0]==thrust[1] && thrust[2]==0. && thrust[3]==0.);
   // MuJoCo's applied bidirectional-thrust axis has the opposite response.
   // Reverse only its pair mapping; the real-hardware default above remains.

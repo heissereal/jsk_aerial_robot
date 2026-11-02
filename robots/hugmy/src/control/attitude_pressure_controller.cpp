@@ -68,6 +68,16 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
              hybrid_lift_worsening_roll_confirm_sec_, 0.10);
   pnh_.param("hybrid_lift_worsening_roll_prediction_sec",
              hybrid_lift_worsening_roll_prediction_sec_, 0.25);
+  pnh_.param("hybrid_preinflate_roll_min_angle_rad",
+             hybrid_preinflate_roll_min_angle_rad_, 8.0 * M_PI / 180.0);
+  pnh_.param("hybrid_preinflate_roll_growth_rad",
+             hybrid_preinflate_roll_growth_rad_, 0.1 * M_PI / 180.0);
+  pnh_.param("hybrid_preinflate_roll_rate_rad_s",
+             hybrid_preinflate_roll_rate_rad_s_, 0.4 * M_PI / 180.0);
+  pnh_.param("hybrid_preinflate_roll_prediction_sec",
+             hybrid_preinflate_roll_prediction_sec_, 0.30);
+  pnh_.param("hybrid_preinflate_roll_confirm_sec",
+             hybrid_preinflate_roll_confirm_sec_, 0.08);
   pnh_.param("hybrid_lift_target_no_unload_timeout_sec",
              hybrid_lift_target_no_unload_timeout_sec_, 0.35);
   pnh_.param("hybrid_regrip_roll_recovery_rad",
@@ -85,6 +95,11 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       !std::isfinite(hybrid_lift_worsening_roll_rate_rad_s_) ||
       !std::isfinite(hybrid_lift_worsening_roll_confirm_sec_) ||
       !std::isfinite(hybrid_lift_worsening_roll_prediction_sec_) ||
+      !std::isfinite(hybrid_preinflate_roll_min_angle_rad_) ||
+      !std::isfinite(hybrid_preinflate_roll_growth_rad_) ||
+      !std::isfinite(hybrid_preinflate_roll_rate_rad_s_) ||
+      !std::isfinite(hybrid_preinflate_roll_prediction_sec_) ||
+      !std::isfinite(hybrid_preinflate_roll_confirm_sec_) ||
       !std::isfinite(hybrid_lift_target_no_unload_timeout_sec_) ||
       !std::isfinite(hybrid_regrip_roll_recovery_rad_) ||
       !std::isfinite(hybrid_regrip_roll_emergency_rad_) ||
@@ -97,6 +112,16 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       hybrid_lift_worsening_roll_confirm_sec_ > 0.5 ||
       hybrid_lift_worsening_roll_prediction_sec_ < 0.05 ||
       hybrid_lift_worsening_roll_prediction_sec_ > 0.5 ||
+      hybrid_preinflate_roll_min_angle_rad_ < 0.0 ||
+      hybrid_preinflate_roll_min_angle_rad_ > 0.349066 ||
+      hybrid_preinflate_roll_growth_rad_ <= 0.0 ||
+      hybrid_preinflate_roll_growth_rad_ > 0.0349066 ||
+      hybrid_preinflate_roll_rate_rad_s_ <= 0.0 ||
+      hybrid_preinflate_roll_rate_rad_s_ > 0.174533 ||
+      hybrid_preinflate_roll_prediction_sec_ < 0.05 ||
+      hybrid_preinflate_roll_prediction_sec_ > 0.5 ||
+      hybrid_preinflate_roll_confirm_sec_ < 0.04 ||
+      hybrid_preinflate_roll_confirm_sec_ > 0.5 ||
       hybrid_lift_target_no_unload_timeout_sec_ < 0.10 ||
       hybrid_lift_target_no_unload_timeout_sec_ > 2.0 ||
       hybrid_regrip_roll_recovery_rad_ <
@@ -133,6 +158,10 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   recovery_param("recovery_target_rate_rad_s", roll_recovery_config_.max_target_rate, 0.02, 0.3);
   recovery_param("recovery_prediction_acceleration_limit_rad_s2",
                  roll_recovery_config_.max_prediction_acceleration, 0.1, 10.0);
+  recovery_param("recovery_breakaway_acceleration_rad_s2",
+                 roll_recovery_config_.breakaway_acceleration, 0.05, 5.0);
+  recovery_param("recovery_breakaway_thrust_margin_n",
+                 roll_recovery_config_.breakaway_thrust_margin, 0.0, 1.0);
   recovery_param("recovery_prediction_acceleration_horizon_sec",
                  roll_recovery_config_.prediction_acceleration_horizon,
                  0.02, 0.50);
@@ -140,6 +169,12 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   recovery_param("recovery_rate_ki_n_rad", roll_recovery_config_.rate_ki, 0.0, 10.0);
   recovery_param("recovery_integral_slew_n_s", roll_recovery_config_.integral_rate, 0.05, 1.0);
   recovery_param("recovery_thrust_rise_n_s", roll_recovery_config_.rise, 0.2, 4.0);
+  recovery_nominal_thrust_rise_n_s_ = roll_recovery_config_.rise;
+  recovery_preinflate_thrust_rise_n_s_ =
+      recovery_nominal_thrust_rise_n_s_;
+  recovery_param("recovery_preinflate_thrust_rise_n_s",
+                 recovery_preinflate_thrust_rise_n_s_,
+                 recovery_nominal_thrust_rise_n_s_, 6.0);
   recovery_param("recovery_thrust_fall_n_s", roll_recovery_config_.fall, 0.5, 8.0);
   recovery_param("recovery_terminal_brake_fall_n_s",
                  roll_recovery_config_.terminal_brake_fall, 1.0, 15.0);
@@ -233,6 +268,15 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
                  recovery_circle_release_penalty_n_, 0.0, 3.0);
   recovery_param("recovery_circle_min_signed_lever_m",
                  recovery_circle_min_signed_lever_m_, 0.001, 0.05);
+  recovery_param("recovery_extension_prediction_sec",
+                 recovery_extension_prediction_sec_, 0.05, 1.0);
+  recovery_param("recovery_rate_arrest_min_thrust_n",
+                 recovery_rate_arrest_min_thrust_n_, 0.5, 4.0);
+  recovery_param("recovery_rate_arrest_max_thrust_n",
+                 recovery_rate_arrest_max_thrust_n_,
+                 recovery_rate_arrest_min_thrust_n_, 5.0);
+  recovery_param("recovery_rate_arrest_release_sec",
+                 recovery_rate_arrest_release_sec_, 0.02, 0.5);
   recovery_param("recovery_circle_release_support_scale",
                  recovery_circle_release_support_scale_, 0.0, 1.0);
   recovery_param("recovery_wrong_sign_shaping_thrust_n",
@@ -1265,7 +1309,7 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   pnh_.param("hybrid_lift_unload_pair_memory_sec",
       hybrid_single_config_.unload_pair_memory,.15);
   pnh_.param("hybrid_lift_unload_pitch_rad",
-      hybrid_single_config_.unload_pitch,4.*M_PI/180.);
+      hybrid_single_config_.unload_pitch,3.*M_PI/180.);
   pnh_.param("hybrid_lift_unload_height_m",
       hybrid_single_config_.unload_height,.003);
   pnh_.param("hybrid_directional_pitch_sign",
@@ -1693,7 +1737,12 @@ void AttitudePressureController::targetCallback(const geometry_msgs::Vector3Stam
       recovery_geometry_reestimate_attempted_ = false;
       recovery_geometry_reestimate_pending_ = false;
       recovery_circle_event_locked_ = false;
+      recovery_event_contact_pivot_locked_ = false;
+      recovery_selected_contact_pivot_enabled_ = false;
       recovery_preferred_pair_locked_ = false;
+      recovery_extension_mode_latched_ = false;
+      recovery_rate_arrest_active_ = false;
+      recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
       return;
     }
   target_roll_ = msg->vector.x;
@@ -1705,7 +1754,12 @@ void AttitudePressureController::targetCallback(const geometry_msgs::Vector3Stam
   recovery_geometry_reestimate_attempted_ = false;
   recovery_geometry_reestimate_pending_ = false;
   recovery_circle_event_locked_ = false;
+  recovery_event_contact_pivot_locked_ = false;
+  recovery_selected_contact_pivot_enabled_ = false;
   recovery_preferred_pair_locked_ = false;
+  recovery_extension_mode_latched_ = false;
+  recovery_rate_arrest_active_ = false;
+  recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
 }//目標姿勢
 
 void AttitudePressureController::mocapCallback(
@@ -1923,7 +1977,12 @@ void AttitudePressureController::inchwormCommandCallback(
   recovery_geometry_reestimate_attempted_ = false;
   recovery_geometry_reestimate_pending_ = false;
   recovery_circle_event_locked_ = false;
+  recovery_event_contact_pivot_locked_ = false;
+  recovery_selected_contact_pivot_enabled_ = false;
   recovery_preferred_pair_locked_ = false;
+  recovery_extension_mode_latched_ = false;
+  recovery_rate_arrest_active_ = false;
+  recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   action_c_resume_pending_ = false;
   action_c_requested_recovery_trigger_rad_ =
       std::numeric_limits<double>::quiet_NaN();
@@ -1970,7 +2029,12 @@ bool AttitudePressureController::enableCallback(std_srvs::SetBool::Request& req,
   recovery_geometry_reestimate_attempted_ = false;
   recovery_geometry_reestimate_pending_ = false;
   recovery_circle_event_locked_ = false;
+  recovery_event_contact_pivot_locked_ = false;
+  recovery_selected_contact_pivot_enabled_ = false;
   recovery_preferred_pair_locked_ = false;
+  recovery_extension_mode_latched_ = false;
+  recovery_rate_arrest_active_ = false;
+  recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   grasp_baseline_valid_ = false;
   inchworm_active_ = false;
   action_c_recovery_gate_.reset();
@@ -2277,7 +2341,8 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               action_c_posture_resume_rad_ +
                   2.0 * roll_recovery_config_.stop_margin);
           const double active_correction_trigger =
-              recovery_candidate_reselect_pending_
+              (recovery_candidate_reselect_pending_ ||
+               continuous_recovery_retry_opposite_pending_)
               ? action_c_posture_resume_rad_
               : (action_c_resume_pending_
               ? (continuous_recovery_waiting_for_settle_
@@ -2315,29 +2380,25 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               action_c_roll_trend_.ready && !action_c_roll_trend_.worsening;
           const bool c_recovery_requested = !c_trend_mode || c_hard_roll ||
               c_preload_roll || action_c_roll_trend_.worsening;
-          // A closed-loop handoff may have proved that raising a released
-          // pair toward nominal pressure worsens roll and retained the best
-          // load-bearing pressure instead.  That quiet measured equilibrium
-          // is the OUTPUT of recovery, not a fresh recovery request.  The old
-          // code accepted it in RECOVER and then, one GRASP tick later,
-          // started the identical correction again solely because its static
-          // bias remained just above 10 deg.  Permit one automatic gait
-          // restart while the retained equilibrium is stationary and inside
-          // the independent locomotion hard boundary.  A worsening trend or
-          // the hard boundary still requests correction immediately.
-          const double retained_equilibrium_limit = std::min(
-              action_c_posture_hard_roll_rad_,
-              std::max(action_c_posture_recovery_trigger_rad_,
-                  hybrid_config_.roll_limit - M_PI / 180.0));
+          // A contact-conditioned grasp is a valid recovery result only in
+          // the requested final roll band.  A quiet 10--20-deg bias is not an
+          // equilibrium to accept: it still leaves little margin for the
+          // next locomotion stroke.  In particular, a pending fresh/opposite
+          // candidate selected by the handoff must never be hidden by this
+          // stationary-contact exception.
+          const double retained_equilibrium_limit =
+              action_c_posture_resume_rad_;
           const bool retained_contact_equilibrium =
               action_c_resume_pending_ &&
+              !recovery_candidate_reselect_pending_ &&
+              !continuous_recovery_retry_opposite_pending_ &&
               recovery_handoff_pressure_trimmed_ && stable_c_roll &&
               attitude_error <= retained_equilibrium_limit;
           const bool completed_recovery_restart_allowed =
               !continuous_recovery_waiting_for_settle_ ||
-              recovery_candidate_reselect_pending_ || c_hard_roll ||
-              (attitude_error > completed_recovery_restart_angle &&
-               action_c_roll_trend_.worsening);
+              recovery_candidate_reselect_pending_ ||
+              continuous_recovery_retry_opposite_pending_ || c_hard_roll ||
+              attitude_error > completed_recovery_restart_angle;
           // A geometry re-estimation changes the contact state by restoring
           // equal four-arm support.  Candidate evidence from the old state is
           // invalid only after the measured chamber pressures have reached
@@ -2346,16 +2407,27 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
           const bool geometry_reestimate_ready =
               !recovery_geometry_reestimate_pending_ ||
               (grasp_pressure_ready && recovery_pressure_fresh);
+          // A timed-out recovery pass can leave the driven pair partly
+          // released and carrying nonzero thrust.  Starting a new pass from
+          // that transient contact state releases the same pair a second
+          // time and can turn a small residual error into a fall.  Finish
+          // the commanded regrasp before retrying a moderate residual.  The
+          // independent hard-roll path remains immediate, so this guard
+          // never delays an emergency catch.
+          const bool recovery_restart_support_ready =
+              !continuous_recovery_waiting_for_settle_ ||
+              grasp_pressure_ready || c_hard_roll;
           // A handoff already confirmed the recovery request. Do not demand
           // another pressure/settling/trend cycle before correcting it.
           const bool continuous_recovery_requested = continuous_c_recovery &&
               target_received_ && body_imu_fresh && pressure_valid && neurons_fresh &&
               recovery_pressure_fresh && !continuous_recovery_blocked_ &&
-              geometry_reestimate_ready &&
+              geometry_reestimate_ready && recovery_restart_support_ready &&
               angular_rate < correction_max_angular_rate_ &&
               attitude_error > active_correction_trigger &&
               completed_recovery_restart_allowed &&
               (recovery_candidate_reselect_pending_ ||
+               continuous_recovery_retry_opposite_pending_ ||
                (action_c_resume_pending_ && !continuous_recovery_started_ &&
                 !retained_contact_equilibrium) || c_hard_roll);
           const bool recovery_settled = action_c_boundary_settle_gate_.update(
@@ -2374,9 +2446,8 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               stopInchwormToGrasp(now, "Action C recovery deflation/regrasp settling timeout");
               break;
             }
-          // C correction succeeds inside 3 deg. At regrasp, also accept a stable
-          // offset below the hard limit, so a completed recovery does not
-          // immediately trigger again solely because roll remains above 10 deg.
+          // Recovery succeeds only in the requested final band. Stationary
+          // contact outside it is still a residual posture error.
           const bool resume_ready = action_c_resume_gate_.update(
               action_c_resume_pending_ && target_received_ &&
               (!continuous_recovery_blocked_ || continuous_recovery_waiting_for_settle_) &&
@@ -2384,7 +2455,8 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               grasp_pressure_ready && recovery_settled &&
               (continuous_recovery_waiting_for_settle_
                   ? attitude_error <= action_c_posture_resume_rad_
-                  : (attitude_error <= active_correction_trigger || stable_c_roll)) &&
+                  : (attitude_error <= active_correction_trigger ||
+                     retained_contact_equilibrium)) &&
               recovery_pressure_fresh &&
               angular_rate <= (continuous_recovery_waiting_for_settle_
                   ? std::min(0.05, action_c_pre_roll_rate_tolerance_rad_s_)
@@ -2429,6 +2501,8 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   recovery_rejected_candidate_mask_ = 0;
                   recovery_rejected_direction_sign_ = 0;
                   recovery_circle_event_locked_ = false;
+                  recovery_event_contact_pivot_locked_ = false;
+                  recovery_selected_contact_pivot_enabled_ = false;
                   recovery_preferred_pair_locked_ = false;
                   ROS_INFO("Balanced four-arm support reached; cleared old contact-state candidate rejections and re-estimating recovery geometry");
                 }
@@ -2637,6 +2711,17 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                         }
                     }
                   continuous_roll_recovery_.reset(attitude_error, now.toSec());
+                  // A body which is still rolling away from the target needs
+                  // correction authority before the slower contact-response
+                  // estimator has identified breakaway.  Use the emergency
+                  // slew for rate arrest even though extended-arm mode is
+                  // already latched; excluding extension here made every
+                  // urgent real-arm recovery fall back to the nominal slew.
+                  roll_recovery_config_.rise =
+                      (action_c_recovery_urgent_thrust_rise_ ||
+                       recovery_rate_arrest_active_)
+                      ? recovery_preinflate_thrust_rise_n_s_
+                      : recovery_nominal_thrust_rise_n_s_;
                   recovery_wrong_geometry_since_ = ros::Time(0);
                   recovery_wrong_geometry_transition_bad_since_ = ros::Time(0);
                   recovery_candidate_retained_worsening_since_ = ros::Time(0);
@@ -2731,11 +2816,16 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                           std::max(base_pressure_kpa_, grasp_pressure_[arm]));
                   publishBottomTarget(0.0);
                   publishPressureTarget(prepare_pressure_, std::numeric_limits<double>::infinity());
-                  ROS_INFO("Action C continuous roll recovery: exhaust bottom; selected pair target pressure %.1f kPa (%s); no zero-pressure wait; limit %.2f N per rotor",
+                  ROS_INFO("Action C continuous roll recovery: exhaust bottom; selected pair target pressure %.1f kPa (%s); no zero-pressure wait; limit %.2f N per rotor, rise %.2f N/s%s",
                            recovery_selected_pair_pressure_kpa_,
                            recovery_selected_pair_release_
                                ? "partial/full release" : "nominal grasp",
-                           roll_recovery_config_.limit);
+                           roll_recovery_config_.limit,
+                           roll_recovery_config_.rise,
+                           recovery_extension_mode_latched_
+                               ? " (10/7-style extended-arm slew)"
+                               : (action_c_recovery_urgent_thrust_rise_
+                                   ? " (bottom-inflation urgent)" : ""));
                 }
             }
           }
@@ -2761,6 +2851,88 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                 }
               const double signed_error = roll_error * correction_axis_[0];
               const double omega = recovery_roll_rate * correction_axis_[0];
+              // Phase transitions use the same filtered whole-body rate as
+              // the inner controller.  The raw Spinal sample crosses zero on
+              // arm/contact impacts; using it produced 34 arrest/return
+              // transitions in one 39-s hardware recovery and repeatedly
+              // discarded the authority needed to overcome static contact.
+              const double phase_rate =
+                  continuous_roll_recovery_.rate_initialized
+                  ? continuous_roll_recovery_.filtered_rate : omega;
+              const double phase_motion_rate = std::max(
+                  0.01, 0.5 * roll_recovery_config_.start_rate);
+              if (recovery_rate_arrest_active_)
+                {
+                  if (phase_rate >= phase_motion_rate)
+                    {
+                      if (recovery_rate_arrest_nonoutward_since_.isZero())
+                        recovery_rate_arrest_nonoutward_since_ = now;
+                      if ((now - recovery_rate_arrest_nonoutward_since_).toSec() >=
+                          recovery_rate_arrest_release_sec_)
+                        {
+                          recovery_rate_arrest_active_ = false;
+                          recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
+                          continuous_roll_recovery_.beginAngleReturn();
+                          ROS_INFO("Emergency extended-arm recovery arrested outward roll; switching from zero-rate braking to angle return");
+                        }
+                    }
+                  else
+                    recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
+                }
+              else
+                {
+                  // Rate arrest is a reusable emergency state, not a
+                  // one-shot startup phase. A short compliant rebound can
+                  // make signed rate positive for the release dwell while
+                  // the body is still far from the target. If outward roll
+                  // subsequently resumes at a meaningful rate, restore the
+                  // 2-N floor and the wider PI authority immediately instead
+                  // of remaining behind the ordinary 1.5-N geometry probe
+                  // ceiling for the rest of this recovery event.
+                  const double rearrest_rate = std::max(
+                      0.01, 0.5 * roll_recovery_config_.start_rate);
+                  if (signed_error > roll_recovery_config_.stop &&
+                      phase_rate <= -rearrest_rate &&
+                      !continuous_roll_recovery_.terminal_brake_latched &&
+                      !continuous_roll_recovery_.fault &&
+                      !continuous_roll_recovery_.timed_out)
+                    {
+                      recovery_rate_arrest_active_ = true;
+                      recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
+                      ROS_WARN("Emergency roll deterioration resumed at %.2f deg / %.2f deg/s; re-latching outward-rate arrest",
+                               signed_error * 180.0 / M_PI,
+                               phase_rate * 180.0 / M_PI);
+                    }
+                }
+              auto active_roll_recovery_config = roll_recovery_config_;
+              // During an emergency extension, first cancel the outward
+              // velocity.  A zero angle gain makes the existing rate PI aim
+              // at zero signed rate without introducing a second thrust
+              // controller; after the short non-outward dwell the ordinary
+              // geometry and angle-dependent target rate resume.
+              if (recovery_rate_arrest_active_)
+                {
+                  active_roll_recovery_config.rate_arrest_mode = true;
+                  active_roll_recovery_config.limit = std::min(
+                      active_roll_recovery_config.limit,
+                      recovery_rate_arrest_max_thrust_n_);
+                  active_roll_recovery_config.angle_gain = 0.0;
+                  // Invalid/transitioning bend geometry otherwise reduces
+                  // feed-forward to 0.5 N.  During outward-rate arrest only,
+                  // retain enough bounded authority to oppose the measured
+                  // deterioration.  This is still slew-limited, and the
+                  // normal FF+PI law returns as soon as outward roll stops.
+                  active_roll_recovery_config.fallback_thrust = std::min(
+                      active_roll_recovery_config.limit,
+                      std::max(active_roll_recovery_config.fallback_thrust,
+                               recovery_rate_arrest_min_thrust_n_));
+                  active_roll_recovery_config.minimum_feedforward = std::min(
+                      active_roll_recovery_config.limit,
+                      recovery_rate_arrest_min_thrust_n_);
+                  active_roll_recovery_config.rise = std::max(
+                      active_roll_recovery_config.rise,
+                      recovery_preinflate_thrust_rise_n_s_);
+                }
               const auto model = measuredRecoveryModel();
               auto& response = roll_recovery_response_[correction_axis_[0] > 0.0 ? 0 : 1];
               const bool recovery_inputs_valid = recovery_pressure_fresh &&
@@ -2769,7 +2941,8 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   std::abs(body_angular_velocity_[0]) <
                       recovery_measurement_rate_limit_rad_s_;
               double predictive_target = std::numeric_limits<double>::quiet_NaN();
-              if (recovery_predictive_config_.enabled && recovery_inputs_valid && model.valid &&
+              if (recovery_predictive_config_.enabled &&
+                  !recovery_rate_arrest_active_ && recovery_inputs_valid && model.valid &&
                   std::isfinite(omega) &&
                   std::abs(omega) < recovery_measurement_rate_limit_rad_s_ &&
                   signed_error > roll_recovery_config_.stop && !continuous_roll_recovery_.fault)
@@ -2793,7 +2966,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   config.pressure_max=std::min(maximum_pressure_kpa_,
                       std::min(grasp_pressure_[arms[0]],grasp_pressure_[arms[1]]));
                   config.pressure_slew=pressure_rate_limit_kpa_s_;
-                  const auto candidate=recovery_predictive_.update(observation,config,roll_recovery_config_,
+                  const auto candidate=recovery_predictive_.update(observation,config,active_roll_recovery_config,
                       [&](size_t, double pressure, double force) {
                         const auto range=bend_model_.ranges();
                         const double coordinate=force+bend_model_thrust_offset_n_;
@@ -2831,7 +3004,9 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                       recovery_predictive_.prediction_error,recovery_predictive_.pressure_prediction_error,
                       recovery_predictive_.bend_prediction_error*180./M_PI,recovery_predictive_.accepted_observations);
                 }
-              else if(recovery_predictive_config_.enabled && !recovery_predictive_config_.shadow &&
+              else if(recovery_predictive_config_.enabled &&
+                      !recovery_rate_arrest_active_ &&
+                      !recovery_predictive_config_.shadow &&
                       (!recovery_inputs_valid || !model.valid))
                 continuous_roll_recovery_.fault=true;
               // Preserve the extended-arm recovery geometry throughout the
@@ -2880,8 +3055,9 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               // trial, its current measured lever was still negative while
               // that extension was taking place; applying the ordinary PI
               // force during this interval increased roll from 19 to 39 deg.
-              // Permit only a small shaping force until the measured lever
-              // itself has the restoring sign and useful magnitude.
+              // Start with a bounded, measurable probe force until either
+              // the measured lever has a restoring sign or the actual body
+              // response confirms that the selected discrete pair is useful.
               const bool measured_restoring_geometry = model.valid &&
                   std::isfinite(model.lever) &&
                   model.lever >= roll_recovery_config_.min_lever;
@@ -2902,61 +3078,27 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   if (recovery_wrong_geometry_since_.isZero())
                     {
                       recovery_wrong_geometry_since_ = now;
-                      recovery_wrong_geometry_reference_error_rad_ =
-                          std::abs(signed_error);
                     }
-                  // The endpoint selected by the circle model is not enough:
-                  // a slow pneumatic exhaust traverses intermediate contact
-                  // states.  If the *current* measured lever is wrong and the
-                  // body keeps accelerating outward, reject the path before
-                  // waiting several seconds for its target pressure.  Error
-                  // growth and outward rate are both required so sensor noise
-                  // or harmless contact settling cannot switch pairs.
-                  const bool transition_error_worsened =
-                      std::isfinite(
-                          recovery_wrong_geometry_reference_error_rad_) &&
-                      std::abs(signed_error) >=
-                          recovery_wrong_geometry_reference_error_rad_ +
-                          recovery_wrong_geometry_transition_worsening_rad_;
-                  const bool transition_outward =
-                      omega <=
-                          -recovery_wrong_geometry_transition_outward_rate_rad_s_;
-                  if (!recovery_response_faults_enabled &&
-                      transition_error_worsened && transition_outward)
-                    {
-                      if (recovery_wrong_geometry_transition_bad_since_.isZero())
-                        recovery_wrong_geometry_transition_bad_since_ = now;
-                    }
-                  else
-                    recovery_wrong_geometry_transition_bad_since_ =
-                        ros::Time(0);
-                  const double transition_bad_age =
-                      recovery_wrong_geometry_transition_bad_since_.isZero()
-                      ? 0.0
-                      : (now -
-                          recovery_wrong_geometry_transition_bad_since_).toSec();
-                  const bool transition_geometry_worsened =
-                      transition_bad_age >=
-                          recovery_wrong_geometry_transition_confirm_sec_;
-                  if (transition_geometry_worsened)
-                    {
-                      continuous_roll_recovery_.fault = true;
-                      continuous_roll_recovery_.wrong_way = true;
-                      continuous_roll_recovery_.unresponsive = false;
-                      ROS_ERROR("Recovery pair %zu+%zu has a non-restoring measured lever %.4f m during pressure transfer; roll worsened %.2f -> %.2f deg at %.2f deg/s for %.2f s. Cutting thrust and re-selecting without waiting for target pressure",
-                                recovery_selected_pair_index_ == 0 ? 0ul : 2ul,
-                                recovery_selected_pair_index_ == 0 ? 1ul : 3ul,
-                                model.lever,
-                                recovery_wrong_geometry_reference_error_rad_ *
-                                    180.0 / M_PI,
-                                std::abs(signed_error) * 180.0 / M_PI,
-                                omega * 180.0 / M_PI,
-                                transition_bad_age);
-                    }
+                  // Exhausting the selected pair moves the contact pivot and
+                  // can increase roll before its rotor moment has any useful
+                  // authority.  That pressure-transfer motion is not an
+                  // actuator-sign experiment.  In particular, the positive-
+                  // roll hardware trial selected the physically correct 2+3
+                  // pair but rejected it here while its command was still
+                  // zero.  Keep the pair and defer every wrong-way decision
+                  // until pressure has settled and the rotors have delivered
+                  // the configured meaningful probe force.
+                  recovery_wrong_geometry_transition_bad_since_ = ros::Time(0);
+                  const bool meaningful_probe_authority =
+                      continuous_roll_recovery_.thrust + 0.05 >=
+                          roll_recovery_config_.response_fault_min_thrust;
                   if (recovery_response_faults_enabled &&
+                      meaningful_probe_authority &&
                       recovery_wrong_geometry_pressure_settled_since_.isZero())
                     {
                       recovery_wrong_geometry_pressure_settled_since_ = now;
+                      recovery_wrong_geometry_reference_error_rad_ =
+                          std::abs(signed_error);
                       recovery_wrong_geometry_reference_rate_rad_s_ = omega;
                       recovery_wrong_geometry_best_rate_rad_s_ = omega;
                     }
@@ -2974,10 +3116,36 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                       recovery_wrong_geometry_best_rate_rad_s_ >=
                           recovery_wrong_geometry_reference_rate_rad_s_ +
                           recovery_wrong_geometry_rate_improvement_rad_s_;
+                  // A bounded probe may first cancel the continuing fall
+                  // without immediately reversing angular velocity.  Once
+                  // the probe has been held for the confirmation interval,
+                  // a rate which has not become materially more outward is
+                  // sufficient to continue increasing the same selected
+                  // pair.  Requiring a full 2-deg/s improvement deadlocked a
+                  // correct 2+3 pair at 0.6 N.
+                  const bool probe_did_not_worsen_rate =
+                      pressure_settled_age >=
+                          recovery_wrong_geometry_response_confirm_sec_ &&
+                      std::isfinite(recovery_wrong_geometry_reference_rate_rad_s_) &&
+                      omega >= recovery_wrong_geometry_reference_rate_rad_s_ -
+                          0.25 * recovery_wrong_geometry_rate_improvement_rad_s_;
+                  // A non-worsening rate permits a cautious probe, but does
+                  // not prove that a nearly zero moment arm can recover roll.
+                  // Require retained angle progress or a clearly helpful
+                  // whole-body rate within the bounded observation window.
+                  const bool retained_probe_progress =
+                      std::isfinite(
+                          recovery_wrong_geometry_reference_error_rad_) &&
+                      recovery_wrong_geometry_reference_error_rad_ -
+                              std::abs(signed_error) >=
+                          correction_progress_epsilon_;
+                  const bool helpful_probe_motion =
+                      omega >= roll_recovery_config_.start_rate;
                   const bool response_was_observed =
                       recovery_wrong_geometry_response_observed_;
                   recovery_wrong_geometry_response_observed_ =
-                      response_was_observed || rate_response_confirmed;
+                      response_was_observed || rate_response_confirmed ||
+                      probe_did_not_worsen_rate;
                   if (!response_was_observed &&
                       recovery_wrong_geometry_response_observed_)
                     {
@@ -2988,10 +3156,11 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                       // inherited before pressure settled.
                       continuous_roll_recovery_.resetResponseWindow(
                           signed_error, now.toSec());
-                      ROS_INFO("Recovery pair %zu+%zu retained a model-wrong lever %.4f m, but pressure-settled signed rate improved %.2f -> %.2f deg/s; enabling measured-response authority",
+                      ROS_INFO("Recovery pair %zu+%zu retained a model-wrong lever %.4f m, but its pressure-settled %.2f-N probe did not worsen signed rate %.2f -> %.2f deg/s; enabling measured-response authority",
                                recovery_selected_pair_index_ == 0 ? 0ul : 2ul,
                                recovery_selected_pair_index_ == 0 ? 1ul : 3ul,
                                model.lever,
+                               continuous_roll_recovery_.thrust,
                                recovery_wrong_geometry_reference_rate_rad_s_ *
                                    180.0 / M_PI,
                                recovery_wrong_geometry_best_rate_rad_s_ *
@@ -3004,25 +3173,27 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                       std::isfinite(recovery_wrong_geometry_reference_error_rad_) &&
                       std::abs(signed_error) >=
                           recovery_wrong_geometry_reference_error_rad_ +
-                          recovery_wrong_geometry_worsening_rad_;
+                          recovery_wrong_geometry_worsening_rad_ &&
+                      std::isfinite(recovery_wrong_geometry_reference_rate_rad_s_) &&
+                      omega <= recovery_wrong_geometry_reference_rate_rad_s_ -
+                          recovery_wrong_geometry_rate_improvement_rad_s_;
                   const bool pressure_settled_timeout =
-                      !recovery_wrong_geometry_response_observed_ &&
                       pressure_settled_age >=
-                          recovery_wrong_geometry_timeout_sec_;
+                          recovery_wrong_geometry_timeout_sec_ &&
+                      !retained_probe_progress && !helpful_probe_motion;
                   if (pressure_settled_timeout ||
                       geometry_worsened)
                     {
-                      // This check is independent of the ordinary 1.5-N
-                      // response gate: the 0.6-N shaping cap is deliberately
-                      // too small for rotor-response identification.  Reject
-                      // the contact geometry from its measured signed lever,
-                      // run thrust to zero, then use the existing balanced
-                      // regrasp/re-selection path.
+                      // This decision is made only after the pressure-settled
+                      // meaningful-force probe above.  A changing kinematic
+                      // lever or motion inherited from bottom/pressure
+                      // transfer alone can no longer reject the selected
+                      // pair.
                       continuous_roll_recovery_.fault = true;
                       continuous_roll_recovery_.wrong_way = geometry_worsened;
                       continuous_roll_recovery_.unresponsive =
                           !geometry_worsened;
-                      ROS_ERROR("Recovery pair %zu+%zu retained a non-restoring measured lever %.4f m for %.2f s after pressure settled (roll error %.2f -> %.2f deg, signed rate %.2f -> best %.2f deg/s); rejecting this contact state before the global timeout",
+                      ROS_ERROR("Recovery pair %zu+%zu retained a non-restoring measured lever %.4f m for %.2f s after pressure settled without useful roll progress (roll error %.2f -> %.2f deg, signed rate %.2f -> best %.2f deg/s); rejecting this contact state before the global timeout",
                                 recovery_selected_pair_index_ == 0 ? 0ul : 2ul,
                                 recovery_selected_pair_index_ == 0 ? 1ul : 3ul,
                                 model.lever, pressure_settled_age,
@@ -3052,12 +3223,17 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   recovery_selected_pair_release_ &&
                   !measured_restoring_geometry &&
                   !recovery_wrong_geometry_response_observed_
-                  ? (recovery_selected_path_requires_zero_thrust_
-                        ? 0.0 : recovery_wrong_sign_shaping_thrust_n_)
+                  ? std::max(
+                        std::max(recovery_wrong_sign_shaping_thrust_n_,
+                                 roll_recovery_config_.response_fault_min_thrust),
+                        recovery_rate_arrest_active_
+                            ? std::min(roll_recovery_config_.limit,
+                                       recovery_rate_arrest_max_thrust_n_)
+                            : 0.0)
                   : std::numeric_limits<double>::infinity();
               double thrust = continuous_roll_recovery_.update(
                   recovery_inputs_valid ? signed_error : std::numeric_limits<double>::quiet_NaN(),
-                  omega, now.toSec(), dt, model, roll_recovery_config_, response,
+                  omega, now.toSec(), dt, model, active_roll_recovery_config, response,
                   predictive_target,
                   recovery_response_faults_enabled &&
                       (!wrong_geometry_candidate ||
@@ -3161,7 +3337,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                 prepare_shape_thrust_[arm] = prepare_arm_active_[arm] ? thrust : 0.0;
               publishCorrectionThrust(prepare_shape_thrust_);
               ROS_INFO_THROTTLE(0.25,
-                  "Action C model-rate recovery: roll error %.2f deg, rate %.3f/%.3f rad/s, pair thrust %.2f/%.2f N (command/target), FF %.2f N, I %.2f N, breakaway %.2f N, moment %.3f Nm, lever %.3f m, model=%d learned=%d gain %.3f samples=%u, moving=%d stalled=%d wrong_way=%d response_gate=%d terminal_brake=%d reapproach=%d cap=%.2f N geometry_cap=%.2f N speed_brake=%d predicted_brake=%d horizon=%.3f s, gravity_ff=0, bottom %.1f kPa (exhaust, no wait), recent_progress %.2f deg / %.2f s, progress_age %.2f s",
+                  "Action C model-rate recovery: roll error %.2f deg, rate %.3f/%.3f rad/s, pair thrust %.2f/%.2f N (command/target), FF %.2f N, I %.2f N, breakaway %.2f N, moment %.3f Nm, lever %.3f m, model=%d learned=%d gain %.3f samples=%u, moving=%d stalled=%d wrong_way=%d response_gate=%d extension_latched=%d rate_arrest=%d terminal_brake=%d reapproach=%d cap=%.2f N geometry_cap=%.2f N speed_brake=%d predicted_brake=%d horizon=%.3f s, gravity_ff=0, bottom %.1f kPa (exhaust, no wait), recent_progress %.2f deg / %.2f s, progress_age %.2f s",
                   signed_error * 180.0 / M_PI, omega, continuous_roll_recovery_.target_rate, thrust,
                   continuous_roll_recovery_.target_thrust,
                   continuous_roll_recovery_.feedforward, continuous_roll_recovery_.boost,
@@ -3171,6 +3347,8 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   continuous_roll_recovery_.moving, continuous_roll_recovery_.stalled,
                   continuous_roll_recovery_.wrong_way,
                   recovery_response_faults_enabled,
+                  recovery_extension_mode_latched_,
+                  recovery_rate_arrest_active_,
                   continuous_roll_recovery_.terminal_brake_latched,
                   continuous_roll_recovery_.low_authority_reapproach,
                   continuous_roll_recovery_.reapproach_authority,
@@ -4087,6 +4265,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               const bool pressure_advance_allowed =
                   recovery_selected_pair_release_ &&
                   !recovery_handoff_pressure_trimmed_ &&
+                  !recovery_handoff_rollback_before_reselect_ &&
                   support_transfer_equalized &&
                   abs_error <= handoff_acceptance_error &&
                   std::abs(recovery_roll_rate) <= pressure_advance_rate_limit &&
@@ -4188,12 +4367,22 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   abs_error >= recovery_handoff_best_error_rad_ +
                       recovery_handoff_trim_margin_rad_ &&
                   pressure_distance_from_best >= 0.5;
+              // A clear outward body rate after pressure has moved away from
+              // the best measured point is not chamber noise.  Roll back in
+              // the same cycle instead of waiting through the ordinary
+              // pressure confirmation dwell while the soft contact keeps
+              // rotating the body.
+              const bool fast_pressure_worsening = pressure_worsening &&
+                  roll_error * recovery_roll_rate < -0.01 &&
+                  std::abs(recovery_roll_rate) >=
+                      0.5 * roll_recovery_config_.start_rate;
               if (pressure_worsening)
                 {
                   if (recovery_handoff_worsening_since_ < 0.0)
                     recovery_handoff_worsening_since_ = now.toSec();
-                  if (now.toSec() - recovery_handoff_worsening_since_ >=
-                      recovery_handoff_trim_confirm_sec_)
+                  if (fast_pressure_worsening ||
+                      now.toSec() - recovery_handoff_worsening_since_ >=
+                          recovery_handoff_trim_confirm_sec_)
                     {
                       recovery_handoff_pressure_trimmed_ = true;
                       // Regrasp means restoring a load-bearing contact, not
@@ -4444,48 +4633,11 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   recovery_handoff_braking_ = true;
                   recovery_handoff_brake_error_rad_ = abs_error;
                 }
-              // Latch the final rundown at the requested +/-3-deg boundary.
-              // Completion is checked separately after thrust reaches zero;
-              // if elastic rebound leaves the band, the same measured-good
-              // candidate is reopened below.  This avoids both accepting a
-              // biased zero-thrust grasp and driving a curved contact through
-              // its moment-sign reversal merely to obtain extra margin.
-              // Re-enabling 0/5-N commands
-              // at every 10-deg threshold crossing produced a limit cycle.
-              // Regrasp pressure can move the contact equilibrium slowly,
-              // with too little instantaneous angular rate to pass the old
-              // rate-product test.  Therefore use retained attitude loss,
-              // measured from both the braking point and the best observed
-              // handoff pose, to reopen PI.  A small quarter-degree boundary
-              // hysteresis rejects IMU noise, while the retained-pose test
-              // still requires a meaningful rebound before thrust resumes.
-              const double retained_handoff_error =
-                  std::isfinite(recovery_handoff_best_error_rad_)
-                  ? std::min(recovery_handoff_brake_error_rad_,
-                        recovery_handoff_best_error_rad_)
-                  : recovery_handoff_brake_error_rad_;
-              const double terminal_reopen_margin =
-                  handoff_measurement_margin;
-              // Completion intentionally permits the small sensor/contact
-              // hysteresis in `handoff_settle_error`.  Reopening at
-              // stop_angle+0.25 deg while completion allowed +0.50 deg made
-              // the two conditions overlap: the controller repeatedly
-              // restarted 0.5--0.7 N around 3.3--3.6 deg and could never
-              // accumulate its settle dwell.  Reopen only after leaving the
-              // complete settle corridor.  A genuine rebound is still caught
-              // well below the locomotion recovery trigger.
-              const double terminal_reopen_error =
-                  active_handoff_settle_error + terminal_reopen_margin;
-              if (!recovery_handoff_thrust_wrong_way_ &&
-                  recovery_handoff_braking_ &&
-                  abs_error >= terminal_reopen_error &&
-                  abs_error >= retained_handoff_error +
-                      terminal_reopen_margin)
-                {
-                  recovery_handoff_braking_ = false;
-                  recovery_handoff_brake_error_rad_ = 0.0;
-                  ready_start_ = ros::Time(0);
-                }
+              // Terminal braking is a one-way transition for this measured
+              // contact pass. Re-accelerating the same pair after pneumatic
+              // rebound caused the observed 0 -> 5.5-N command and a large
+              // overshoot. If zero-thrust contact settles outside the target,
+              // the bounded logic below requests a fresh measured pass.
               // While the released pair is still taking load, being briefly
               // inside the stop band must not erase the pressure-scheduled
               // feed-forward above.  Otherwise the changing contact force
@@ -4542,6 +4694,38 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               const bool thrust_stopped = std::all_of(
                   prepare_shape_thrust_.begin(), prepare_shape_thrust_.end(),
                   [](double thrust) { return thrust <= 0.01; });
+              // Crossing zero during regrasp is often caused by the pressure
+              // transfer itself, not by a wrong rotor pair.  First return to
+              // the pressure measured at the best roll.  Start a new rotor
+              // pass only if that contact-conditioned pressure has settled
+              // and the residual is still outside the accepted roll band.
+              const bool rollback_pressure_settled =
+                  recovery_handoff_rollback_before_reselect_ &&
+                  pressure_ready && thrust_stopped &&
+                  std::abs(recovery_roll_rate) <=
+                      roll_recovery_config_.settle_rate;
+              if (rollback_pressure_settled)
+                {
+                  recovery_handoff_rollback_before_reselect_ = false;
+                  if (abs_error > active_handoff_settle_error)
+                    {
+                      recovery_candidate_reselect_pending_ = true;
+                      recovery_handoff_thrust_wrong_way_ = true;
+                      recovery_handoff_integral_n_ = 0.0;
+                      ready_start_ = ros::Time(0);
+                      ROS_WARN("Action C best-pressure rollback settled at roll %.2f deg outside the %.2f-deg target; requesting a fresh measured-contact pass",
+                               roll_error * 180.0 / M_PI,
+                               active_handoff_settle_error * 180.0 / M_PI);
+                    }
+                  else
+                    {
+                      recovery_candidate_reselect_pending_ = false;
+                      recovery_handoff_thrust_wrong_way_ = false;
+                      ready_start_ = ros::Time(0);
+                      ROS_INFO("Action C best-pressure rollback retained roll %.2f deg inside the target; completing handoff without another rotor pass",
+                               roll_error * 180.0 / M_PI);
+                    }
+                }
               // A useful rotor correction may disappear after the selected
               // pair bends back around the object.  In that case the moment
               // does not necessarily reverse: it can simply vanish at a
@@ -4690,16 +4874,9 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                           recovery_rejected_candidate_mask_);
                     }
                 }
-              // The terminal brake has hysteresis so a small pneumatic
-              // rebound does not chatter the rotors.  That hysteresis must
-              // not become a deadband: a run can enter +/-3 deg, stop the
-              // rotors, and then settle quietly at 4--5 deg without ever
-              // reaching the one-degree reopen threshold.  After a full
-              // second with zero thrust, full contact pressure, low roll
-              // rate, and no retained improvement, reopen the same
-              // closed-loop handoff.  This is not a candidate rejection;
-              // the pair still has the correct moment sign and gets another
-              // measured low-authority approach before geometry is changed.
+              // A quiet residual outside the target after terminal rundown
+              // needs another measured pass, not same-pass re-acceleration.
+              // Preserve the grasp and ask GRASP to re-evaluate geometry.
               const double handoff_brake_deadlock_sec = std::max(
                   1.0, recovery_handoff_settle_sec_);
               const bool handoff_brake_deadlock = full_grasp_tracking &&
@@ -4711,22 +4888,11 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                       handoff_brake_deadlock_sec;
               if (handoff_brake_deadlock)
                 {
-                  recovery_handoff_braking_ = false;
-                  recovery_handoff_brake_error_rad_ = 0.0;
-                  // Reopening from zero with the integral cleared reproduced
-                  // the same 0.2--0.35-N sub-breakaway pulse indefinitely on
-                  // the 70-mm fixture. Seed only the already configured
-                  // low-authority detection force; rate feedback and the
-                  // predictive brake still reduce it immediately if the body
-                  // starts moving too fast.
-                  recovery_handoff_integral_n_ = std::min(
-                      roll_recovery_config_.limit,
-                      std::max(recovery_handoff_integral_n_,
-                               roll_recovery_config_.detect_thrust));
-                  recovery_handoff_progress_reference_rad_ = abs_error;
-                  recovery_handoff_last_progress_time_ = now.toSec();
+                  recovery_candidate_reselect_pending_ = true;
+                  recovery_handoff_pressure_trimmed_ = true;
+                  recovery_handoff_integral_n_ = 0.0;
                   ready_start_ = ros::Time(0);
-                  ROS_INFO("Action C recovery released terminal-brake deadband at %.2f deg after %.1f s without retained progress; resuming measured low-authority correction",
+                  ROS_WARN("Action C recovery terminal brake settled at %.2f deg after %.1f s without retained progress; preserving zero thrust and requesting a fresh measured-contact pass",
                            roll_error * 180.0 / M_PI,
                            handoff_brake_deadlock_sec);
                 }
@@ -4784,10 +4950,35 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               // opposite pair while the measured posture was still safe.
               const bool crossed_target_after_rundown =
                   !recovery_candidate_reselect_pending_ &&
+                  !recovery_handoff_rollback_before_reselect_ &&
                   thrust_stopped &&
                   signed_error <= -opposite_selection_boundary;
               if (crossed_target_after_rundown)
                 {
+                  const bool measured_best_pressure_available =
+                      std::isfinite(recovery_handoff_best_error_rad_);
+                  if (measured_best_pressure_available)
+                    {
+                      for (size_t arm = 0; arm < ARM_COUNT; ++arm)
+                        recovery_handoff_target_pressure_[arm] =
+                            hugmy::recoveryClamp(
+                                recovery_handoff_best_pressure_[arm],
+                                pressure_search_floor_for(arm),
+                                nominal_regrasp_pressure(arm));
+                      recovery_handoff_pressure_trimmed_ = true;
+                      recovery_handoff_rollback_before_reselect_ = true;
+                      recovery_handoff_braking_ = true;
+                      recovery_handoff_integral_n_ = 0.0;
+                      recovery_handoff_brake_error_rad_ = 0.0;
+                      ready_start_ = ros::Time(0);
+                      ROS_WARN("Action C regrasp crossed the roll target to %.2f deg; restoring best measured pressure [%.1f %.1f %.1f %.1f] kPa before considering another rotor pass",
+                               roll_error * 180.0 / M_PI,
+                               recovery_handoff_target_pressure_[0],
+                               recovery_handoff_target_pressure_[1],
+                               recovery_handoff_target_pressure_[2],
+                               recovery_handoff_target_pressure_[3]);
+                      break;
+                    }
                   recovery_handoff_target_pressure_ =
                       recoveryMeasuredContactPressure();
                   // The old pair is already at zero thrust and can no longer
@@ -4934,7 +5125,12 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                       recovery_geometry_reestimate_attempted_ = false;
                       recovery_geometry_reestimate_pending_ = false;
                       recovery_circle_event_locked_ = false;
+                      recovery_event_contact_pivot_locked_ = false;
+                      recovery_selected_contact_pivot_enabled_ = false;
                       recovery_preferred_pair_locked_ = false;
+                      recovery_extension_mode_latched_ = false;
+                      recovery_rate_arrest_active_ = false;
+                      recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
                       // This branch is reached only after the final pressure,
                       // zero-thrust, low-rate and attitude dwell have all
                       // succeeded.  Do not carry the stricter trigger which
@@ -5219,17 +5415,46 @@ void AttitudePressureController::selectContinuousRecoveryPair(
       !recovery_circle_stamp_.isZero() &&
       (ros::Time::now() - recovery_circle_stamp_).toSec() <=
           recovery_circle_max_age_sec_;
-  if (circle_directly_fresh) recovery_circle_event_locked_ = true;
-  // The object radius does not change inside one recovery event.  A partial
-  // load-bearing regrasp can temporarily make a new four-contact circle fit
-  // ill-conditioned, but current arm bends and pivots are still recomputed at
-  // every selection. Keep the radius estimate which was verified at event
-  // entry instead of silently reverting to the fixed rotor mapping at 30 s.
-  const bool circle_fresh = recovery_circle_estimate_.valid &&
-      recovery_circle_estimate_.confidence >= recovery_circle_min_confidence_ &&
-      (circle_directly_fresh || recovery_circle_event_locked_);
+  if (circle_directly_fresh && !recovery_circle_event_locked_)
+    {
+      recovery_circle_event_estimate_ = recovery_circle_estimate_;
+      recovery_circle_event_locked_ = true;
+    }
+  // Freeze the representative object centre before changing any chamber
+  // pressure.  A fitted circular centre is a geometric quantity; using the
+  // commanded pressure as a contact-force weight made the centre move merely
+  // because the controller requested exhaust.  If no reliable fit exists at
+  // event entry, retain the configured fixed pivot for the whole event.
+  if (!recovery_event_contact_pivot_locked_)
+    {
+      recovery_event_contact_pivot_ = contact_position_;
+      if (recovery_circle_event_locked_ &&
+          std::isfinite(recovery_circle_event_estimate_.center_y) &&
+          std::isfinite(recovery_circle_event_estimate_.center_z))
+        {
+          recovery_event_contact_pivot_[1] =
+              recovery_circle_event_estimate_.center_y;
+          recovery_event_contact_pivot_[2] =
+              recovery_circle_event_estimate_.center_z;
+        }
+      recovery_event_contact_pivot_locked_ = true;
+      ROS_INFO("Recovery geometry pivot locked at yz=[%.1f %.1f] mm (%s); pressure changes cannot move it during this event",
+               1000.0 * recovery_event_contact_pivot_[1],
+               1000.0 * recovery_event_contact_pivot_[2],
+               recovery_circle_event_locked_ ? "stable circle fit" : "fixed fallback");
+    }
+  // The object geometry does not change inside one recovery event.  A
+  // partial regrasp may make a live four-contact fit ill-conditioned, so use
+  // the stable entry snapshot until a balanced regrasp explicitly starts a
+  // new event.
+  const bool circle_fresh = recovery_circle_event_locked_ &&
+      recovery_circle_event_estimate_.valid &&
+      recovery_circle_event_estimate_.confidence >=
+          recovery_circle_min_confidence_;
+  const hugmy::CircularGraspEstimate& event_circle =
+      recovery_circle_event_estimate_;
   std::array<double, ARM_COUNT> recovery_depth_angle =
-      recovery_circle_estimate_.depth_angle;
+      event_circle.depth_angle;
   std::array<double, ARM_COUNT> downward_projection{{
       std::numeric_limits<double>::quiet_NaN(),
       std::numeric_limits<double>::quiet_NaN(),
@@ -5249,22 +5474,19 @@ void AttitudePressureController::selectContinuousRecoveryPair(
               if (!std::isfinite(bend)) continue;
               const Vector3 contact = armContactPointFromAngle(arm, bend);
               const double radial_y =
-                  contact[1] - recovery_circle_estimate_.center_y;
+                  contact[1] - recovery_event_contact_pivot_[1];
               const double radial_z =
-                  contact[2] - recovery_circle_estimate_.center_z;
+                  contact[2] - recovery_event_contact_pivot_[2];
               const double radial_norm = std::hypot(radial_y, radial_z);
               if (!std::isfinite(radial_norm) || radial_norm < 1.0e-6)
                 continue;
               downward_projection[arm] =
                   (radial_y * down_y + radial_z * down_z) / radial_norm;
-              // An IMU angle can be absent when its chamber is below the
-              // contact-pressure gate even though the arm kinematics remain
-              // available. Reconstruct that depth from the stored circle,
-              // the current contact point and gravity instead of deciding
-              // from the partner arm alone.
-              if (!std::isfinite(recovery_depth_angle[arm]))
-                recovery_depth_angle[arm] = std::acos(hugmy::circularClamp(
-                    -downward_projection[arm], -1.0, 1.0));
+              // Recompute depth from the current arm geometry about the
+              // frozen object centre.  Pressure may decide whether a contact
+              // is available, but cannot translate the object centre.
+              recovery_depth_angle[arm] = std::acos(hugmy::circularClamp(
+                  -downward_projection[arm], -1.0, 1.0));
             }
         }
 
@@ -5298,12 +5520,47 @@ void AttitudePressureController::selectContinuousRecoveryPair(
             }
         }
     }
-  const double required_moment = roll_moment_kp_ * std::max(0.0,
-      std::abs(roll_error) - roll_recovery_config_.stop);
+  // The physical target is zero roll.  The +/-stop band is an acceptance
+  // tolerance, not an offset in the desired moment.  Subtracting it here
+  // made both candidate selection and model feed-forward collapse before the
+  // body had actually returned to level.
+  const double required_moment =
+      roll_moment_kp_ * std::abs(roll_error);
   const double fixed_mapping_sign = correction_pair_reverse_spinal_mapping_
       ? -1.0 : 1.0;
   const double correction_sign = roll_error >= 0.0 ? 1.0 : -1.0;
   const int correction_direction = roll_error >= 0.0 ? 1 : -1;
+  const double measured_roll_rate = hugmy::recoveryRollRate(
+      roll_, pitch_, body_angular_velocity_);
+  const double predicted_roll_error = std::isfinite(measured_roll_rate)
+      ? roll_error - recovery_extension_prediction_sec_ * measured_roll_rate
+      : roll_error;
+  const bool outward_roll_rate = std::isfinite(measured_roll_rate) &&
+      roll_error * measured_roll_rate < 0.0;
+  const bool predicted_emergency = outward_roll_rate &&
+      std::abs(predicted_roll_error) >=
+          recovery_circle_flexed_max_error_rad_;
+  const bool emergency_extension_requested =
+      recovery_extension_mode_latched_ ||
+      action_c_recovery_urgent_thrust_rise_ ||
+      std::abs(roll_error) >= recovery_circle_flexed_max_error_rad_ ||
+      predicted_emergency;
+  if (emergency_extension_requested)
+    {
+      if (!recovery_extension_mode_latched_)
+        ROS_WARN("Roll recovery latching extended-arm mode: error %.1f deg, rate %.1f deg/s, %.2f-s prediction %.1f deg",
+                 roll_error * 180.0 / M_PI,
+                 std::isfinite(measured_roll_rate)
+                     ? measured_roll_rate * 180.0 / M_PI : 0.0,
+                 recovery_extension_prediction_sec_,
+                 predicted_roll_error * 180.0 / M_PI);
+      recovery_extension_mode_latched_ = true;
+      if (outward_roll_rate)
+        {
+          recovery_rate_arrest_active_ = true;
+          recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
+        }
+    }
   // Candidate rejection is evidence for one requested moment direction.
   // Regrasp can move the contacts across the cylinder side and reverse both
   // the roll error and the effective rotor moment. Carrying the old mask into
@@ -5351,11 +5608,8 @@ void AttitudePressureController::selectContinuousRecoveryPair(
         (recovery_rejected_candidate_mask_ & candidate_bit) != 0;
     std::array<bool, ARM_COUNT> selected_pair{{false, false, false, false}};
     for (const size_t arm : pairs[pair_index]) selected_pair[arm] = true;
-    // Predict the contact load distribution at each pressure candidate.
-    // Pressure is used only as a monotone proxy for normal load.  The CoP is
-    // then the pressure-weighted mean of every load-bearing contact: at
-    // 0 kPa this naturally becomes the opposite-pair anchor, whereas 10/20
-    // kPa retain a partial contribution from the correcting pair.
+    // Predict arm bend at each pressure candidate, but keep the contact
+    // centre fixed at the stable pre-recovery geometry.
     PressureArray candidate_pressure = measured_pressure_;
     PressureArray candidate_bend{};
     for (size_t arm = 0; arm < ARM_COUNT; ++arm)
@@ -5454,9 +5708,8 @@ void AttitudePressureController::selectContinuousRecoveryPair(
         candidate.depth >= 0.5 * M_PI - recovery_circle_side_margin_rad_;
     // Retaining the full nominal grasp is allowed only for a small correction
     // from a geometrically useful below-side contact.  Partial 10/20-kPa
-    // candidates remain in the search: their contact reaction and shifted
-    // CoP are already represented in the signed lever, so rejecting them here
-    // would collapse the new pressure search back to the old binary choice.
+    // values are used only while the chamber moves between the two active
+    // recovery modes and are not evaluated as moment-producing candidates.
     const bool flexed_error_safe =
         std::abs(roll_error) <= recovery_circle_flexed_max_error_rad_;
     const bool full_grasp_candidate = candidate.release_fraction <= 1.0e-3;
@@ -5482,71 +5735,61 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   Candidate selected;
   if (recovery_circle_selection_enabled_ && circle_fresh)
     {
+      const size_t extension_pressure_index = 0;
+      const size_t grasp_pressure_index =
+          recovery_circle_pressure_candidates_kpa_.size() - 1;
       for (size_t pair = 0; pair < pairs.size(); ++pair)
         {
           if (recovery_preferred_pair_locked_ &&
               pair != recovery_preferred_pair_index_)
             continue;
-          for (size_t pressure_index = 0;
-               pressure_index < recovery_circle_pressure_candidates_kpa_.size();
-               ++pressure_index)
-            {
-              const Candidate candidate = evaluate(pair, pressure_index);
-              ROS_INFO("Circular recovery candidate: pair %zu+%zu pressure=%.1f kPa (%s), depth %.1f deg, CoP yz=[%.1f %.1f] mm, signed lever %.4f m, support-loss %.3f Nm, initial FF %.2f N/rotor, rejected=%d, valid=%d, score %.2f",
-                       pairs[pair][0], pairs[pair][1],
-                       candidate.pressure,
-                       candidate.release ? "partially released" : "grasped",
-                       std::isfinite(candidate.depth) ?
-                           candidate.depth * 180.0 / M_PI : -1.0,
-                       1000.0 * candidate.pivot[1],
-                       1000.0 * candidate.pivot[2],
-                       candidate.lever,
-                       candidate.support_loss_moment,
-                       candidate.required_thrust,
-                       candidate.rejected ? 1 : 0,
-                       candidate.valid ? 1 : 0,
-                       candidate.score);
-              if (candidate.valid && candidate.score < selected.score)
-                selected = candidate;
-            }
-        }
-    }
+          Candidate extended = evaluate(pair, extension_pressure_index);
+          const Candidate grasped = evaluate(pair, grasp_pressure_index);
+          const double pair_depth = std::isfinite(grasped.depth)
+              ? grasped.depth : extended.depth;
+          // A loaded contact is useful only when it is demonstrably below
+          // the object side.  Near/above-side 10/20-kPa states merely shorten
+          // the lever while demanding more thrust, so they are pneumatic
+          // transition states rather than active recovery candidates.
+          const bool definitely_below_side = std::isfinite(pair_depth) &&
+              pair_depth >= 0.5 * M_PI + recovery_circle_side_margin_rad_;
+          const bool flexed_mode_allowed = definitely_below_side &&
+              !recovery_extension_mode_latched_ &&
+              std::abs(roll_error) <= recovery_circle_flexed_max_error_rad_;
 
-  // The inferred lower-side pair is the preferred mechanical support, but it
-  // is not allowed to become a dead end.  In the attached cylinder trial all
-  // four pressure states of the locked pair had a negative signed lever, so
-  // the old code aborted recovery without ever evaluating the other pair.
-  // If (and only if) the preferred pair has no restoring candidate, evaluate
-  // the opposite pair with the same CoP/support-loss model.  This is still a
-  // model-checked choice, not an unconditional upper-pair switch.  Mid-pass
-  // changes arrive here only after the existing zero-thrust, balanced-support
-  // handoff has made pair switching safe.
-  if (!selected.valid && recovery_circle_selection_enabled_ && circle_fresh &&
-      recovery_preferred_pair_locked_)
-    {
-      const size_t alternate_pair = 1 - recovery_preferred_pair_index_;
-      Candidate alternate;
-      for (size_t pressure_index = 0;
-           pressure_index < recovery_circle_pressure_candidates_kpa_.size();
-           ++pressure_index)
-        {
-          const Candidate option = evaluate(alternate_pair, pressure_index);
-          ROS_INFO("Circular recovery alternate candidate: pair %zu+%zu pressure=%.1f kPa, signed lever %.4f m, support-loss %.3f Nm, initial FF %.2f N/rotor, rejected=%d, valid=%d, score %.2f",
-                   pairs[alternate_pair][0], pairs[alternate_pair][1],
-                   option.pressure, option.lever,
-                   option.support_loss_moment, option.required_thrust,
-                   option.rejected ? 1 : 0, option.valid ? 1 : 0,
-                   option.score);
-          if (option.valid && option.score < alternate.score)
-            alternate = option;
-        }
-      if (alternate.valid)
-        {
-          selected = alternate;
-          recovery_preferred_pair_index_ = alternate_pair;
-          recovery_preferred_pair_used_fallback_ = true;
-          ROS_WARN("Locked lower-side pair had no restoring candidate; safely selecting model-restoring alternate pair %zu+%zu after support handoff",
-                   pairs[alternate_pair][0], pairs[alternate_pair][1]);
+          // The topology-selected released pair has a known actuator
+          // direction after extension.  Its instantaneous bend/CoP estimate
+          // may cross zero while the body rolls, but that transient is not
+          // permission to switch to the upper pair.  Use the conservative FF
+          // when the model lever is unavailable and let measured rate/error
+          // supervision determine whether the physical response is useful.
+          if (!extended.valid && !extended.rejected)
+            {
+              extended.valid = true;
+              extended.required_thrust =
+                  roll_recovery_config_.fallback_thrust;
+              extended.score = extended.required_thrust +
+                  recovery_circle_release_penalty_n_;
+            }
+          const Candidate mode_candidate =
+              flexed_mode_allowed && grasped.valid ? grasped : extended;
+          ROS_INFO("Circular recovery binary candidate: pair %zu+%zu depth %.1f deg, mode=%s, target %.1f kPa, fixed pivot yz=[%.1f %.1f] mm, signed lever %.4f m, initial FF %.2f N/rotor, rejected=%d, valid=%d%s",
+                   pairs[pair][0], pairs[pair][1],
+                   std::isfinite(pair_depth)
+                       ? pair_depth * 180.0 / M_PI : -1.0,
+                   mode_candidate.release ? "extended" : "grasped",
+                   mode_candidate.pressure,
+                   1000.0 * mode_candidate.pivot[1],
+                   1000.0 * mode_candidate.pivot[2],
+                   mode_candidate.lever,
+                   mode_candidate.required_thrust,
+                   mode_candidate.rejected ? 1 : 0,
+                   mode_candidate.valid ? 1 : 0,
+                   recovery_extension_mode_latched_
+                       ? " (extension latched)" : "");
+          if (mode_candidate.valid &&
+              mode_candidate.score < selected.score)
+            selected = mode_candidate;
         }
     }
 
@@ -5557,9 +5800,9 @@ void AttitudePressureController::selectContinuousRecoveryPair(
         {
           const size_t opposite = 1 - selected.pair;
           Candidate alternate;
-          for (size_t pressure_index = 0;
-               pressure_index < recovery_circle_pressure_candidates_kpa_.size();
-               ++pressure_index)
+          for (const size_t pressure_index :
+               {size_t(0),
+                recovery_circle_pressure_candidates_kpa_.size() - 1})
             {
               const Candidate option = evaluate(opposite, pressure_index);
               if (option.valid && option.score < alternate.score)
@@ -5576,75 +5819,29 @@ void AttitudePressureController::selectContinuousRecoveryPair(
             }
           ROS_WARN("Continuous recovery uses the opposite circle-model pair after a measured wrong-way response");
         }
-      // Check the complete discrete pressure path, not only the selected
-      // endpoint.  The real chamber traverses 30 -> 20 -> 10 -> 0 kPa and
-      // may temporarily put the rotor on the wrong side of its moment-arm
-      // sign.  Keep pressure motion, but withhold rotor thrust until the
-      // measured lever becomes restoring.  An endpoint whose own lever is
-      // wrong was already rejected by evaluate().
-      if (selected.release)
-        {
-          double current_pair_pressure = 0.0;
-          size_t current_pressure_count = 0;
-          for (const size_t arm : pairs[selected.pair])
-            if (std::isfinite(measured_pressure_[arm]))
-              {
-                current_pair_pressure += measured_pressure_[arm];
-                ++current_pressure_count;
-              }
-          if (current_pressure_count > 0)
-            current_pair_pressure /=
-                static_cast<double>(current_pressure_count);
-          const double usable_lever = std::max(
-              recovery_circle_min_signed_lever_m_,
-              roll_recovery_config_.min_lever);
-          double path_min_lever = selected.lever;
-          for (size_t pressure_index = 0;
-               pressure_index <
-                   recovery_circle_pressure_candidates_kpa_.size();
-               ++pressure_index)
-            {
-              const double pressure =
-                  recovery_circle_pressure_candidates_kpa_[pressure_index];
-              if (pressure + 1.0e-6 < selected.pressure ||
-                  (current_pressure_count > 0 &&
-                   pressure > current_pair_pressure +
-                       roll_recovery_config_.stable_pressure))
-                continue;
-              const Candidate path_state =
-                  evaluate(selected.pair, pressure_index);
-              if (std::isfinite(path_state.lever))
-                path_min_lever = std::min(
-                    path_min_lever, path_state.lever);
-              else
-                path_min_lever =
-                    -std::numeric_limits<double>::infinity();
-            }
-          recovery_selected_path_min_lever_m_ = path_min_lever;
-          recovery_selected_path_requires_zero_thrust_ =
-              !std::isfinite(path_min_lever) ||
-              path_min_lever < usable_lever;
-          if (recovery_selected_path_requires_zero_thrust_)
-            ROS_WARN("Circular recovery pressure path for pair %zu+%zu crosses a non-restoring state (minimum signed lever %.4f m); exhaust with zero rotor thrust until measured geometry is restoring",
-                     pairs[selected.pair][0], pairs[selected.pair][1],
-                     path_min_lever);
-        }
+      // Intermediate 10/20-kPa states are now transitions only.  Their
+      // instantaneous bend-dependent lever may flip while roll is changing,
+      // so it must not stop a topology-locked 30 -> 0-kPa extension.
+      recovery_selected_path_min_lever_m_ = selected.lever;
+      recovery_selected_path_requires_zero_thrust_ = false;
       prepare_arm_active_.fill(false);
       for (const size_t arm : pairs[selected.pair]) prepare_arm_active_[arm] = true;
       recovery_selected_pair_index_ = selected.pair;
       recovery_selected_pair_release_ = selected.release;
+      if (selected.release) recovery_extension_mode_latched_ = true;
       recovery_selected_pair_pressure_kpa_ = selected.pressure;
       recovery_selected_pressure_candidate_index_ = selected.pressure_index;
       recovery_selected_contact_pivot_enabled_ = true;
+      recovery_selected_contact_pivot_ = selected.pivot;
       recovery_pair_selection_available_ = true;
       recovery_selected_pair_mean_depth_rad_ = selected.depth;
       recovery_selected_support_loss_moment_nm_ =
           selected.support_loss_moment;
       recovery_selected_release_start_pressure_ = measured_pressure_;
-      ROS_INFO("Circular recovery selection: radius %.1f mm (rms %.1f mm, confidence %.2f), pair %zu+%zu, contact depth %.1f deg (%s side), target pressure %.1f kPa, CoP yz=[%.1f %.1f] mm, signed lever %.3f m, support-loss %.3f Nm",
-               1000.0 * recovery_circle_estimate_.radius,
-               1000.0 * recovery_circle_estimate_.rms,
-               recovery_circle_estimate_.confidence,
+      ROS_INFO("Circular recovery selection: radius %.1f mm (rms %.1f mm, confidence %.2f), pair %zu+%zu, contact depth %.1f deg (%s side), target pressure %.1f kPa, fixed pivot yz=[%.1f %.1f] mm, signed lever %.3f m, support-loss %.3f Nm",
+               1000.0 * event_circle.radius,
+               1000.0 * event_circle.rms,
+               event_circle.confidence,
                pairs[selected.pair][0], pairs[selected.pair][1],
                std::isfinite(selected.depth) ?
                    selected.depth * 180.0 / M_PI : -1.0,
@@ -5687,65 +5884,31 @@ void AttitudePressureController::selectContinuousRecoveryPair(
       return;
     }
 
-  // If a circle cannot be inferred, do not blindly use the historical fixed
-  // pair.  The attached hardware bag had valid bends but an invalid circle;
-  // the nominal pair's instantaneous signed lever was negative throughout
-  // its slow exhaust, while the opposite pair corrected immediately after
-  // regrasp. Compare both measured pair levers and choose only a currently
-  // restoring pair. If neither is restorative, preserve four-arm support and
-  // wait for a new contact estimate instead of applying a wrong-sign force.
-  std::array<double, 2> measured_pair_lever{{0.0, 0.0}};
-  std::array<bool, 2> measured_pair_valid{{true, true}};
-  for (size_t pair = 0; pair < pairs.size(); ++pair)
-    for (const size_t arm : pairs[pair])
-      {
-        const double bend = measuredArmBendAngle(arm);
-        if (!std::isfinite(bend))
-          {
-            measured_pair_valid[pair] = false;
-            continue;
-          }
-        measured_pair_lever[pair] += fixed_mapping_sign *
-            correction_axis_[0] * recoveryRotorRawLeverAbout(
-                arm, bend, contact_position_);
-      }
-  const double usable_measured_lever = std::max(
-      recovery_circle_min_signed_lever_m_, roll_recovery_config_.min_lever);
-  size_t measured_pair = measured_pair_lever[1] > measured_pair_lever[0]
-      ? 1 : 0;
-  if (continuous_recovery_use_opposite_pair_)
-    measured_pair = 1 - recovery_selected_pair_index_;
-  const bool measured_pair_restoring = measured_pair_valid[measured_pair] &&
-      std::isfinite(measured_pair_lever[measured_pair]) &&
-      measured_pair_lever[measured_pair] >= usable_measured_lever;
-  if (!measured_pair_restoring)
-    {
-      prepare_arm_active_.fill(false);
-      recovery_selected_contact_pivot_enabled_ = false;
-      recovery_selected_support_loss_moment_nm_ = 0.0;
-      recovery_pair_selection_available_ = false;
-      ROS_ERROR("Circle recovery estimate is unavailable and neither permitted instantaneous pair is restoring: lever 0+1 %.4f m (valid=%d), 2+3 %.4f m (valid=%d), requested retry=%d",
-                measured_pair_lever[0], measured_pair_valid[0] ? 1 : 0,
-                measured_pair_lever[1], measured_pair_valid[1] ? 1 : 0,
-                continuous_recovery_use_opposite_pair_ ? 1 : 0);
-      return;
-    }
-  prepare_arm_active_ = measured_pair == 0
+  // If circle fitting is temporarily unavailable, preserve the same
+  // lower-side topology used by the hardware convention instead of choosing
+  // from an instantaneous bend-dependent lever.  The latter can change sign
+  // simply because the body keeps rolling during exhaust and caused the
+  // controller to move actuation to the upper pair.  The physical lower side
+  // is determined from body roll itself: negative roll puts arms 0+1 lower,
+  // positive roll puts arms 2+3 lower.
+  const size_t lower_pair = roll_ < 0.0 ? 0 : 1;
+  prepare_arm_active_ = lower_pair == 0
       ? std::array<bool, ARM_COUNT>{{true, true, false, false}}
       : std::array<bool, ARM_COUNT>{{false, false, true, true}};
   recovery_selected_pair_release_ = true;
+  recovery_extension_mode_latched_ = true;
   recovery_selected_pair_pressure_kpa_ = recovery_release_pressure_kpa_;
   recovery_selected_pressure_candidate_index_ = 0;
   recovery_selected_contact_pivot_enabled_ = false;
-  recovery_selected_pair_index_ = measured_pair;
+  recovery_selected_pair_index_ = lower_pair;
   recovery_pair_selection_available_ = true;
   recovery_selected_pair_mean_depth_rad_ =
       std::numeric_limits<double>::quiet_NaN();
   recovery_selected_support_loss_moment_nm_ = 0.0;
   recovery_selected_release_start_pressure_ = measured_pressure_;
-  ROS_WARN("Circle recovery estimate unavailable; selected instantaneous restoring pair %zu+%zu from measured signed levers [%.4f %.4f] m",
-           pairs[measured_pair][0], pairs[measured_pair][1],
-           measured_pair_lever[0], measured_pair_lever[1]);
+  ROS_WARN("Circle recovery estimate unavailable; latched topology lower-side pair %zu+%zu in fully extended mode for roll error %.1f deg",
+           pairs[lower_pair][0], pairs[lower_pair][1],
+           roll_error * 180.0 / M_PI);
 }
 
 AttitudePressureController::PressureArray
@@ -5897,13 +6060,12 @@ AttitudePressureController::allocateCorrectionThrustFromAngles(
     }
 
   // Both rotors in one geometric pair receive a common nonnegative thrust.
-  // Select the pair directly from the Spinal roll/pitch error convention
-  // verified on the real vehicle:
-  //   current +roll -> motors 2+3, current -roll -> motors 0+1
-  //   current +pitch -> motors 0+3, current -pitch -> motors 1+2
-  // The previous geometry-only choice selected motors 2+3 for a negative
-  // Spinal roll in c7, which was the opposite of the measured correction
-  // direction.
+  // The old allocator selected that pair only from the sign of Spinal roll.
+  // Once an arm crosses the object side, however, the same rotor pair can
+  // produce the opposite roll moment.  Evaluate both admissible pairs using
+  // the current measured bend geometry and select only a pair whose moment
+  // has a positive projection onto the requested moment.  The MuJoCo switch
+  // remains a coordinate-convention correction, not a hard-coded pair.
   using ArmPair = std::array<size_t, 2>;
   const double roll_error = wrapAngle(target_roll_ - roll_);
   const double pitch_error = wrapAngle(target_pitch_ - pitch_);
@@ -5911,40 +6073,49 @@ AttitudePressureController::allocateCorrectionThrustFromAngles(
   const bool pitch_dominant = !roll_only &&
                               std::abs(pitch_error) >=
                                   std::abs(roll_error);
-  ArmPair correction_pair = pitch_dominant
-      ? (pitch_error >= 0.0 ? ArmPair{{1, 2}} : ArmPair{{0, 3}})
-      : (roll_error >= 0.0 ? ArmPair{{0, 1}} : ArmPair{{2, 3}});
-  if (correction_pair_reverse_spinal_mapping_ && roll_only)
-    {
-      // Direct MuJoCo response tests show that its applied bidirectional
-      // thrust axis produces the opposite roll sign to the real Spinal
-      // convention (positive current roll: motors 0+1 restore it; negative:
-      // motors 2+3). Do not change the real-vehicle mapping above.
-      correction_pair = roll_error >= 0.0
-          ? ArmPair{{2, 3}} : ArmPair{{0, 1}};
-    }
+  const std::array<ArmPair, 2> candidate_pairs = pitch_dominant
+      ? std::array<ArmPair, 2>{{ArmPair{{0, 3}}, ArmPair{{1, 2}}}}
+      : std::array<ArmPair, 2>{{ArmPair{{0, 1}}, ArmPair{{2, 3}}}};
   PressureArray result{{0.0, 0.0, 0.0, 0.0}};
-  const Vector2 pair_column{{
-      columns[correction_pair[0]][0] + columns[correction_pair[1]][0],
-      roll_only ? 0.0 :
-          columns[correction_pair[0]][1] + columns[correction_pair[1]][1]}};
-  const double denominator = pair_column[0] * pair_column[0] +
-                             pair_column[1] * pair_column[1] + 1.0e-8;
-  double allocated_thrust =
-      (pair_column[0] * desired[0] + pair_column[1] * desired[1]) /
-      denominator;
-  if (allocated_thrust <= 0.0)
+  ArmPair correction_pair{{0, 1}};
+  Vector2 selected_column{{0.0, 0.0}};
+  double allocated_thrust = 0.0;
+  double best_cost = std::numeric_limits<double>::infinity();
+  bool restoring_pair_found = false;
+  for (const ArmPair& pair : candidate_pairs)
     {
-      // The pressure/angle model may still contain the old arm-sign
-      // convention. Keep the experimentally verified pair and use the
-      // requested moment magnitude rather than silently choosing the
-      // opposite side of the vehicle.
-      allocated_thrust = std::hypot(desired[0], roll_only ? 0.0 : desired[1]) /
-          std::max(1.0e-4, std::hypot(pair_column[0], pair_column[1]));
-      ROS_WARN_THROTTLE(1.0,
-          "Correction geometry sign disagrees with requested moment; retaining %s motors %zu+%zu",
-          correction_pair_reverse_spinal_mapping_ ? "MuJoCo-verified" : "hardware-verified",
-          correction_pair[0], correction_pair[1]);
+      Vector2 pair_column{{
+          columns[pair[0]][0] + columns[pair[1]][0],
+          roll_only ? 0.0 :
+              columns[pair[0]][1] + columns[pair[1]][1]}};
+      if (roll_only && correction_pair_reverse_spinal_mapping_)
+        pair_column[0] = -pair_column[0];
+      const double denominator = pair_column[0] * pair_column[0] +
+                                 pair_column[1] * pair_column[1] + 1.0e-8;
+      const double projection = pair_column[0] * desired[0] +
+                                pair_column[1] * desired[1];
+      if (!std::isfinite(projection) || projection <= 0.0) continue;
+      const double thrust = projection / denominator;
+      const double roll_residual = desired[0] - thrust * pair_column[0];
+      const double pitch_residual = roll_only
+          ? 0.0 : desired[1] - thrust * pair_column[1];
+      const double cost = roll_residual * roll_residual +
+                          pitch_residual * pitch_residual +
+                          1.0e-10 * thrust * thrust;
+      if (std::isfinite(thrust) && thrust > 0.0 && cost < best_cost)
+        {
+          best_cost = cost;
+          correction_pair = pair;
+          selected_column = pair_column;
+          allocated_thrust = thrust;
+          restoring_pair_found = true;
+        }
+    }
+  if (!restoring_pair_found)
+    {
+      ROS_ERROR_THROTTLE(1.0,
+          "No measured-geometry rotor pair can produce the requested correction moment; commanding zero thrust");
+      return result;
     }
 
   // A mathematically small command is too close to ESC idle to start the
@@ -5953,9 +6124,10 @@ AttitudePressureController::allocateCorrectionThrustFromAngles(
       std::max(correction_min_thrust_n_, allocated_thrust));
   result[correction_pair[0]] = result[correction_pair[1]] = common_thrust;
   ROS_INFO_THROTTLE(1.0,
-      "Spinal attitude correction: error roll/pitch %.1f/%.1f deg -> motors %zu+%zu at %.2f N (%s)",
+      "Geometry-selected attitude correction: error roll/pitch %.1f/%.1f deg -> motors %zu+%zu at %.2f N, pair moment [%.3f %.3f] Nm/N (%s)",
       roll_error * 180.0 / M_PI, pitch_error * 180.0 / M_PI,
       correction_pair[0], correction_pair[1], common_thrust,
+      selected_column[0], selected_column[1],
       roll_only ? "roll only; pitch ignored" : "roll/pitch");
   return result;
 }
@@ -6882,7 +7054,12 @@ void AttitudePressureController::stopInchwormToGrasp(
   recovery_geometry_reestimate_attempted_ = false;
   recovery_geometry_reestimate_pending_ = false;
   recovery_circle_event_locked_ = false;
+  recovery_event_contact_pivot_locked_ = false;
+  recovery_selected_contact_pivot_enabled_ = false;
   recovery_preferred_pair_locked_ = false;
+  recovery_extension_mode_latched_ = false;
+  recovery_rate_arrest_active_ = false;
+  recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   action_c_recovery_gate_.reset();
   const PressureArray zero_thrust{{0.0, 0.0, 0.0, 0.0}};
   const bool target_reached=
@@ -6920,7 +7097,7 @@ void AttitudePressureController::stopInchwormToGrasp(
 
 void AttitudePressureController::requestActionCPostureRecovery(
     const ros::Time& now, const char* reason,
-    double confirmed_trigger_rad)
+    double confirmed_trigger_rad, bool urgent_thrust_rise)
 {
   pauseHybridLocomotion(now);
   if (!target_received_)
@@ -6940,13 +7117,19 @@ void AttitudePressureController::requestActionCPostureRecovery(
   recovery_geometry_reestimate_attempted_ = false;
   recovery_geometry_reestimate_pending_ = false;
   recovery_circle_event_locked_ = false;
+  recovery_event_contact_pivot_locked_ = false;
+  recovery_selected_contact_pivot_enabled_ = false;
   recovery_preferred_pair_locked_ = false;
+  recovery_extension_mode_latched_ = urgent_thrust_rise;
+  recovery_rate_arrest_active_ = false;
+  recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   action_c_recovery_gate_.reset();
   action_c_resume_pending_ = true;
   action_c_requested_recovery_trigger_rad_ =
       std::isfinite(confirmed_trigger_rad) && confirmed_trigger_rad > 0.0
           ? confirmed_trigger_rad
           : action_c_posture_recovery_trigger_rad_;
+  action_c_recovery_urgent_thrust_rise_ = urgent_thrust_rise;
   action_c_resume_direction_ = inchworm_direction_body_;
   inchworm_thrust_.fill(0.0);
   inchworm_pressure_.fill(base_pressure_kpa_);
@@ -7003,6 +7186,9 @@ bool AttitudePressureController::resumeActionCAfterRecovery(
       recovery_candidate_reselect_pending_ = false;
       recovery_geometry_reestimate_attempted_ = false;
       recovery_geometry_reestimate_pending_ = false;
+      recovery_extension_mode_latched_ = false;
+      recovery_rate_arrest_active_ = false;
+      recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
       ROS_INFO("Action C %s goal was reached during attitude recovery: x %.4f/%.4f m",
                action_c_direction_sign_x_ > 0.0 ? "+x" : "-x",
                locomotion_position[0], action_c_absolute_target_x_m_);
@@ -7023,6 +7209,9 @@ bool AttitudePressureController::resumeActionCAfterRecovery(
   recovery_candidate_reselect_pending_ = false;
   recovery_geometry_reestimate_attempted_ = false;
   recovery_geometry_reestimate_pending_ = false;
+  recovery_extension_mode_latched_ = false;
+  recovery_rate_arrest_active_ = false;
+  recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   action_c_preserve_adaptation_on_start_ = true;
   startInchwormStep(action_c_resume_direction_, remaining, now);
   action_c_preserve_adaptation_on_start_ = false;
@@ -9351,8 +9540,11 @@ hugmy::RollRecoveryModel AttitudePressureController::measuredRecoveryModel() con
   // moments are not known. Do not inherit gravity_compensation_ from the
   // legacy/other-mode allocator. Rate PI handles residual contact/friction.
   // The old PD derivative is not stacked with the inner velocity PI either.
+  // Aim the model at zero roll; roll_recovery_config_.stop is used only by
+  // the completion/capture logic.  The correction-axis projection keeps the
+  // requested moment positive for the already selected restoring pair.
   result.moment = roll_moment_kp_ * std::max(0.0,
-      wrapAngle(target_roll_ - roll_) * correction_axis_[0] - roll_recovery_config_.stop);
+      wrapAngle(target_roll_ - roll_) * correction_axis_[0]);
   if (recovery_selected_pair_release_ &&
       recovery_selected_support_loss_moment_nm_ > 0.0)
     {
@@ -9408,53 +9600,12 @@ AttitudePressureController::recoveryContactPivot(
     const PressureArray* pressure_override,
     const PressureArray* bend_override) const
 {
-  Vector3 pivot{{0.0, 0.0, 0.0}};
-  double weight_sum = 0.0;
-  for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-    {
-      const double pressure = pressure_override
-          ? (*pressure_override)[arm] : measured_pressure_[arm];
-      // Chamber pressure is not a contact-force sensor, but above the common
-      // pneumatic floor it is a useful monotone load proxy.  Its weighted
-      // mean gives a continuous CoP as support transfers between pairs,
-      // rather than jumping the pivot between two arithmetic means.
-      const double weight = std::isfinite(pressure)
-          ? std::max(0.0, pressure - minimum_prepare_pressure_kpa_) : 0.0;
-      if (weight <= 1.0e-6) continue;
-      const double bend = bend_override
-          ? (*bend_override)[arm] : measuredArmBendAngle(arm);
-      if (!std::isfinite(bend)) continue;
-      const Vector3 contact = armContactPointFromAngle(arm, bend);
-      if (!std::isfinite(contact[0]) || !std::isfinite(contact[1]) ||
-          !std::isfinite(contact[2])) continue;
-      for (size_t axis = 0; axis < 3; ++axis)
-        pivot[axis] += weight * contact[axis];
-      weight_sum += weight;
-    }
-  if (weight_sum <= 1.0e-6)
-    {
-      // Preserve the old contact-topology fallback for missing pressure. It
-      // is used only when no load proxy is available at all.
-      size_t count = 0;
-      for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-        {
-          const bool pivot_arm = selected_pair_release
-              ? !selected_pair[arm] : selected_pair[arm];
-          if (!pivot_arm) continue;
-          const double bend = bend_override
-              ? (*bend_override)[arm] : measuredArmBendAngle(arm);
-          if (!std::isfinite(bend)) continue;
-          const Vector3 contact = armContactPointFromAngle(arm, bend);
-          if (!std::isfinite(contact[0]) || !std::isfinite(contact[1]) ||
-              !std::isfinite(contact[2])) continue;
-          for (size_t axis = 0; axis < 3; ++axis) pivot[axis] += contact[axis];
-          ++count;
-        }
-      if (count == 0) return contact_position_;
-      weight_sum = static_cast<double>(count);
-    }
-  for (double& value : pivot) value /= weight_sum;
-  return pivot;
+  (void)selected_pair;
+  (void)selected_pair_release;
+  (void)pressure_override;
+  (void)bend_override;
+  return recovery_event_contact_pivot_locked_
+      ? recovery_event_contact_pivot_ : contact_position_;
 }
 
 double AttitudePressureController::recoveryRotorRawLeverAbout(
@@ -9486,9 +9637,7 @@ double AttitudePressureController::recoveryRotorLever(
   const double mapping_sign = flexed_circle_contact
       ? 1.0 : (correction_pair_reverse_spinal_mapping_ ? -1.0 : 1.0);
   const Vector3 pivot = recovery_selected_contact_pivot_enabled_
-      ? recoveryContactPivot(
-          prepare_arm_active_, recovery_selected_pair_release_)
-      : contact_position_;
+      ? recovery_selected_contact_pivot_ : contact_position_;
   return recoveryRotorRawLeverAbout(arm, bend, pivot) *
       correction_axis_[0] * mapping_sign;
 }

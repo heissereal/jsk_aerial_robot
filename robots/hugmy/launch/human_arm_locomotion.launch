@@ -7,6 +7,11 @@
   <arg name="forward_button" default="3" />
   <arg name="stop_button" default="1" />
   <arg name="forward_distance_m" default="0.100" />
+  <!-- Robot-only progress is the safe default: use rigid-body ID 1 position
+       directly and do not require a hand marker.  The former robot-minus-hand
+       metric remains available as an explicit opt-in for human-subject runs. -->
+  <arg name="hand_relative_mocap_enabled" default="false" />
+  <arg name="hand_target_selects_direction" default="false" />
   <arg name="maximum_pressure_kpa" default="40.0" />
   <arg name="bottom_pressure_kpa" default="30.0" />
   <!-- Motion-validation default.  Set ppg_settle_sec:=10.0 only when an
@@ -19,11 +24,12 @@
   <arg name="hybrid_trajectory_min_extension_rad" default="0.2617993877991494" />
   <arg name="hybrid_trajectory_extension_rate_rad_s" default="0.70" />
   <arg name="hybrid_lift_rear_release_start_ratio" default="0.10" />
-  <arg name="hybrid_lift_rear_pressure_floor_kpa" default="0.0" />
+  <arg name="hybrid_lift_rear_pressure_floor_kpa" default="15.0" />
+  <arg name="hybrid_slip_preserve_rear_grasp" default="true" />
   <!-- The measured optimizer, rather than the launch profile, chooses any
        additional rear release around this probe-derived baseline. -->
-  <arg name="hybrid_rear_support_probe_stable" default="-0.75" />
-  <arg name="hybrid_rear_motion_pressure_cap_kpa" default="7.5" />
+  <arg name="hybrid_rear_support_probe_stable" default="0.0" />
+  <arg name="hybrid_rear_motion_pressure_cap_kpa" default="30.0" />
   <arg name="hybrid_rear_release_angle_min_rad" default="0.05235987755982989" />
   <arg name="hybrid_rear_release_angle_max_rad" default="0.08726646259971647" />
   <arg name="hybrid_rear_release_assist_deadband_rad" default="0.008726646259971648" />
@@ -55,8 +61,8 @@
   <arg name="hybrid_trajectory_flex_rate_rad_s" default="1.2" />
   <arg name="hybrid_trajectory_pressure_lead_max_sec" default="0.60" />
 
-  <!-- ID 2 contributes XY translation only. The controller forces the target
-       attitude to [0, 0, 0] and retains Spinal as its attitude source. -->
+  <!-- Spinal remains the attitude source.  When the optional hand reference
+       is enabled, ID 2 contributes XY translation only. -->
   <include file="$(find hugmy)/launch/attitude_pressure_controller.launch">
     <arg name="robot_ns" value="$(arg robot_ns)" />
     <arg name="inchworm_action_c" value="true" />
@@ -72,6 +78,8 @@
          value="$(arg hybrid_lift_rear_release_start_ratio)" />
     <arg name="hybrid_lift_rear_pressure_floor_kpa"
          value="$(arg hybrid_lift_rear_pressure_floor_kpa)" />
+    <arg name="hybrid_slip_preserve_rear_grasp"
+         value="$(arg hybrid_slip_preserve_rear_grasp)" />
     <arg name="hybrid_rear_support_probe_stable"
          value="$(arg hybrid_rear_support_probe_stable)" />
     <arg name="hybrid_rear_motion_pressure_cap_kpa"
@@ -141,8 +149,10 @@
     <arg name="hybrid_terminal_posture_monitor_sec"
          value="$(arg hybrid_terminal_posture_monitor_sec)" />
     <arg name="use_mocap_attitude_for_inchworm" value="false" />
-    <arg name="hand_relative_mocap_enabled" value="true" />
-    <arg name="hand_target_selects_direction" value="true" />
+    <arg name="hand_relative_mocap_enabled"
+         value="$(arg hand_relative_mocap_enabled)" />
+    <arg name="hand_target_selects_direction"
+         value="$(arg hand_target_selects_direction)" />
   </include>
 
   <group ns="$(arg robot_ns)">

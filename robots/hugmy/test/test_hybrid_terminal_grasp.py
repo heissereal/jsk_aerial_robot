@@ -71,7 +71,7 @@ code=r'''
 #include <string>
 #include <cassert>
 #define ROS_WARN(...) ((void)0)
-namespace ros {struct Time {};}
+namespace ros {struct Time {explicit Time(double=0.){}};}
 struct AttitudePressureController {
  using PressureArray=std::array<double,4>;
  bool hybrid=true,hybrid_trial_active_=false,hybrid_retain_grasp_pressure_=true,hybrid_hold_pressure_=true;
@@ -83,6 +83,9 @@ struct AttitudePressureController {
  bool recovery_geometry_reestimate_pending_=false;
  bool recovery_circle_event_locked_=false;
  bool recovery_preferred_pair_locked_=false;
+ bool recovery_extension_mode_latched_=false;
+ bool recovery_rate_arrest_active_=false;
+ ros::Time recovery_rate_arrest_nonoutward_since_;
  unsigned recovery_rejected_candidate_mask_=0;
  int recovery_rejected_direction_sign_=0;
  double action_c_requested_recovery_trigger_rad_=std::numeric_limits<double>::quiet_NaN();

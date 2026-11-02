@@ -36,7 +36,7 @@
   <arg name="hybrid_trajectory_min_extension_rad" default="0.2617993877991494"/>
   <arg name="hybrid_trajectory_extension_rate_rad_s" default="0.70"/>
   <arg name="hybrid_lift_rear_release_start_ratio" default="0.10"/>
-  <arg name="hybrid_lift_rear_pressure_floor_kpa" default="0.0"/>
+  <arg name="hybrid_lift_rear_pressure_floor_kpa" default="15.0"/>
   <arg name="hybrid_regrip_rear_hold_pressure_kpa" default="10.0"/>
   <arg name="hybrid_pull_rear_release_start_ratio" default="0.05"/>
   <arg name="hybrid_pull_rear_release_end_ratio" default="0.65"/>

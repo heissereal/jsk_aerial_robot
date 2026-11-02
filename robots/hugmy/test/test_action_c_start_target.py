@@ -14,7 +14,7 @@ code=r'''
 #include <cassert>
 #include <limits>
 #define ROS_ERROR(...) ((void)0)
-namespace ros {struct Time {static Time now(){return {};}};}
+namespace ros {struct Time {explicit Time(double=0.){} static Time now(){return Time();}};}
 namespace geometry_msgs {
 struct Vector3Stamped {using ConstPtr=const Vector3Stamped*;
  struct {double x=1,y=0,z=.02;} vector;};
@@ -34,8 +34,13 @@ struct AttitudePressureController {
  bool continuous_recovery_use_opposite_pair_=false;
  bool continuous_recovery_retry_opposite_pending_=false;
  bool recovery_candidate_reselect_pending_=false;
+ bool recovery_geometry_reestimate_attempted_=false;
+ bool recovery_geometry_reestimate_pending_=false;
  bool recovery_circle_event_locked_=false;
  bool recovery_preferred_pair_locked_=false;
+ bool recovery_extension_mode_latched_=false;
+ bool recovery_rate_arrest_active_=false;
+ ros::Time recovery_rate_arrest_nonoutward_since_;
  unsigned continuous_recovery_pair_switches_=0;
  unsigned recovery_rejected_candidate_mask_=0;
  int recovery_rejected_direction_sign_=0;

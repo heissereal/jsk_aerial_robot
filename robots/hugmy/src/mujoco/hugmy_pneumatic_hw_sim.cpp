@@ -16,6 +16,9 @@ struct ForearmProjection
   std::array<double, 3> point_to_surface{};
   std::array<double, 3> outward_normal{{0.0, 0.0, 1.0}};
   double distance = 0.0;
+  // Positive outside, negative inside.  `distance` remains the unsigned
+  // closest-surface distance for the existing pneumatic-grip model.
+  double signed_distance = 0.0;
   double azimuth = 0.0;
 };
 
@@ -45,6 +48,9 @@ ForearmProjection projectToCylinder(const std::array<double, 3>& point,
       result.point_to_surface[0] * result.point_to_surface[0] +
       result.point_to_surface[1] * result.point_to_surface[1] +
       result.point_to_surface[2] * result.point_to_surface[2]);
+  const bool inside = std::abs(point[0]) <= half_length &&
+                      radial_norm < radius;
+  result.signed_distance = inside ? -result.distance : result.distance;
   result.azimuth = std::atan2(result.closest[2], result.closest[1]);
   const double normal_norm = std::hypot(result.closest[1], result.closest[2]);
   if (normal_norm > 1.0e-9)
@@ -93,6 +99,8 @@ ForearmProjection projectToTaperedEllipse(
         result.point_to_surface[1] * result.point_to_surface[1] +
         result.point_to_surface[2] * result.point_to_surface[2];
     result.distance = std::sqrt(distance_squared);
+    const bool inside = std::abs(point[0]) <= half_length && metric < 1.0;
+    result.signed_distance = inside ? -result.distance : result.distance;
     result.azimuth = std::atan2(result.closest[2] / rz,
                                 result.closest[1] / ry);
     const double dry_dx = (distal_y_radius - proximal_y_radius) /
@@ -217,6 +225,22 @@ bool HugmyPneumaticHWSim::InitSim(
   pneumatic_nh.param("human_arm_yaw", human_arm_yaw_rad_,
                      human_arm_yaw_rad_);
   pneumatic_nh.param("grip_range", grip_range_m_, grip_range_m_);
+  pneumatic_nh.param("forearm_contact_margin", forearm_contact_margin_m_,
+                     forearm_contact_margin_m_);
+  pneumatic_nh.param("forearm_contact_time_constant",
+                     forearm_contact_time_constant_s_,
+                     forearm_contact_time_constant_s_);
+  pneumatic_nh.param("forearm_contact_damping_ratio",
+                     forearm_contact_damping_ratio_,
+                     forearm_contact_damping_ratio_);
+  pneumatic_nh.param("penetration_tolerance", penetration_tolerance_m_,
+                     penetration_tolerance_m_);
+  pneumatic_nh.param("penetration_stiffness", penetration_stiffness_n_m_,
+                     penetration_stiffness_n_m_);
+  pneumatic_nh.param("penetration_damping", penetration_damping_ns_m_,
+                     penetration_damping_ns_m_);
+  pneumatic_nh.param("penetration_force_limit", penetration_force_limit_n_,
+                     penetration_force_limit_n_);
   pneumatic_nh.param("grip_stiffness", grip_stiffness_n_m_, grip_stiffness_n_m_);
   pneumatic_nh.param("grip_damping", grip_damping_ns_m_, grip_damping_ns_m_);
   pneumatic_nh.param("grip_force_per_pressure", grip_force_per_kpa_n_,
@@ -348,6 +372,38 @@ bool HugmyPneumaticHWSim::InitSim(
     {
       ROS_ERROR("Hugmy MuJoCo model is missing the human-arm grip target");
       return false;
+    }
+  // The URDF-to-MJCF converter uses detailed visual meshes as collision
+  // geoms.  MuJoCo's default 20-ms contact is visibly too compliant for the
+  // light carrier links, allowing them to cross the forearm before the next
+  // control update.  Use the same 4-ms scale as the arm joint stops and a
+  // small positive margin.  This only changes MuJoCo collision response.
+  mjModel* mutable_model = const_cast<mjModel*>(m_ptr_);
+  auto harden_contact = [&](int geom_id) {
+    if (geom_id < 0) return;
+    mutable_model->geom_margin[geom_id] = forearm_contact_margin_m_;
+    mutable_model->geom_gap[geom_id] = 0.0;
+    mutable_model->geom_solref[2 * geom_id] =
+        forearm_contact_time_constant_s_;
+    mutable_model->geom_solref[2 * geom_id + 1] =
+        forearm_contact_damping_ratio_;
+    const std::array<double, 5> hard_impedance{{0.99, 0.999, 0.001, 0.5, 2.0}};
+    for (size_t coefficient = 0; coefficient < hard_impedance.size(); ++coefficient)
+      mutable_model->geom_solimp[5 * geom_id + coefficient] =
+          hard_impedance[coefficient];
+  };
+  harden_contact(grip_target_geom_id_);
+  arm_contact_geom_ids_.clear();
+  for (size_t arm = 0; arm < ARM_COUNT; ++arm)
+    {
+      const std::string id = std::to_string(arm + 1);
+      for (const char* suffix : {"1", "2", "rotor", "4", "end"})
+        {
+          const int geom = mj_name2id(
+              m_ptr_, mjOBJ_GEOM, ("link_" + id + "_" + suffix).c_str());
+          harden_contact(geom);
+          if (geom >= 0) arm_contact_geom_ids_.push_back(geom);
+        }
     }
   main_body_id_ = mj_name2id(m_ptr_, mjOBJ_BODY, "main_body");
   bottom_inflatable_geom_id_ = mj_name2id(
@@ -1319,6 +1375,24 @@ void HugmyPneumaticHWSim::applyGripForces(const ros::Time& time, double dt)
   grip_axis_coordinate_m_.fill(0.0);
   grip_azimuth_rad_.fill(0.0);
   grip_surface_gap_m_.fill(0.0);
+  grip_signed_surface_gap_m_.fill(0.0);
+  native_contact_min_distance_m_ =
+      std::numeric_limits<double>::quiet_NaN();
+  for (int index = 0; index < d_ptr_->ncon; ++index)
+    {
+      const mjContact& contact = d_ptr_->contact[index];
+      const int other = contact.geom1 == grip_target_geom_id_
+          ? contact.geom2
+          : (contact.geom2 == grip_target_geom_id_ ? contact.geom1 : -1);
+      if (other < 0 ||
+          std::find(arm_contact_geom_ids_.begin(),
+                    arm_contact_geom_ids_.end(), other) ==
+              arm_contact_geom_ids_.end())
+        continue;
+      if (!std::isfinite(native_contact_min_distance_m_) ||
+          contact.dist < native_contact_min_distance_m_)
+        native_contact_min_distance_m_ = contact.dist;
+    }
 
   for (size_t arm = 0; arm < ARM_COUNT; ++arm)
     {
@@ -1344,6 +1418,7 @@ void HugmyPneumaticHWSim::applyGripForces(const ros::Time& time, double dt)
       grip_axis_coordinate_m_[arm] = projection.closest[0];
       grip_azimuth_rad_[arm] = projection.azimuth;
       grip_surface_gap_m_[arm] = projection.distance;
+      grip_signed_surface_gap_m_[arm] = projection.signed_distance;
       if (delta_norm < 1.0e-9)
         {
           // At exact surface contact, the closest-point delta is zero.  A
@@ -1374,11 +1449,6 @@ void HugmyPneumaticHWSim::applyGripForces(const ros::Time& time, double dt)
       const double inward_norm = std::sqrt(inward[0] * inward[0] +
                                            inward[1] * inward[1] +
                                            inward[2] * inward[2]);
-      if (distance > grip_range_m_ || inward_norm < 1e-9 ||
-          pressure_kpa_[arm] < grip_min_pressure_kpa_)
-        continue;
-      for (double& value : inward) value /= inward_norm;
-
       mjtNum velocity[6];
       mj_objectVelocity(m_ptr_, d_ptr_, mjOBJ_BODY, body, velocity, 0);
       // mjOBJ_BODY linear velocity is at its COM; the force is applied at
@@ -1389,6 +1459,44 @@ void HugmyPneumaticHWSim::applyGripForces(const ros::Time& time, double dt)
       velocity[3] += velocity[1]*offset[2]-velocity[2]*offset[1];
       velocity[4] += velocity[2]*offset[0]-velocity[0]*offset[2];
       velocity[5] += velocity[0]*offset[1]-velocity[1]*offset[0];
+
+      // A pressure-independent unilateral reaction is required after release:
+      // pneumatic grip may be zero, but a rigid forearm must still not be
+      // traversable.  Native mesh contact handles ordinary surface contact;
+      // this guard only acts after the link-end origin has crossed the
+      // analytic forearm surface beyond the small tolerance.
+      if (projection.signed_distance < -penetration_tolerance_m_)
+        {
+          std::array<double, 3> outward_world{};
+          for (size_t axis = 0; axis < 3; ++axis)
+            outward_world[axis] =
+                target_rotation[3 * axis + 0] * projection.outward_normal[0] +
+                target_rotation[3 * axis + 1] * projection.outward_normal[1] +
+                target_rotation[3 * axis + 2] * projection.outward_normal[2];
+          const double outward_speed =
+              velocity[3] * outward_world[0] +
+              velocity[4] * outward_world[1] +
+              velocity[5] * outward_world[2];
+          const double penetration =
+              -projection.signed_distance - penetration_tolerance_m_;
+          const double reaction = std::max(0.0, std::min(
+              penetration_force_limit_n_,
+              penetration_stiffness_n_m_ * penetration -
+                  penetration_damping_ns_m_ * outward_speed));
+          const mjtNum guard_force[3] = {
+              reaction * outward_world[0],
+              reaction * outward_world[1],
+              reaction * outward_world[2]};
+          const mjtNum zero_torque[3] = {0.0, 0.0, 0.0};
+          mj_applyFT(m_ptr_, d_ptr_, guard_force, zero_torque, grip_position,
+                     body, previous_grip_qfrc_.data());
+        }
+
+      if (distance > grip_range_m_ || inward_norm < 1e-9 ||
+          pressure_kpa_[arm] < grip_min_pressure_kpa_)
+        continue;
+      for (double& value : inward) value /= inward_norm;
+
       const double normal_speed = velocity[3] * inward[0] +
                                   velocity[4] * inward[1] +
                                   velocity[5] * inward[2];
@@ -1461,10 +1569,11 @@ void HugmyPneumaticHWSim::publishGripMarkers(
   // Layout: active[4], slip ratio[4], force magnitude [N][4], cylinder-axis
   // contact coordinate [m][4], contact azimuth [rad][4], and surface gap
   // [m][4], exact articulated joint-sum bend [rad][4], normal force [N][4],
-  // and tangential force [N][4]. Keep the original first 28 values stable for
-  // existing consumers.
+  // tangential force [N][4], signed analytic gap [m][4], and the minimum
+  // native MuJoCo arm--fixture contact distance [m]. Keep the original first
+  // 28 values stable for existing consumers.
   std_msgs::Float32MultiArray grip_state;
-  grip_state.data.resize(9 * ARM_COUNT, 0.0f);
+  grip_state.data.resize(10 * ARM_COUNT + 1, 0.0f);
   for (size_t arm = 0; arm < ARM_COUNT; ++arm)
     {
       grip_state.data[arm] = active[arm] ? 1.0f : 0.0f;
@@ -1478,6 +1587,8 @@ void HugmyPneumaticHWSim::publishGripMarkers(
           static_cast<float>(grip_azimuth_rad_[arm]);
       grip_state.data[5 * ARM_COUNT + arm] =
           static_cast<float>(grip_surface_gap_m_[arm]);
+      grip_state.data[9 * ARM_COUNT + arm] =
+          static_cast<float>(grip_signed_surface_gap_m_[arm]);
       // The Neuron is mounted directly below link_<id>_rotor.  Its attitude
       // relative to Spinal therefore contains only joints 1--3.  Joints 4--5
       // are distal to the rotor/Neuron and must not change the reported bend.
@@ -1519,6 +1630,8 @@ void HugmyPneumaticHWSim::publishGripMarkers(
       marker.lifetime = ros::Duration(0.2);
       array.markers.push_back(marker);
     }
+  grip_state.data[10 * ARM_COUNT] =
+      static_cast<float>(native_contact_min_distance_m_);
   grip_marker_pub_.publish(array);
   grip_state_pub_.publish(grip_state);
 }

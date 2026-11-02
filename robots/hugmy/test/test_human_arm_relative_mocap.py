@@ -60,23 +60,27 @@ assert 'mocap/pose' in text and 'mocap/hand_pose' in text
 human = ET.parse(root / 'launch/human_arm_locomotion.launch').getroot()
 args = {arg.get('name'): arg.get('default') for arg in human.findall('arg')}
 assert abs(float(args['forward_distance_m']) - .10) < 1e-12
+assert args['hand_relative_mocap_enabled'] == 'false'
+assert args['hand_target_selects_direction'] == 'false'
 assert args['enable_button'] == '4' and args['disable_button'] == '5'
 assert args['forward_button'] == '3' and args['stop_button'] == '1'
 assert abs(float(args['ppg_settle_sec'])) < 1e-12
 assert abs(float(args['hybrid_lift_rear_release_start_ratio']) - .10) < 1e-12
-assert abs(float(args['hybrid_lift_rear_pressure_floor_kpa'])) < 1e-12
-assert abs(float(args['hybrid_rear_support_probe_stable']) + .75) < 1e-12
+assert abs(float(args['hybrid_lift_rear_pressure_floor_kpa']) - 15.) < 1e-12
+assert args['hybrid_slip_preserve_rear_grasp'] == 'true'
+assert abs(float(args['hybrid_rear_support_probe_stable'])) < 1e-12
 assert abs(float(args['hybrid_regrip_rear_hold_pressure_kpa']) - 7.5) < 1e-12
 assert args['hybrid_locomotion_outer_enabled'] == 'true'
 include = human.find('include')
 forwarded = {arg.get('name'): arg.get('value') for arg in include.findall('arg')}
-assert forwarded['hand_relative_mocap_enabled'] == 'true'
-assert forwarded['hand_target_selects_direction'] == 'true'
+assert forwarded['hand_relative_mocap_enabled'] == '$(arg hand_relative_mocap_enabled)'
+assert forwarded['hand_target_selects_direction'] == '$(arg hand_target_selects_direction)'
 assert forwarded['use_mocap_attitude_for_inchworm'] == 'false'
 assert forwarded['ppg_settle_sec'] == '$(arg ppg_settle_sec)'
 assert forwarded['hybrid_locomotion_outer_enabled'] == '$(arg hybrid_locomotion_outer_enabled)'
 assert forwarded['hybrid_lift_rear_release_start_ratio'] == '$(arg hybrid_lift_rear_release_start_ratio)'
 assert forwarded['hybrid_lift_rear_pressure_floor_kpa'] == '$(arg hybrid_lift_rear_pressure_floor_kpa)'
+assert forwarded['hybrid_slip_preserve_rear_grasp'] == '$(arg hybrid_slip_preserve_rear_grasp)'
 assert forwarded['hybrid_rear_support_probe_stable'] == '$(arg hybrid_rear_support_probe_stable)'
 assert forwarded['hybrid_regrip_rear_hold_pressure_kpa'] == '$(arg hybrid_regrip_rear_hold_pressure_kpa)'
-print('PASS: ID2 position-only reference, rigid-motion rejection, 100-mm Joy goal, online optimization enabled')
+print('PASS: robot-only default, optional ID2 position reference, 100-mm Joy goal, online optimization enabled')

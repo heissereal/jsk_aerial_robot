@@ -23,16 +23,20 @@ assert 'recovery_candidate_reselect_pending_ = true;' in source
 assert 'Recovery pair %zu+%zu retained a non-restoring measured lever' in source
 assert 'const bool wrong_geometry_candidate =' in source
 assert 'const bool pressure_settled_timeout =' in source
+assert '!retained_probe_progress && !helpful_probe_motion' in source
 assert 'if (pressure_settled_timeout ||\n                      geometry_worsened)' in source
-assert 'Circular recovery alternate candidate:' in source
-assert 'safely selecting model-restoring alternate pair' in source
-assert 'complete discrete pressure path' in source
+assert 'Circular recovery binary candidate:' in source
+assert '10/20-kPa states are now transitions only' in source
+assert 'latched topology lower-side pair' in source
+assert 'selected instantaneous restoring pair' not in source
 assert 'recovery_selected_path_requires_zero_thrust_' in source
-assert 'selected instantaneous restoring pair' in source
-assert 'No instantaneous restoring recovery pair' in source
+assert 'negative roll puts arms 0+1 lower' in source
+assert 'active_roll_recovery_config.angle_gain = 0.0;' in source
 assert 'const bool geometry_reestimate_ready =' in source
 assert 'grasp_pressure_ready && recovery_pressure_fresh' in source
-assert 'recovery_pressure_fresh && geometry_reestimate_ready &&' in source
+assert 'const bool recovery_restart_support_ready =' in source
+assert '!continuous_recovery_waiting_for_settle_ ||\n              grasp_pressure_ready || c_hard_roll' in source
+assert 'geometry_reestimate_ready && recovery_restart_support_ready &&' in source
 assert 'recovery_geometry_reestimate_pending_ = true;' in source
 assert 'Balanced four-arm support reached; cleared old contact-state candidate rejections' in source
 assert 'recovery_rejected_candidate_mask_ = 0;' in source.split(
@@ -45,6 +49,10 @@ assert 'opposite-sign selection only if the residual leaves the stop band' in so
 assert 'signed_error <= -opposite_selection_boundary;' in source
 assert 'predicted_signed_error' not in source
 assert 'requested immediate opposite-sign geometry selection' in source
+assert 'const bool fast_pressure_worsening = pressure_worsening &&' in source
+assert 'recovery_handoff_rollback_before_reselect_' in source
+assert 'restoring best measured pressure' in source
+assert 'best-pressure rollback settled at roll' in source
 assert 'recoveryMeasuredContactPressure()' in source
 measured_freeze = source.split(
     'AttitudePressureController::recoveryMeasuredContactPressure() const', 1
@@ -62,7 +70,7 @@ assert 'full-grasp roll %s at %.2f deg' in source
 assert 'recovery_handoff_progress_reference_rad_ -' in source
 assert 'const double handoff_retry_thrust = std::max(\n                      roll_recovery_config_.detect_thrust' in source
 assert 'rejected handoff candidate reached zero thrust' in source
-assert 'released terminal-brake deadband' in source
+assert 'preserving zero thrust and requesting a fresh measured-contact pass' in source
 assert 'const double handoff_drive_stop = recovery_stop_angle +\n                  handoff_measurement_margin;' in source
 assert 'const double handoff_brake_entry = handoff_drive_stop;' in source
 assert '!recovery_handoff_braking_ && command_at_grasp &&\n                  abs_error <= (strict_target_observed_before_regrasp' in source
@@ -74,14 +82,13 @@ assert 'signed_error <= 0.0 ||' in source
 assert 'recovery_contact_grasp_active_' in source
 assert 'pressure_search_floor_for(arm)' in source
 assert 'pressure_distance_from_best' in source
-assert 'const double terminal_reopen_margin =' in source
 assert 'const bool strict_target_observed_before_regrasp =' in source
 assert 'recovery_handoff_best_error_rad_ <= handoff_settle_error' in source
 assert 'const double handoff_measurement_margin = std::min(\n                  0.25 * M_PI / 180.0,\n                  0.25 * roll_recovery_config_.stop_margin);' in source
 assert 'const double active_handoff_settle_error =' in source
-assert 'active_handoff_settle_error + terminal_reopen_margin' in source
-assert 'abs_error >= terminal_reopen_error' in source
-assert 'retained_handoff_error +\n                      terminal_reopen_margin' in source
+assert 'recovery_candidate_reselect_pending_ = true;' in source
+assert 'continuous_recovery_retry_opposite_pending_ ||' in source
+assert 'const double retained_equilibrium_limit =\n              action_c_posture_resume_rad_;' in source
 assert 'abs_error <= handoff_drive_stop))' in source
 assert 'abs_error > active_handoff_settle_error' in source
 assert 'abs_error <= active_handoff_settle_error;' in source
@@ -131,6 +138,9 @@ public:
  unsigned char recovery_rejected_candidate_mask_=0;
  int recovery_rejected_direction_sign_=0;
  bool recovery_circle_event_locked_=false;
+ hugmy::CircularGraspEstimate recovery_circle_event_estimate_;
+ bool recovery_event_contact_pivot_locked_=false;
+ Vector3 recovery_event_contact_pivot_{{0.,0.,-.07}};
  bool recovery_preferred_pair_locked_=false;
  size_t recovery_preferred_pair_index_=0;
  bool recovery_preferred_pair_used_fallback_=false;
@@ -138,6 +148,12 @@ public:
  bool recovery_pair_selection_available_=true;
  bool recovery_geometry_reestimate_attempted_=false;
  bool recovery_geometry_reestimate_pending_=false;
+ bool action_c_recovery_urgent_thrust_rise_=false;
+ bool recovery_extension_mode_latched_=false;
+ bool recovery_rate_arrest_active_=false;
+ ros::Time recovery_rate_arrest_nonoutward_since_;
+ double recovery_extension_prediction_sec_=.30;
+ double recovery_rate_arrest_release_sec_=.10;
  size_t recovery_selected_pair_index_=0;
  hugmy::ContinuousRollRecovery continuous_roll_recovery_;
  struct Gate {int resets=0;void reset(){++resets;}} action_c_resume_gate_, action_c_boundary_settle_gate_;
@@ -175,6 +191,7 @@ public:
  double recovery_selected_pair_pressure_kpa_=0.;
  size_t recovery_selected_pressure_candidate_index_=0;
  bool recovery_selected_contact_pivot_enabled_=false;
+ Vector3 recovery_selected_contact_pivot_{{0.,0.,-.07}};
  double recovery_selected_pair_mean_depth_rad_=NAN;
  double recovery_circle_min_confidence_=.35,recovery_circle_max_age_sec_=30.;
  double recovery_circle_side_margin_rad_=5*M_PI/180.;
@@ -194,7 +211,8 @@ public:
  double recovery_wrong_geometry_reference_rate_rad_s_=NAN;
  double recovery_wrong_geometry_best_rate_rad_s_=-INFINITY;
  bool recovery_wrong_geometry_response_observed_=false;
- double roll_moment_kp_=.1,target_roll_=0.,roll_=-.2;
+ double roll_moment_kp_=.1,target_roll_=0.,roll_=-.2,pitch_=0.;
+ Vector3 body_angular_velocity_{{0.,0.,0.}};
  Vector3 gravity_body_{{0.,0.,-9.81}};
  Vector3 contact_position_{{0.,0.,-.07}};
  double recovery_release_pressure_kpa_=0.,correction_planning_thrust_n_=2.,bend_model_thrust_offset_n_=1.8;
@@ -206,6 +224,7 @@ public:
    assert(action_c_preserve_adaptation_on_start_); commanded_distance=d;active=true;++starts;hybrid_trial_active_=true;
  }
  bool resumeActionCAfterRecovery(const ros::Time&);
+ bool hybridLocomotionActive()const{return true;}
  Vector3 locomotionPosition()const{return mocap_position_;}
  bool locomotionMocapFresh(const ros::Time& now)const {
    const double age=(now-mocap_stamp_).toSec();return mocap_received_&&age>=0.&&age<=inchworm_mocap_timeout_sec_;
@@ -218,7 +237,8 @@ public:
  Vector3 recoveryContactPivot(const std::array<bool,4>&,bool,
                               const PressureArray* = nullptr,
                               const PressureArray* = nullptr)const{
-   return {{0.,0.,-.07}};
+   return recovery_event_contact_pivot_locked_
+       ? recovery_event_contact_pivot_ : contact_position_;
  }
  double recoveryRotorRawLeverAbout(size_t arm,double bend,const Vector3&)const{
    const double pair01=bend<1.8?.04:-.04;return arm<2?pair01:-pair01;
@@ -232,7 +252,10 @@ public:
  void finishHybridRecovery(const ros::Time& now) {finishHybridLocomotion(now,false,true);}
  void resetRecoveryHandoffState() {}
  void stopInchwormToGrasp(const ros::Time&,const char*) {active=false;}
- void select(double roll_error) {ros::Time now{10.};do { PAIR } while(false);}
+ void select(double roll_error) {
+   roll_=target_roll_-roll_error;
+   ros::Time now{10.};do { PAIR } while(false);
+ }
 };
 RESUME
 HELPER
@@ -269,24 +292,31 @@ int main() {
  assert(circle.prepare_arm_active_[0] && circle.prepare_arm_active_[1]);
  const size_t first_pressure=circle.recovery_selected_pressure_candidate_index_;
  assert(first_pressure<4);
- // Reject only the selected 0+1 pressure state. Re-selection keeps the
- // geometrically correct pair but tries another of 0/10/20/30 kPa.
+ // Reject only the selected active state. Re-selection keeps the
+ // geometrically correct pair and switches only between 30-kPa grasped and
+ // 0-kPa extended modes; 10/20 kPa are pneumatic transitions, not choices.
  circle.recovery_rejected_candidate_mask_=static_cast<unsigned char>(
      1u<<first_pressure);
  circle.select(.2);
  assert(circle.recovery_pair_selection_available_);
  assert(circle.prepare_arm_active_[0] && circle.prepare_arm_active_[1]);
  assert(circle.recovery_selected_pressure_candidate_index_!=first_pressure);
- // Once all four 0+1 pressure states are disproved, this synthetic geometry has no
- // signed restoring 2+3 candidate and must refuse the fixed-map fallback.
+ assert(circle.recovery_selected_pressure_candidate_index_==0 ||
+        circle.recovery_selected_pressure_candidate_index_==3);
+ // Once both active 0+1 states are disproved, this synthetic geometry has no
+ // allowed upper-pair fallback and must refuse further thrust.
  circle.recovery_rejected_candidate_mask_=0x0fu;
  circle.select(.2);
  assert(!circle.recovery_pair_selection_available_);
  circle.recovery_rejected_candidate_mask_=0;
  // A large roll cannot use the flexed-contact shortcut even when that pair
  // remains below the circle side; it must transfer support before recovery.
+ circle.body_angular_velocity_[0]=-.2;
  circle.select(.35);
  assert(circle.recovery_selected_pair_release_);
+ assert(circle.recovery_extension_mode_latched_ &&
+        circle.recovery_rate_arrest_active_);
+ circle.body_angular_velocity_[0]=0.;
  circle.recovery_circle_estimate_.depth_angle[0]=1.;
  circle.recovery_circle_estimate_.depth_angle[1]=1.;
  circle.select(.2);

@@ -1,17 +1,15 @@
-# Human-arm locomotion with a hand mocap reference
+# Robot-only locomotion and optional hand mocap reference
 
-Rigid body ID 1 is the robot and rigid body ID 2 is a position-only marker on
-the hand. The gait score and the 50-mm goal use the change in robot-to-hand
-XY distance. Translating or rotating the arm and robot together therefore does
-not count as robot locomotion. ID 2 height and orientation are never used.
+The default mode uses only robot rigid body ID 1.  Progress and the travel goal
+are measured from the robot mocap position, so rigid body ID 2 is not required.
 
-Start the real-machine bridge and both mocap rigid bodies:
+Start the real-machine bridge and robot mocap:
 
 ```bash
 roslaunch hugmy bringup.launch \
   simulation:=false real_machine:=true mujoco:=false fixed_arms:=false \
-  estimate_mode:=1 track_hand_mocap:=true \
-  mocap_robot_rigid_body_id:=1 mocap_hand_rigid_body_id:=2
+  estimate_mode:=1 track_hand_mocap:=false \
+  mocap_robot_rigid_body_id:=1
 ```
 
 Start Action C and the joystick interface (this does not enable actuation).
@@ -42,23 +40,37 @@ temporary PPG `nan` or a disconnected serial node cannot deadlock locomotion.
 Override it with `ppg_settle_sec:=SECONDS`; ordinary and MuJoCo launches keep
 the feature disabled by default (`0.0`).
 
-Before pressing the enable button, verify both streams and the relative
-position:
+Before pressing the enable button, verify the robot stream:
 
 ```bash
 rostopic hz /quadrotor/mocap/pose
-rostopic hz /quadrotor/mocap/hand_pose
-rostopic echo /quadrotor/attitude_pressure_controller/hand_relative_position
 ```
 
 Default buttons are:
 
 - button 4: enable the attitude/locomotion controller and its pressure loop
 - button 5: disable both controllers
-- button 3: command 100 mm toward the hand and run the online search from its
+- button 3: command 100 mm in the robot-forward direction and run the online search from its
   first measured baseline
 - button 1: stop locomotion while leaving pressure enabled
 
 The button indices and distance are launch arguments. The target attitude is
-latched at `[0, 0, 0]`; human-arm mode rejects nonzero attitude targets. Loss
-of either mocap stream during a gait triggers the normal gait stop path.
+latched at `[0, 0, 0]`. Loss of robot mocap during a gait triggers the normal
+gait stop path.
+
+To compensate for motion of a human arm, start rigid body ID 2 and explicitly
+enable the optional relative reference:
+
+```bash
+roslaunch hugmy bringup.launch \
+  simulation:=false real_machine:=true mujoco:=false fixed_arms:=false \
+  estimate_mode:=1 track_hand_mocap:=true \
+  mocap_robot_rigid_body_id:=1 mocap_hand_rigid_body_id:=2
+
+roslaunch hugmy human_arm_locomotion.launch \
+  hand_relative_mocap_enabled:=true \
+  hand_target_selects_direction:=true
+```
+
+In this opt-in mode, ID 2 is a position-only marker. The gait score and goal
+use robot-to-hand XY distance; ID 2 height and orientation are never used.

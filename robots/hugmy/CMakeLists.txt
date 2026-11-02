@@ -29,8 +29,11 @@ if(mujoco_ros_FOUND)
 endif()
 find_package(mujoco_ros_utils QUIET)
 
-list(FIND aerial_robot_simulation_LIBRARIES
-  mujoco_aerial_robot_hw_sim HUGMY_MUJOCO_BASE_LIBRARY_INDEX)
+# catkin may expose this library either as its target name or as an absolute
+# path.  Match the basename as a substring so a fresh CMake configure does not
+# silently drop the Hugmy MuJoCo plugin when the dependency was already built.
+string(FIND "${aerial_robot_simulation_LIBRARIES}"
+  "mujoco_aerial_robot_hw_sim" HUGMY_MUJOCO_BASE_LIBRARY_INDEX)
 set(HUGMY_MUJOCO_AVAILABLE FALSE)
 if(mujoco_ros_FOUND AND mujoco_ros_control_FOUND AND mujoco_ros_utils_FOUND
    AND NOT HUGMY_MUJOCO_BASE_LIBRARY_INDEX EQUAL -1)

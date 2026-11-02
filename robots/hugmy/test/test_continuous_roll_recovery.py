@@ -22,6 +22,9 @@ assert 'action_c_preload_recovery_trigger_rad_' in source
 start = source.index('case PREPARE:')
 branch = source[start:source.index('publishCorrectionThrust(fixed_arm_test_enabled_', start)]
 assert 'continuous_roll_recovery_.update(' in branch
+assert 'continuous_roll_recovery_.filtered_rate : omega' in branch
+assert 'active_roll_recovery_config.rate_arrest_mode = true' in branch
+assert 'recovery_rate_arrest_max_thrust_n_' in branch
 assert 'enterState(THRUST_CORRECTION' not in branch
 assert 'active_pair_pressure_ready' not in branch
 assert 'prepare_arm_active_[arm] ? thrust : 0.0' in branch
@@ -95,6 +98,42 @@ int main() {
   // Part of this interval still recovers from the preceding rate brake;
   // slew anti-windup correctly suspends integration until thrust catches up.
   assert(c.boost>integral+.15);
+  // Outward-rate arrest searches only until the contact actually breaks
+  // free.  A filtered acceleration/rate event latches the measured authority,
+  // stops further I growth, and passes that force continuously into the angle
+  // return instead of producing a delayed high-thrust impulse.
+  RollRecoveryConfig onset_arrest_cfg=cfg;
+  onset_arrest_cfg.rate_arrest_mode=true;
+  onset_arrest_cfg.minimum_feedforward=2.;
+  onset_arrest_cfg.limit=4.;
+  onset_arrest_cfg.rise=6.;
+  ContinuousRollRecovery arrest;arrest.reset(25*deg,0.);
+  for(int i=1;i<=30;++i)
+    arrest.update(25*deg,0.,i*.02,.02,m,onset_arrest_cfg,response);
+  const double integral_before_breakaway=arrest.boost;
+  // A contact/gyro impulse without retained angle improvement must not cap
+  // the search at its current low force.
+  for(int i=31;i<=40;++i)
+    arrest.update(25*deg,.25,i*.02,.02,m,onset_arrest_cfg,response);
+  assert(!arrest.breakaway_latched && !arrest.moving &&
+         arrest.thrust>0.);
+  // Once the same rate is accompanied by a sustained reduction in roll
+  // error, the ordinary retained-motion confirmation authorizes the latch.
+  for(int i=41;i<=60 && !arrest.breakaway_latched;++i)
+    arrest.update((25.-.15*(i-40))*deg,.25,i*.02,.02,m,
+                  onset_arrest_cfg,response);
+  assert(arrest.breakaway_latched && arrest.breakaway_authority>0.);
+  const double latched_authority=arrest.breakaway_authority;
+  const double latched_integral=arrest.boost;
+  for(int i=37;i<=70;++i) {
+    arrest.update(24*deg,0.,i*.02,.02,m,onset_arrest_cfg,response);
+    assert(arrest.thrust<=latched_authority+1e-9);
+    assert(arrest.boost<=latched_integral+1e-9);
+  }
+  assert(latched_integral<=integral_before_breakaway+1e-9);
+  arrest.beginAngleReturn();
+  assert(!arrest.breakaway_latched && arrest.breakaway_authority==0. &&
+         arrest.feedforward>=latched_authority-1e-9 && arrest.boost==0.);
   // Reaching the angular/rate band while a loaded correction command remains
   // is not completion.  The actuator must run down first; otherwise regrasp
   // changes the contact stiffness at the same instant as support disappears.
@@ -217,7 +256,8 @@ int main() {
   ContinuousRollRecovery early;early.reset(15*deg,0.);early.thrust=3.17;
   early.update(15*deg,.384,.02,.02,m,cfg,response);
   assert(15*deg-.384*cfg.horizon>cfg.stop);
-  assert(early.predicted_braking && early.target_thrust==0. && early.thrust<3.17);
+  assert(early.predicted_braking && early.thrust<3.17 &&
+         early.low_authority_reapproach && early.boost==0.);
   assert(early.terminal_brake_latched); // no retained-progress latch required
   assert(std::abs(early.braking_horizon-(.2+3.17/6.))<1e-9);
   // A short stick-slip acceleration contributes only over its bounded
@@ -450,20 +490,51 @@ int main() {
   assert(retained.thrust>1.9 && retained.thrust<2.1);
   for(int i=2;i<=8 && !retained.predicted_braking;++i)
     retained.update(8*deg,.4,i*.02,.02,m,three,response);
-  assert(retained.predicted_braking && retained.boost>1.48 && retained.target_thrust==0.);
-  retained.update(8*deg,0.,.18,.02,m,three,response);assert(retained.boost>1.47);
+  assert(retained.predicted_braking && retained.boost==0. &&
+         retained.low_authority_reapproach);
+  retained.update(8*deg,0.,.18,.02,m,three,response);
+  assert(retained.low_authority_reapproach);
   for(int i=0;i<30;++i)retained.update(2.9*deg,0.,.20+i*.02,.02,m,three,response);
   assert(retained.finished && retained.boost==0.);
-  // Repeated geometry changes after motion confirmation cannot modulate FF.
+  // The measured moment model remains active after breakaway.  Changes in
+  // tau/l are followed smoothly and remain bounded by the configured slew;
+  // the old frozen baseline left large residual roll at constant thrust.
   ContinuousRollRecovery held_model;held_model.reset(.5,0.);
   m.moment=.02;m.lever=.05;
   held_model.update(.5,0.,.02,.02,m,cfg,response);
   const double model_baseline=held_model.feedforward;held_model.moving=true;
   for(int i=2;i<50;++i) {
-    m.lever=i%2?.014:.016;m.moment=.1;
+    m.lever=.05;m.moment=.10;
+    const double before=held_model.feedforward;
     held_model.update(.5,0.,i*.02,.02,m,cfg,response);
-    assert(held_model.feedforward==model_baseline);
+    assert(held_model.feedforward+1e-12>=before);
+    assert(held_model.feedforward-before<=cfg.rise*.02+1e-12);
   }
+  assert(held_model.feedforward>model_baseline+.5 &&
+         held_model.feedforward<2.0);
+  // Outward-rate arrest has a real 2-N model floor even when a valid lever
+  // would otherwise produce a smaller nominal force.  On transfer to angle
+  // return, inherit the actual force and clear the arrest integral so there
+  // is no OFF--ON notch or double counting.
+  ContinuousRollRecovery phase_transfer;phase_transfer.reset(20*deg,0.);
+  RollRecoveryConfig arrest_cfg=cfg;arrest_cfg.angle_gain=0.;
+  arrest_cfg.rate_arrest_mode=true;arrest_cfg.limit=4.;
+  arrest_cfg.minimum_feedforward=2.;
+  m.moment=.01;m.lever=.1;
+  for(int i=1;i<=100;++i)
+    phase_transfer.update(20*deg,0.,i*.02,.02,m,arrest_cfg,response);
+  assert(phase_transfer.feedforward>=2. && phase_transfer.target_rate==0.);
+  assert(phase_transfer.boost>.4 && phase_transfer.thrust>2.4 &&
+         phase_transfer.thrust<=arrest_cfg.limit);
+  phase_transfer.thrust=2.6;phase_transfer.boost=.6;
+  phase_transfer.beginAngleReturn();
+  assert(std::abs(phase_transfer.feedforward-2.6)<1e-12 &&
+         phase_transfer.boost==0.);
+  m.moment=.2;m.lever=.1;
+  phase_transfer.update(20*deg,0.,2.02,.02,m,cfg,response);
+  assert(phase_transfer.feedforward>=2.6-1e-12);
+  assert(phase_transfer.target_rate>
+         cfg.angle_gain*(5*deg-cfg.stop));
   m.moment=.2;m.lever=.1;
   // Euler roll-rate consistency with nonzero pitch/roll and all gyro axes.
   assert(std::abs(recoveryRollRate(.2,.4,{{.1,.2,.3}})-
@@ -515,36 +586,55 @@ int main() {
     braking_candidate.update((7.8-.1*i)*deg,.08,i*.02,.02,m,cfg,response);
   }
   assert(braking_candidate.moving);
-  // Once stopping-distance prediction starts a terminal brake, a brief rate
-  // reversal cannot restore the old integral command.  Force must reach zero
-  // first, after which any remaining error uses a bounded fresh approach.
+  // Once stopping-distance prediction starts terminal braking, a brief rate
+  // reversal cannot restore the old integral/model command.  After the
+  // correcting coast has remained stopped for the confirmation dwell, the
+  // same measured contact is allowed to re-approach with bounded authority;
+  // otherwise a residual error can remain at zero thrust until timeout.
   ContinuousRollRecovery latched_brake;latched_brake.reset(20*deg,0.);
   latched_brake.progress_observed=true;latched_brake.moving=true;
   latched_brake.thrust=3.;latched_brake.boost=2.5;
   latched_brake.filtered_rate=.30;latched_brake.rate_initialized=true;
   latched_brake.update(12*deg,.30,.02,.02,m,cfg,response);
   assert(latched_brake.terminal_brake_latched &&
-         latched_brake.thrust<3. && latched_brake.boost>2.49);
-  double brake_last=latched_brake.thrust;
-  for(int i=2;i<=30 && latched_brake.terminal_brake_latched;++i) {
-    const double v=latched_brake.update(11*deg,-.02,i*.02,.02,m,cfg,response);
-    assert(v<=brake_last+1e-12);brake_last=v;
-  }
-  assert(!latched_brake.terminal_brake_latched &&
-         latched_brake.low_authority_reapproach &&
-         latched_brake.thrust<=cfg.reapproach_limit &&
-         latched_brake.target_thrust<=cfg.reapproach_limit &&
-         latched_brake.boost<.02);
-  // The gentle retry is an initial bound, not a permanent 1.5-N ceiling.
-  // If retained roll does not improve, restore breakaway authority smoothly;
-  // the normal rate/prediction guards remain active once motion resumes.
+         latched_brake.thrust<3. && latched_brake.boost==0. &&
+         latched_brake.low_authority_reapproach);
+  const double first_brake_thrust=latched_brake.thrust;
+  for(int i=2;i<=120 && latched_brake.terminal_brake_latched;++i)
+    latched_brake.update(11*deg,-.02,i*.02,.02,m,cfg,response);
+  assert(!latched_brake.terminal_brake_latched);
+  assert(latched_brake.low_authority_reapproach);
+  assert(latched_brake.thrust<first_brake_thrust);
+  assert(latched_brake.target_thrust<=
+         latched_brake.reapproach_authority+1e-9);
+  assert(latched_brake.boost<1e-9);
+  assert(latched_brake.reapproach_authority>=cfg.reapproach_limit-1e-9);
+  // A stationary residual now restores bounded authority and may escalate
+  // only after the ordinary no-progress dwell.
   const double retry_start=latched_brake.last_update;
   for(int i=1;i<=100;++i)
     latched_brake.update(11*deg,0.,retry_start+i*.02,.02,m,cfg,response,
                          std::numeric_limits<double>::quiet_NaN(),false);
-  assert(latched_brake.reapproach_authority>cfg.reapproach_limit+.5 &&
+  assert(!latched_brake.terminal_brake_latched &&
          latched_brake.thrust>cfg.reapproach_limit &&
-         latched_brake.thrust<=latched_brake.reapproach_authority+1e-9);
+         latched_brake.target_thrust<=
+             latched_brake.reapproach_authority+1e-9);
+  // Capture hysteresis is wider than the requested stop angle.  A quiet
+  // residual inside that hysteresis (the real bag plateaued near 5 deg for a
+  // 3-deg target) must still recover authority instead of remaining at the
+  // initial 1.5-N re-approach cap forever.
+  RollRecoveryConfig small_cfg=cfg;
+  small_cfg.stop=3.*deg;small_cfg.stop_margin=1.*deg;
+  ContinuousRollRecovery small_retry;small_retry.reset(4.95*deg,0.);
+  small_retry.low_authority_reapproach=true;
+  small_retry.reapproach_authority=cfg.reapproach_limit;
+  small_retry.reapproach_best_error=4.95*deg;
+  small_retry.reapproach_last_improvement=0.;
+  for(int i=1;i<=100;++i)
+    small_retry.update(4.95*deg,0.,i*.02,.02,m,small_cfg,response,
+                       std::numeric_limits<double>::quiet_NaN(),false);
+  assert(small_retry.reapproach_authority>small_cfg.reapproach_limit+.5 &&
+         small_retry.thrust>small_cfg.reapproach_limit);
   // A released pair whose currently measured moment arm still has the wrong
   // sign receives shaping force only.  The cap is removed by the caller once
   // measured geometry—not merely the predicted final bend—is restorative.

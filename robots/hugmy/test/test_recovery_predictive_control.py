@@ -14,13 +14,22 @@ assert 'braking this cycle and replanning from measured contact state' in branch
 assert 'predictive_target,' in branch
 assert 'recovery_response_faults_enabled &&' in branch
 assert 'recovery_wrong_geometry_response_observed_' in branch
-assert 'transition_geometry_worsened' in branch
-assert 'without waiting for target pressure' in branch
+assert 'const bool meaningful_probe_authority =' in branch
+assert 'probe_did_not_worsen_rate' in branch
+wrong_geometry = branch.split('const bool wrong_geometry_candidate =', 1)[1].split(';', 1)[0]
+assert 'recovery_extension_mode_latched_' not in wrong_geometry
+assert '!measured_restoring_geometry' in wrong_geometry
+assert '!retained_probe_progress && !helpful_probe_motion' in branch
 assert 'const bool retained_candidate_worsening =' in branch
 assert 'Recovery candidate lost retained progress:' in branch
-assert 'recovery_selected_path_requires_zero_thrust_' in branch
-assert '? 0.0 : recovery_wrong_sign_shaping_thrust_n_' in branch
+assert 'std::max(recovery_wrong_sign_shaping_thrust_n_,' in branch
+assert 'roll_recovery_config_.response_fault_min_thrust)' in branch
 assert 'geometry_authority_limit)' in branch
+assert 'recovery_rate_arrest_min_thrust_n_' in branch
+assert 'recovery_rate_arrest_max_thrust_n_' in branch
+assert 'active_roll_recovery_config.fallback_thrust = std::min(' in branch
+assert 'recovery_preinflate_thrust_rise_n_s_' in branch
+assert 'Emergency roll deterioration resumed' in branch
 assert 'recovery_predictive_.reset();' in source
 assert 'recoveryRotorLever(arms[j],angle)' in branch
 assert 'force+bend_model_thrust_offset_n_' in branch
@@ -81,6 +90,18 @@ int main() {
   actual.update(.4,.81,.04,.02,model,bounds,response,4.);
   assert(actual.fault && actual.thrust==0.);
   actual.reset(.4,0.);assert(actual.update(.4,0.,.02,.02,model,bounds,response,100.)<=.030001);
+  // Emergency outward-rate arrest uses a bounded 2-N floor and a faster
+  // slew.  It must not remain at the ordinary invalid-geometry 0.5-N FF or
+  // the 1.5-N geometry probe ceiling; rate PI may add authority up to 4 N.
+  ContinuousRollRecovery arrest;arrest.reset(.4,0.);
+  RollRecoveryConfig arrest_cfg=bounds;arrest_cfg.fallback_thrust=2.;arrest_cfg.rise=6.;
+  RollRecoveryModel invalid_model;RollRecoveryResponse arrest_response;
+  double arrest_output=0.;
+  for(int i=1;i<=25;++i)
+    arrest_output=arrest.update(.4,-.02,i*.02,.02,invalid_model,arrest_cfg,
+                                arrest_response,
+                                std::numeric_limits<double>::quiet_NaN(),true,4.);
+  assert(arrest.target_thrust>=1.999 && arrest_output>=1.999 && arrest_output<=4.000001);
   actual.reset(.4,0.);actual.thrust=1.;
   // Include both the 1-N thrust rundown and the configured low-rate settle
   // dwell; entering the angular band alone is deliberately not completion.
