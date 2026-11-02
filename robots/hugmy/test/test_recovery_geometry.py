@@ -24,6 +24,7 @@ functions = '\n'.join(function(name, result) for name, result in [
     ('recoveryRotorRawLeverAbout', 'double'),
     ('recoveryRotorRawLever', 'double'),
     ('rotorPositionFromAngle', 'AttitudePressureController::Vector3'),
+    ('rotorDepthAngleAbout', 'double'),
     ('armContactPointFromAngle', 'AttitudePressureController::Vector3'),
     ('rotateAboutLocalY', 'AttitudePressureController::Vector3'),
     ('rotateLocalToBody', 'AttitudePressureController::Vector3'),
@@ -69,6 +70,7 @@ public:
  Vector3 contact_position_{{0.,0.,-.07}}, gravity_body_{{0.,0.,-9.81}};
  double measuredArmBendAngle(size_t arm)const{return angles[arm];}
  Vector3 rotorPositionFromAngle(size_t,double)const;
+ double rotorDepthAngleAbout(size_t,double,const Vector3&)const;
  Vector3 armContactPointFromAngle(size_t,double)const;
  static Vector3 rotateAboutLocalY(const Vector3&,double);
  static Vector3 rotateLocalToBody(const Vector3&,double);
@@ -171,6 +173,15 @@ int main() {
      {{true,true,true,true}},{{0.,-.07}},{{0.,-9.81}},.025,.15,.015);
  assert(circle.valid && circle.radius>.035 && circle.radius<.050);
  for(double depth:circle.depth_angle)assert(depth>M_PI/2);
+ // Recovery classifies the force application point, not a distal point
+ // extrapolated through joints beyond the rotor.  Even at a 150-deg measured
+ // bend, rotor 3 remains on the lower half of this representative human-arm
+ // centre instead of wrapping spuriously to the circle top.
+ c.gravity_body_={{0.,0.,-9.81}};
+ const AttitudePressureController::Vector3 human_center{{0.,-.003,-.108}};
+ const double rotor3_depth=c.rotorDepthAngleAbout(
+     3,150.*M_PI/180.,human_center);
+ assert(std::isfinite(rotor3_depth) && rotor3_depth>M_PI/2);
  // Exercise the real forward geometry and calibration table with the planner.
  hugmy::PressureThrustBendModel table;
  hugmy::RecoveryPredictiveConfig config;config.budget_ms=1000.;

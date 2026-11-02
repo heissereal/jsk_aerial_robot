@@ -124,7 +124,6 @@ void AttitudePressureController::startHybridLocomotion(const ros::Time& now)
   hybrid_preinflate_roll_reference_rad_=
       std::numeric_limits<double>::quiet_NaN();
   hybrid_preinflate_roll_gate_.reset();
-  hybrid_lift_target_no_unload_since_=-1.;
   hybrid_regrip_complete_latched_=false;
   hybrid_regrip_terminal_rear_lift_requested_=false;
   hybrid_terminal_rear_lift_sign_.fill(0.);
@@ -209,7 +208,6 @@ void AttitudePressureController::beginHybridRegrip(const ros::Time& now,bool pre
   hybrid_recovery_pair_preview_direction_=0;
   hybrid_recovery_pair_preview_last_attempt_=-1.;
   hybrid_lift_worsening_roll_since_=-1.;
-  hybrid_lift_target_no_unload_since_=-1.;
   hybrid_regrip_thrust_=inchworm_thrust_;
   // Reverse thrust is a transient pitch/traction input, not a support force.
   // Retaining it through a failed windup or normal regrip left the rear pair
@@ -1156,32 +1154,25 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
     const bool previous_rear_release=hybrid_single_.rear_release_observed;
     const bool previous_support_transfer=
         hybrid_single_.support_transfer_started;
+    const bool previous_lift_checkpoint=
+        hybrid_single_.phase==SinglePass::Lift &&
+        hybrid_single_.lift_target_reached[0] &&
+        hybrid_single_.lift_target_reached[1];
     const std::array<unsigned,2> previous_samples{{hybrid_single_.onset[0].samples,hybrid_single_.onset[1].samples}};
     command=hybrid_single_.update(input,hybrid_config_,hybrid_single_config_,
         hybrid_planner_.model,geometry,equilibrium);
     s.bottom_command=command.bottom;
-    const bool lift_targets_without_unload=
+    const bool lift_checkpoint_without_unload=
         hybrid_single_.phase==SinglePass::Lift &&
         hybrid_single_.lift_target_reached[0] &&
         hybrid_single_.lift_target_reached[1] &&
         !hybrid_single_.unload_event_detected;
-    if(lift_targets_without_unload) {
-      if(hybrid_lift_target_no_unload_since_<0.)
-        hybrid_lift_target_no_unload_since_=clock;
-    } else {
-      hybrid_lift_target_no_unload_since_=-1.;
-    }
-    if(hybrid_lift_target_no_unload_since_>=0. &&
-       clock-hybrid_lift_target_no_unload_since_>=
-           hybrid_lift_target_no_unload_timeout_sec_) {
-      ROS_WARN("Hybrid Motion-2 reached both independent safe bend targets [%.1f %.1f] deg without a measured unloading event for %.2f s; stopping extension thrust and restoring support instead of pushing beyond the planned reach",
+    if(lift_checkpoint_without_unload && !previous_lift_checkpoint) {
+      ROS_INFO("Hybrid Motion-2 reached nominal bend checkpoint [%.1f %.1f] deg without measured load relief; continuing the common %.2f-N/s angle/rate-regulated search up to the %.2f-N physical thrust limit",
           hybrid_single_.active_bend_target[0]*180./M_PI,
           hybrid_single_.active_bend_target[1]*180./M_PI,
-          clock-hybrid_lift_target_no_unload_since_);
-      hybrid_lift_target_no_unload_since_=-1.;
-      beginHybridTerminalSettle(now,
-          "hybrid Motion-2 safe bend reached without load relief; regrip and retry");
-      return;
+          hybrid_single_config_.checkpoint_search_rise,
+          hybrid_config_.thrust_max);
     }
     if(previous_phase==SinglePass::VentFront && hybrid_single_.phase==SinglePass::Lift)
       hybrid_start_bend_=s.bend;
@@ -1199,6 +1190,12 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
       return;
     }
     if(command.fault) {
+      if(hybrid_single_.phase==SinglePass::Lift &&
+         hybrid_single_.lift_checkpoint_thrust_limit_time>=
+             hybrid_single_config_.checkpoint_thrust_limit_confirm)
+        ROS_WARN("Hybrid Motion-2 checkpoint search reached the %.2f-N physical thrust limit for %.2f s without measured load relief; restoring support",
+            hybrid_config_.thrust_max,
+            hybrid_single_.lift_checkpoint_thrust_limit_time);
       ROS_WARN("Hybrid trajectory incomplete: motion %d, phase %.2f s powered %.2f s, T [%.2f %.2f], P [%.1f %.1f], reference [%.1f %.1f] bend [%.1f %.1f] deg",
           int(hybrid_single_.phase),hybrid_single_.phase_time,hybrid_single_.powered_time,
           s.thrust[0],s.thrust[1],s.pressure[0],s.pressure[1],

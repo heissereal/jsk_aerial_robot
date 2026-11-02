@@ -81,6 +81,8 @@ private:
   double measuredArmBendAngle(size_t arm) const;
   Vector3 rotorPositionFromAngle(size_t arm, double bend_angle) const;
   Vector3 rotorDirectionFromAngle(size_t arm, double bend_angle) const;
+  double rotorDepthAngleAbout(size_t arm, double bend_angle,
+                              const Vector3& object_center) const;
   Vector3 armContactPointFromAngle(size_t arm, double bend_angle) const;
   bool armGeometryReady(const PressureArray& target, const ros::Time& now) const;
   void publishPressureTarget(const PressureArray& target, double maximum_step,
@@ -443,6 +445,12 @@ private:
   double recovery_wrong_geometry_best_rate_rad_s_ =
       -std::numeric_limits<double>::infinity();
   bool recovery_wrong_geometry_response_observed_ = false;
+  // The empirical response probe belongs to one pneumatic contact state.
+  // Track the commanded pressure at which it was started so a deliberate
+  // 0 -> support-pressure transition starts a fresh observation, while
+  // ordinary sensor noise does not move the geometric contact model.
+  PressureArray recovery_wrong_geometry_probe_pressure_target_{};
+  bool recovery_wrong_geometry_probe_target_valid_ = false;
   // The endpoint geometry can be restorative even though the measured
   // 30 -> 20 -> 10 -> 0-kPa path crosses a non-restoring lever.  In that
   // case pressure may move, but rotor thrust stays zero until the measured
@@ -466,9 +474,9 @@ private:
   hugmy::CircularGraspEstimate recovery_circle_event_estimate_;
   bool recovery_event_contact_pivot_locked_ = false;
   Vector3 recovery_event_contact_pivot_{{0.0, 0.0, 0.0}};
-  // The lower-side pair is selected from the inferred contact geometry once
-  // per recovery event.  Contact-state/moment evaluation may change that
-  // pair between flexed and released, but may not jump to the upper pair.
+  // The pair selected by the signed moment calculation is latched once per
+  // recovery event. A pressure transition may not move actuation to a
+  // different pair without first returning to a stable regrasp boundary.
   bool recovery_preferred_pair_locked_ = false;
   size_t recovery_preferred_pair_index_ = 0;
   bool recovery_preferred_pair_used_fallback_ = false;
@@ -779,11 +787,6 @@ private:
   double hybrid_preinflate_roll_reference_rad_ =
       std::numeric_limits<double>::quiet_NaN();
   hugmy::PostureRecoveryGate hybrid_preinflate_roll_gate_;
-  // Reaching both independent Motion-2 safety bends without a measured
-  // unloading event is not permission to keep increasing thrust.  Allow a
-  // short body/contact-sensor lag, then restore support and retry.
-  double hybrid_lift_target_no_unload_timeout_sec_ = 0.35;
-  double hybrid_lift_target_no_unload_since_ = -1.0;
   double hybrid_regrip_roll_recovery_rad_ = 15.0 * M_PI / 180.0;
   double hybrid_regrip_roll_brake_fall_n_s_ = 8.0;
   double hybrid_regrip_roll_brake_thrust_max_n_ = 1.5;

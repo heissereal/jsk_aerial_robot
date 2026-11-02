@@ -25,7 +25,19 @@ assert 'const bool wrong_geometry_candidate =' in source
 assert 'const bool pressure_settled_timeout =' in source
 assert '!retained_probe_progress && !helpful_probe_motion' in source
 assert 'if (pressure_settled_timeout ||\n                      geometry_worsened)' in source
-assert 'Circular recovery binary candidate:' in source
+assert 'const double active_pressure_target =\n                            prepare_pressure_[arm];' in source
+assert 'probe_pressure_target_changed' in source
+assert 'recovery_wrong_geometry_probe_target_valid_' in source
+assert 'Recovery candidates pair %zu+%zu' in source
+assert 'candidate_bend[arm] = 0.0' in source
+assert 'grasped_has_authority ? best_grasped : best_extended' in source
+assert 'rotorDepthAngleAbout(' in source
+selector = source[source.index(
+    'void AttitudePressureController::selectContinuousRecoveryPair('
+):source.index('\n}\n', source.index(
+    'void AttitudePressureController::selectContinuousRecoveryPair('
+))]
+assert 'armContactPointFromAngle(' not in selector
 assert '10/20-kPa states are now transitions only' in source
 assert 'latched topology lower-side pair' in source
 assert 'selected instantaneous restoring pair' not in source
@@ -211,7 +223,9 @@ public:
  double recovery_wrong_geometry_reference_rate_rad_s_=NAN;
  double recovery_wrong_geometry_best_rate_rad_s_=-INFINITY;
  bool recovery_wrong_geometry_response_observed_=false;
- double roll_moment_kp_=.1,target_roll_=0.,roll_=-.2,pitch_=0.;
+ PressureArray recovery_wrong_geometry_probe_pressure_target_{};
+ bool recovery_wrong_geometry_probe_target_valid_=false;
+ double roll_moment_kp_=.1,roll_moment_kd_=0.,target_roll_=0.,roll_=-.2,pitch_=0.;
  Vector3 body_angular_velocity_{{0.,0.,0.}};
  Vector3 gravity_body_{{0.,0.,-9.81}};
  Vector3 contact_position_{{0.,0.,-.07}};
@@ -234,13 +248,21 @@ public:
  Vector3 armContactPointFromAngle(size_t arm,double bend)const{
    return {{0.,arm<2?.04:-.04,-.07-.01*std::sin(bend)}};
  }
+ Vector3 rotorPositionFromAngle(size_t arm,double bend)const{
+   return {{0.,arm<2?.04:-.04,-.07-.01*std::sin(bend)}};
+ }
+ double rotorDepthAngleAbout(size_t,double bend,const Vector3&)const{
+   return std::isfinite(bend)?bend:NAN;
+ }
  Vector3 recoveryContactPivot(const std::array<bool,4>&,bool,
                               const PressureArray* = nullptr,
                               const PressureArray* = nullptr)const{
    return recovery_event_contact_pivot_locked_
        ? recovery_event_contact_pivot_ : contact_position_;
  }
+ bool straight_pair_swap_=false;
  double recoveryRotorRawLeverAbout(size_t arm,double bend,const Vector3&)const{
+   if(straight_pair_swap_ && bend<.1) return arm<2?.02:.06;
    const double pair01=bend<1.8?.04:-.04;return arm<2?pair01:-pair01;
  }
  double recoveryRotorRawLever(size_t arm,double bend)const{
@@ -278,8 +300,9 @@ int main() {
    double v=law.update((-sign*.2)*c.correction_axis_[0],0.,.02,.02,model,cfg,response);
    assert(v>0. && !law.finished && !law.fault); // Both signs actually produce thrust.
  }
- // With a valid circle, a restorative pair below the object side remains
- // flexed/grasping; above the side it is deliberately released instead.
+ // With a valid circle, normal recovery compares the current-bend grasped
+ // geometry against the alpha=0 straight-arm geometry.  In this synthetic
+ // case the grasped 0+1 pair requires less thrust and must remain grasped.
  AttitudePressureController circle;
  circle.recovery_circle_selection_enabled_=true;
  circle.recovery_circle_estimate_.valid=true;
@@ -290,6 +313,7 @@ int main() {
  circle.recovery_circle_stamp_={9.9};
  circle.select(.2);
  assert(circle.prepare_arm_active_[0] && circle.prepare_arm_active_[1]);
+ assert(!circle.recovery_selected_pair_release_);
  const size_t first_pressure=circle.recovery_selected_pressure_candidate_index_;
  assert(first_pressure<4);
  // Reject only the selected active state. Re-selection keeps the
@@ -303,8 +327,8 @@ int main() {
  assert(circle.recovery_selected_pressure_candidate_index_!=first_pressure);
  assert(circle.recovery_selected_pressure_candidate_index_==0 ||
         circle.recovery_selected_pressure_candidate_index_==3);
- // Once both active 0+1 states are disproved, this synthetic geometry has no
- // allowed upper-pair fallback and must refuse further thrust.
+ // Once both active 0+1 states are disproved, its event latch prevents an
+ // unsafe pair jump before regrasp and must refuse further thrust.
  circle.recovery_rejected_candidate_mask_=0x0fu;
  circle.select(.2);
  assert(!circle.recovery_pair_selection_available_);
@@ -321,6 +345,32 @@ int main() {
  circle.recovery_circle_estimate_.depth_angle[1]=1.;
  circle.select(.2);
  assert(circle.prepare_arm_active_[0] && circle.prepare_arm_active_[1]);
+ // Explicitly verify the requested four-candidate policy.  At the measured
+ // bend only pair 0+1 has a restoring grasped lever, while at alpha=0 the
+ // straight 2+3 pair has the largest restoring lever.  Normal recovery uses
+ // the lower-thrust grasped solution; emergency recovery excludes grasped
+ // candidates and selects the straight 2+3 solution.
+ AttitudePressureController normal_choice;
+ normal_choice.recovery_circle_selection_enabled_=true;
+ normal_choice.recovery_circle_estimate_=circle.recovery_circle_estimate_;
+ normal_choice.recovery_circle_stamp_={9.9};
+ normal_choice.recovery_circle_release_support_scale_=0.;
+ normal_choice.recovery_circle_release_penalty_n_=0.;
+ normal_choice.straight_pair_swap_=true;
+ normal_choice.select(.2);
+ assert(normal_choice.prepare_arm_active_[0] &&
+        normal_choice.prepare_arm_active_[1]);
+ assert(!normal_choice.recovery_selected_pair_release_);
+ AttitudePressureController emergency_choice;
+ emergency_choice.recovery_circle_selection_enabled_=true;
+ emergency_choice.recovery_circle_estimate_=circle.recovery_circle_estimate_;
+ emergency_choice.recovery_circle_stamp_={9.9};
+ emergency_choice.recovery_circle_release_support_scale_=0.;
+ emergency_choice.straight_pair_swap_=true;
+ emergency_choice.select(.35);
+ assert(emergency_choice.prepare_arm_active_[2] &&
+        emergency_choice.prepare_arm_active_[3]);
+ assert(emergency_choice.recovery_selected_pair_release_);
  assert(circle.recovery_selected_pair_release_);
  // A later bend change cannot move actuation to the upper pair in the same
  // recovery event. The chosen lower-side pair remains locked; only its

@@ -59,7 +59,6 @@ hybrid_preinflate_roll_growth_rad: 0.0017453292519943296  # 0.1 deg beyond the p
 hybrid_preinflate_roll_rate_rad_s: 0.006981317007977318   # 0.4 deg/s outward
 hybrid_preinflate_roll_prediction_sec: 0.30
 hybrid_preinflate_roll_confirm_sec: 0.08
-hybrid_lift_target_no_unload_timeout_sec: 0.35 # after both safe bend targets, allow only sensor/contact lag before regrip
 hybrid_lift_probe_sec: 20.0  # long absolute-bend reach; rate FB normally finishes earlier
 hybrid_front_vent_timeout_sec: 30.0
 hybrid_front_vent_tolerance_kpa: 5.0  # target remains exactly zero
@@ -239,6 +238,11 @@ hybrid_lift_identification_rate_control_fall_n_s: 3.0 # smooth active braking; n
 hybrid_lift_identification_bend_rate_limit_rad_s: 6.0 # initial released test only; normal C remains pi rad/s
 hybrid_lift_identification_return_bend_rate_limit_rad_s: 8.0 # intentional pressure-driven flexion after the unloading test
 hybrid_lift_identification_return_pressure_slew_kpa_s: 30.0 # catch the first unloaded return before support is lost
+# Reaching 45 deg is a nominal checkpoint, not Motion-2 completion.  Continue
+# a common, angle/rate-regulated force search until measured pitch/height load
+# relief occurs.  Only a sustained physical thrust limit ends this search.
+hybrid_lift_checkpoint_search_rise_n_s: 0.25
+hybrid_lift_checkpoint_thrust_limit_confirm_sec: 0.50
 # Front support is removed with one common pressure command. Motion 2 starts
 # once the command is near zero and both measured pressures are below 10 kPa;
 # the zero command remains active while rotor/roll feedback gains authority.

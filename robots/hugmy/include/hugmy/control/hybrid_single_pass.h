@@ -650,6 +650,13 @@ struct SinglePassConfig {
   double identification_bend_rate_limit=6.;
   double identification_return_bend_rate_limit=8.;
   double identification_return_pressure_slew=30.;
+  // The 45-deg bend is a checkpoint, not proof of load relief.  After both
+  // arms reach it, keep the angle/rate loop active and raise one common
+  // feed-forward force slowly until the measured body event occurs.  If that
+  // search reaches the physical thrust ceiling without relief, the ceiling
+  // (rather than the nominal bend checkpoint) terminates the trial.
+  double checkpoint_search_rise=.25;
+  double checkpoint_thrust_limit_confirm=.50;
   // Motion 2 ends on a measured unloading event, not on an arm-angle target.
   // Both front arms must have genuinely extended, and either the body must
   // pitch in the commanded direction or its mocap height must rise.  The
@@ -941,6 +948,7 @@ struct SinglePassConfig {
         identification_rate_control_fall,
         identification_bend_rate_limit,identification_return_bend_rate_limit,
         identification_return_pressure_slew,
+        checkpoint_search_rise,checkpoint_thrust_limit_confirm,
         unload_min_extension,unload_pair_mismatch,unload_pair_memory,
         unload_pitch,unload_height,unload_min_pitch,
         unload_min_up_force,
@@ -1204,6 +1212,9 @@ struct SinglePassConfig {
       identification_return_bend_rate_limit>=identification_bend_rate_limit &&
       identification_return_bend_rate_limit<=10. &&
       identification_return_pressure_slew>=10. && identification_return_pressure_slew<=80. &&
+      checkpoint_search_rise>=.05 && checkpoint_search_rise<=lift_rise &&
+      checkpoint_thrust_limit_confirm>=.10 &&
+      checkpoint_thrust_limit_confirm<=2.0 &&
       unload_min_extension>=.017453 && unload_min_extension<=.174533 &&
       unload_pair_mismatch>=identification_sync_deadband &&
       unload_pair_mismatch<=.349066 &&
@@ -1470,6 +1481,13 @@ class SinglePass {
   bool identifying_straight=false;
   bool front_target_latched=false;
   std::array<bool,2> lift_target_reached{{false,false}};
+  // Common force explored after the nominal bend checkpoint.  Keeping this
+  // separate from the measured per-arm hold force lets angle/rate feedback
+  // reject further free extension while the common body-unloading moment is
+  // increased.  The limit timer is a hard actuator-bound exit, not a nominal
+  // Motion-2 timeout.
+  double lift_checkpoint_search_force=0.;
+  double lift_checkpoint_thrust_limit_time=0.;
   bool slope_overlap_active=false, overlap_extension_latched=false;
   Pair reference{}, minimum{}, pull_start{}, pressure_target{};
   double vent_common_pressure=0.;
@@ -1899,6 +1917,8 @@ class SinglePass {
       identifying_straight=!calibrated;
       front_target_latched=false;
       lift_target_reached.fill(false);
+      lift_checkpoint_search_force=0.;
+      lift_checkpoint_thrust_limit_time=0.;
       slope_overlap_active=false;overlap_extension_latched=false;
       lift_prefill_command.fill(0.);
       lift_angle_pressure_command.fill(0.);
@@ -3269,6 +3289,29 @@ class SinglePass {
             lift_angle_pressure_command[j]);
         raw[j]=lift_ramp[j];
       }
+      const bool lift_checkpoint_reached_pair=
+          lift_target_reached[0] && lift_target_reached[1];
+      if(lift_checkpoint_reached_pair && !unload_event_detected) {
+        // The nominal bend checkpoint limits the angular trajectory, but it
+        // is not a load-relief event.  Continue increasing one common force
+        // slowly while the angle/rate controller below holds each arm near
+        // its own checkpoint.  On a contact-limited arm the added force then
+        // acts on the body; on a still-free arm the negative bend/rate error
+        // removes that addition before it creates another extension impulse.
+        if(lift_checkpoint_search_force<=0.)
+          lift_checkpoint_search_force=std::max(
+              std::max(s.thrust[0],s.thrust[1]),
+              std::max(lift_target_hold_thrust[0],
+                       lift_target_hold_thrust[1]));
+        lift_checkpoint_search_force=std::min(c.thrust_max,
+            lift_checkpoint_search_force+k.checkpoint_search_rise*dt);
+        lift_checkpoint_thrust_limit_time=
+            lift_checkpoint_search_force>=c.thrust_max-.05?
+                lift_checkpoint_thrust_limit_time+dt:0.;
+      } else {
+        lift_checkpoint_search_force=0.;
+        lift_checkpoint_thrust_limit_time=0.;
+      }
       const bool powered_pair_trajectory_ready=onset_this_stroke[0] &&
           onset_this_stroke[1] && powered_extension_reference_valid[0] &&
           powered_extension_reference_valid[1] &&
@@ -4098,7 +4141,16 @@ class SinglePass {
         pull_forward=std::max(pull_forward,
             std::min(k.slip_seed_pull_max,std::max(1.,fx)));
         enter(Pull,in);
-      } else if(powered_time>=k.lift_seconds || phase_time>=k.lift_seconds+k.vent_seconds) {
+      } else if(lift_checkpoint_thrust_limit_time>=
+                    k.checkpoint_thrust_limit_confirm) {
+        // This is the post-checkpoint hard exit: the common search has
+        // reached the configured actuator ceiling and remained there without
+        // a measured body-unloading event.  The nominal bend checkpoint and
+        // elapsed time alone never terminate an otherwise safe search.
+        out.fault=true;
+      } else if(!lift_checkpoint_reached_pair &&
+                (powered_time>=k.lift_seconds ||
+                 phase_time>=k.lift_seconds+k.vent_seconds)) {
         // During Lift, the inner allocator above owns transient roll by
         // reshaping the two front thrusts. Do not hand a temporary gait
         // excursion to shared posture recovery before the unloading event:
@@ -5236,8 +5288,15 @@ class SinglePass {
         // feedback may raise or lower it only according to each arm's own
         // relative travel; it must not collapse the early arm back to its
         // smaller measured breakaway force while the other is being launched.
-        double onset_ff=std::max(initial_pulse_level,
-            onset[j].samples>0?onset[j].thrust:std::max(.3,s.thrust[j]));
+        // The pre-checkpoint pulse may advance in discrete levels.  Freeze
+        // that schedule when the pair reaches the checkpoint and let only the
+        // slow common checkpoint search increase it afterwards.
+        const double common_force_schedule=
+            lift_checkpoint_search_force>0.?
+                lift_checkpoint_search_force:initial_pulse_level;
+        double onset_ff=std::max(common_force_schedule,
+            onset[j].samples>0?onset[j].thrust:
+                std::max(.3,s.thrust[j]));
         if(holding_windup &&
            !unload_event_detected && std::isfinite(load_relief_elapsed)) {
           // Once actual load relief has begun, use the remaining safe pitch
@@ -5381,6 +5440,10 @@ class SinglePass {
         raw[j]=std::min(raw[j],guarded_pair_limit);
         fall_limit[j]=std::max(fall_limit[j],c.thrust_fall);
       }
+      // Unlike the nominal 45-deg checkpoint, this is the independent
+      // physical bend/relative-travel boundary.  Regrip rather than holding a
+      // released arm against its hard limit while searching for body motion.
+      out.fault=true;
     }
     // lift_ramp already contains each arm's measured target/rate braking
     // before the roll allocator runs.  Do not clamp it a second time here:

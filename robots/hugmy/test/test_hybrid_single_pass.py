@@ -1337,6 +1337,40 @@ int main(){
  // Crossing the angle guard alone no longer completes the reach.
  for(int i=0;i<4;++i) imminent.update(imminent_input,c,k,model,geom);
  assert(imminent.phase==SinglePass::Lift);
+ // The nominal bend is a checkpoint rather than a 0.35-s abort. Keep both
+ // chambers released, hold the bend with angle/rate feedback and continue a
+ // slow common force search until a body-unloading event is measured.
+ const double checkpoint_force=imminent_input.s.thrust[0];
+ SinglePassOutput checkpoint_search_output;
+ for(int i=0;i<40;++i) {
+   checkpoint_search_output=imminent.update(imminent_input,c,k,model,geom);
+   assert(imminent.phase==SinglePass::Lift && !checkpoint_search_output.fault);
+   assert(checkpoint_search_output.pressure[0]==0. &&
+          checkpoint_search_output.pressure[1]==0.);
+   imminent_input.s.thrust=checkpoint_search_output.thrust;
+ }
+ assert(imminent.lift_checkpoint_search_force>checkpoint_force &&
+        checkpoint_search_output.thrust[0]>checkpoint_force &&
+        checkpoint_search_output.thrust[1]>checkpoint_force);
+ // If measured load relief never appears, the search may continue past the
+ // nominal bend and time checkpoints, but it must exit after dwelling at the
+ // physical actuator ceiling.
+ SinglePass thrust_limited=imminent;
+ auto thrust_limit_input=imminent_input;
+ auto thrust_limit_c=c;
+ thrust_limit_c.thrust_max=thrust_limited.lift_checkpoint_search_force+.03;
+ auto thrust_limit_k=k;
+ thrust_limit_k.checkpoint_search_rise=k.lift_rise;
+ thrust_limit_k.checkpoint_thrust_limit_confirm=.10;
+ SinglePassOutput thrust_limit_output;
+ for(int i=0;i<20 && !thrust_limit_output.fault;++i) {
+   thrust_limit_output=thrust_limited.update(
+       thrust_limit_input,thrust_limit_c,thrust_limit_k,model,geom);
+   thrust_limit_input.s.thrust=thrust_limit_output.thrust;
+ }
+ assert(thrust_limit_output.fault &&
+        thrust_limited.phase==SinglePass::Lift &&
+        !thrust_limited.unload_event_detected);
  imminent_input.height=.003;
  imminent_input.directional_pitch=k.unload_min_pitch+.01;
  for(int i=0;i<10 && imminent.phase==SinglePass::Lift;++i)
@@ -1705,8 +1739,8 @@ int main(){
  small.update(stuck,c,small_k,model,geom);
  assert(small.phase==SinglePass::Lift && !small.unload_event_detected);
  // A nearby geometric limit must not turn a short arm excursion into a valid
- // unloading event.  Without the meaningful trajectory travel, stay in Lift
- // even if the body-height signal changes.
+ // unloading event. It is an independent hard boundary, so restore support
+ // rather than remaining released at that boundary.
  SinglePass bounded;auto near=in;near.s.bend={{1.125,1.125}};
  near.s.floor={{.95,.95}};near.s.thrust={{2.,2.}};near.s.rate={{0.,0.}};
  bounded.slip_tested=true;bounded.calibrated=true;bounded.observed_extension=k.extension_rad;
@@ -1717,7 +1751,7 @@ int main(){
  for(int i=0;i<10 && bounded.phase==SinglePass::Lift;++i)
    caught_before_guard=bounded.update(near,c,k,model,geom);
  assert(bounded.phase==SinglePass::Lift && bounded.calibrated &&
-        !bounded.unload_event_detected && !caught_before_guard.fault);
+        !bounded.unload_event_detected && caught_before_guard.fault);
  assert(near.s.floor[0]==.95);
  // Pressure/angle never arrives: bounded catch wait and explicit fault.
  p.enter(SinglePass::FrontCatch,in);in.s.pressure={{0.,0.}};
