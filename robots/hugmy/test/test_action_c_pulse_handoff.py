@@ -32,6 +32,8 @@ struct AttitudePressureController {
  bool recovery_geometry_reestimate_attempted_=false;
  bool recovery_geometry_reestimate_pending_=false;
  bool recovery_circle_event_locked_=false;
+ bool recovery_event_contact_pivot_locked_=false;
+ bool recovery_selected_contact_pivot_enabled_=false;
  bool recovery_preferred_pair_locked_=false;
  unsigned continuous_recovery_pair_switches_=0;
  unsigned recovery_rejected_candidate_mask_=0;
@@ -46,6 +48,7 @@ struct AttitudePressureController {
  bool recovery_extension_mode_latched_=false;
  bool recovery_rate_arrest_active_=false;
  ros::Time recovery_rate_arrest_nonoutward_since_;
+ double recovery_rate_arrest_reference_error_rad_=std::numeric_limits<double>::quiet_NaN();
  double action_c_absolute_target_x_m_=0.1;
  std::array<double,4> inchworm_thrust_{{3.,0.,0.,2.8}}, inchworm_pressure_{};
  bool inchworm_active_=true, stopped=false;

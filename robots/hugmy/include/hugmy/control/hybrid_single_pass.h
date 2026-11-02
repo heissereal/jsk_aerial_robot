@@ -4,6 +4,19 @@
 #include <hugmy/control/hybrid_trajectory_adaptation.h>
 
 namespace hugmy { namespace hybrid {
+// Redistribute a front-pair command without changing its common component.
+// Positive signed_delta unloads arm 0 and assists arm 1; a negative value does
+// the opposite.  Saturation reduces only the differential term.
+inline Pair zeroSumPairRedistribution(Pair command,double signed_delta,
+    double thrust_max) {
+  const size_t leading=signed_delta>=0.?0:1;
+  const size_t lagging=1-leading;
+  const double delta=std::min(std::abs(signed_delta),
+      std::min(command[leading],thrust_max-command[lagging]));
+  command[leading]-=delta;
+  command[lagging]+=delta;
+  return command;
+}
 // Sim bend is a sum of rotor-link hinge angles, not a single local gyro axis.
 // Differentiate that SAME coordinate; never mix its angle with opposite gyro.
 struct BendCoordinateRate {
@@ -483,12 +496,19 @@ struct SinglePassConfig {
   // starts support transfer before the independent hard guard is reached.
   double pull_golden_roll_limit=.20943951; // 12 deg stroke-relative roll
   // Rear support is transferred continuously instead of switching from full
-  // grasp to exhaust at one bend threshold.  Motion 2 reduces the rear pair
-  // only after BOTH front arms have produced measured extension.  Motion 3
-  // then uses the slower front arm's measured flexion, so an asymmetric pair
-  // cannot release the last rear anchor prematurely.
+  // grasp to exhaust at one bend threshold.  The first Motion 2 keeps the
+  // rear pivot grasped. A calibrated Motion 2 reduces it only after BOTH
+  // front arms have produced measured extension, and Motion 3 then uses the
+  // slower front arm's flexion so an asymmetric pair cannot release the last
+  // rear anchor prematurely.
   double lift_rear_release_start_ratio=.10;
   double lift_rear_pressure_floor=0.;
+  // The first powered Lift is an identification experiment: its result must
+  // describe the front pair, not an unknown simultaneous loss of the rear
+  // pivot. Keep the rear pair at the measured grasp pressure until the first
+  // body-unloading event has calibrated the front trajectory. Reused strokes
+  // may then lead rear exhaust with the learned pneumatic timing.
+  bool identification_hold_rear_grasp=true;
   // Bounds used by the signed rear-support coordinate.  -1 maps to the
   // minimum pressure and positive rear thrust; +1 maps to the maximum
   // pressure and (only while pressure is late) reverse thrust.  The slip and
@@ -506,7 +526,7 @@ struct SinglePassConfig {
   // be released. Keep the rear pair grasped during this diagnostic and let
   // the following powered Lift identify rear compliance under a real
   // unloading event.
-  bool slip_preserve_rear_grasp=true;
+  bool slip_preserve_rear_grasp=false;
   double rear_support_probe_sliding=-1.;
   double rear_support_probe_stable=0.;
   double rear_support_probe_unstable=.25;
@@ -650,13 +670,21 @@ struct SinglePassConfig {
   double identification_bend_rate_limit=6.;
   double identification_return_bend_rate_limit=8.;
   double identification_return_pressure_slew=30.;
-  // The 45-deg bend is a checkpoint, not proof of load relief.  After both
-  // arms reach it, keep the angle/rate loop active and raise one common
-  // feed-forward force slowly until the measured body event occurs.  If that
-  // search reaches the physical thrust ceiling without relief, the ceiling
-  // (rather than the nominal bend checkpoint) terminates the trial.
-  double checkpoint_search_rise=.25;
+  // The 45-deg bend is a checkpoint, not proof of load relief and not a
+  // post-checkpoint angle-hold target.  After both arms reach it, raise one
+  // common force until the measured body event occurs.  Ordinary bend/rate
+  // tracking must not cancel that common pitch-producing force; independent
+  // physical bend/rate/roll guards retain reduction authority.  If the search
+  // reaches the actuator ceiling without relief, the ceiling terminates it.
+  double checkpoint_search_rise=.70;
   double checkpoint_thrust_limit_confirm=.50;
+  // Once both arms cross the nominal checkpoint, the useful unloading cue
+  // and pair alignment must be captured within one bounded window.  A valid
+  // pitch/height cue is remembered for this interval so it need not occur in
+  // the exact sample in which the two compliant arms become aligned.  If the
+  // handoff is still unavailable at the end of the window, restore support
+  // and retry instead of continuing an oscillatory zero-pressure force search.
+  double checkpoint_capture_timeout=2.5;
   // Motion 2 ends on a measured unloading event, not on an arm-angle target.
   // Both front arms must have genuinely extended, and either the body must
   // pitch in the commanded direction or its mocap height must rise.  The
@@ -949,6 +977,7 @@ struct SinglePassConfig {
         identification_bend_rate_limit,identification_return_bend_rate_limit,
         identification_return_pressure_slew,
         checkpoint_search_rise,checkpoint_thrust_limit_confirm,
+        checkpoint_capture_timeout,
         unload_min_extension,unload_pair_mismatch,unload_pair_memory,
         unload_pitch,unload_height,unload_min_pitch,
         unload_min_up_force,
@@ -1215,6 +1244,7 @@ struct SinglePassConfig {
       checkpoint_search_rise>=.05 && checkpoint_search_rise<=lift_rise &&
       checkpoint_thrust_limit_confirm>=.10 &&
       checkpoint_thrust_limit_confirm<=2.0 &&
+      checkpoint_capture_timeout>=.5 && checkpoint_capture_timeout<=5.0 &&
       unload_min_extension>=.017453 && unload_min_extension<=.174533 &&
       unload_pair_mismatch>=identification_sync_deadband &&
       unload_pair_mismatch<=.349066 &&
@@ -1488,6 +1518,8 @@ class SinglePass {
   // Motion-2 timeout.
   double lift_checkpoint_search_force=0.;
   double lift_checkpoint_thrust_limit_time=0.;
+  double lift_checkpoint_elapsed=std::numeric_limits<double>::quiet_NaN();
+  bool lift_checkpoint_capture_timed_out=false;
   bool slope_overlap_active=false, overlap_extension_latched=false;
   Pair reference{}, minimum{}, pull_start{}, pressure_target{};
   double vent_common_pressure=0.;
@@ -1919,6 +1951,8 @@ class SinglePass {
       lift_target_reached.fill(false);
       lift_checkpoint_search_force=0.;
       lift_checkpoint_thrust_limit_time=0.;
+      lift_checkpoint_elapsed=std::numeric_limits<double>::quiet_NaN();
+      lift_checkpoint_capture_timed_out=false;
       slope_overlap_active=false;overlap_extension_latched=false;
       lift_prefill_command.fill(0.);
       lift_angle_pressure_command.fill(0.);
@@ -2168,6 +2202,9 @@ class SinglePass {
     // 20-deg/90-deg safety guards.  Using absolute roll here made a stable
     // -9-deg grasp trigger recovery as soon as front vent added only -1 deg.
     const double gait_roll=s.roll-context_roll;
+    const bool identification_rear_anchor=
+        k.identification_hold_rear_grasp && !calibrated &&
+        (phase==VentFront || phase==Lift);
     if(phase==Lift || phase==Pull || phase==FrontCatch) {
       stroke_peak_abs_gait_roll=std::max(stroke_peak_abs_gait_roll,
           std::abs(gait_roll));
@@ -2285,7 +2322,8 @@ class SinglePass {
               (k.rear_release_mismatch_hard-
                   k.rear_release_mismatch_soft),0.,1.);
       rear_angle_feedback_active=
-          phase==Lift || phase==Pull || phase==FrontCatch;
+          (phase==Lift || phase==Pull || phase==FrontCatch) &&
+          !identification_rear_anchor && !gait_roll_worsening;
       if(rear_angle_feedback_active) {
         const double error=rear_release_target-rear_release_pair;
         rear_angle_pressure_trim=clamp(
@@ -2730,36 +2768,13 @@ class SinglePass {
               vent_common_pressure-k.vent_pressure_fall*dt);
         pressure_target.fill(vent_common_pressure);
         raw.fill(0.);
-        // Rear pressure has a much slower measured response than the short
-        // powered reach.  Waiting until Motion 2 to open its exhaust left a
-        // 3--4-kPa command at 9--16 kPa measured pressure when Motion 3
-        // began.  Lead only toward the compliant regrip hold while the two
-        // front chambers are being vented; the optimized floor remains owned
-        // by Motion 2/3.  The start time follows the same measured pneumatic
-        // delay/rate model as the later release, so this is not a fixed early
-        // valve pulse.
-        const double selected_rear_floor=std::min(
-            std::min(in.base_pressure,k.rear_motion_pressure_cap),
-            rearPressureFloor(k));
-        const double pre_release_target=std::min(
-            std::min(in.base_pressure,k.rear_motion_pressure_cap),
-            std::max(selected_rear_floor,k.rear_low_kpa));
-        const double front_time_to_empty=std::max(0.,
-            vent_common_pressure-k.vent_tolerance)/
-                std::max(1.,k.vent_pressure_fall);
-        rear_vent_lead_seconds=c.pressure_delay+
-            std::max(0.,in.rear_pressure-pre_release_target)/
-                std::max(1.,c.exhaust_rate)+k.rear_vent_lead_margin;
-        const double pre_release_phase=rear_vent_lead_seconds>1.e-3?
-            clamp(1.-front_time_to_empty/rear_vent_lead_seconds,0.,1.):1.;
-        const double full_release_span=std::max(1.e-6,
-            in.base_pressure-selected_rear_floor);
-        const double pre_release_fraction=clamp(
-            (in.base_pressure-pre_release_target)/full_release_span,0.,1.);
-        lift_rear_release_progress=std::max(lift_rear_release_progress,
-            pre_release_fraction*minimumJerkPosition(pre_release_phase));
-        rear_pressure_command=in.base_pressure-
-            lift_rear_release_progress*full_release_span;
+        // VentFront is preparation for a measured front-pair experiment, not
+        // part of rear-support optimization.  Preserve the rear pivot while
+        // both front chambers empty.  A calibrated reach may start a timed
+        // rear release only after both powered fronts are moving in Lift;
+        // this avoids changing two unknown mechanisms in the first test.
+        lift_rear_release_progress=0.;
+        rear_pressure_command=in.base_pressure;
         // Keep this boundary strictly pneumatic.  Waiting for passive arm
         // motion to settle lets the two unloaded contacts drift to very
         // different poses, while adding a one-sided rotor command turns that
@@ -2782,10 +2797,10 @@ class SinglePass {
     } else if(phase==Lift) {
       const bool deep_windup_enabled=!k.trajectory_golden_handoff &&
           k.trajectory_windup_pitch>k.unload_pitch+1.e-6;
-      // VentFront may already have led rear exhaust toward the compliant
-      // hold. A measured-time prediction below continues the remaining
-      // optimizer-selected exhaust so the pair is physically near its target
-      // when Motion 3 begins.
+      // VentFront deliberately leaves the rear pivot grasped. On calibrated
+      // reaches, a measured-time prediction below may begin the
+      // optimizer-selected exhaust after paired powered onset so the pair is
+      // physically near its target when Motion 3 begins.
       // A timeout/brake with negligible extension is not an identified lift.
       // Otherwise it teaches a 2-deg target which rear release alone can meet,
       // producing repeated unpowered "completed" strokes on a sticky fixture.
@@ -3292,12 +3307,16 @@ class SinglePass {
       const bool lift_checkpoint_reached_pair=
           lift_target_reached[0] && lift_target_reached[1];
       if(lift_checkpoint_reached_pair && !unload_event_detected) {
-        // The nominal bend checkpoint limits the angular trajectory, but it
-        // is not a load-relief event.  Continue increasing one common force
-        // slowly while the angle/rate controller below holds each arm near
-        // its own checkpoint.  On a contact-limited arm the added force then
-        // acts on the body; on a still-free arm the negative bend/rate error
-        // removes that addition before it creates another extension impulse.
+        // The nominal bend checkpoint is a measured event boundary, not an
+        // exact angle-hold objective.  Continue increasing one common force
+        // for body pitch/load relief.  The post-checkpoint command path below
+        // deliberately omits ordinary bend/rate tracking: that controller
+        // used to subtract the same common force requested here whenever the
+        // compliant zero-pressure arms moved past 45 deg, producing repeated
+        // rebound without body unloading.  Independent physical extension,
+        // raw-rate, total-up-force and roll guards remain authoritative.
+        if(!std::isfinite(lift_checkpoint_elapsed))
+          lift_checkpoint_elapsed=phase_time;
         if(lift_checkpoint_search_force<=0.)
           lift_checkpoint_search_force=std::max(
               std::max(s.thrust[0],s.thrust[1]),
@@ -3432,7 +3451,19 @@ class SinglePass {
       // Motion-2 pulse finish while the rear chambers were still near grasp
       // pressure.  The arm-travel schedule remains as corroboration, but the
       // pneumatic lead may start earlier because pressure is the slow plant.
-      const double lift_release_phase=powered_pair_onset?
+      const double powered_pair_mismatch=std::abs(
+          powered_front_extension[0]-powered_front_extension[1]);
+      // Rear release is locomotion assistance, not a prerequisite for the
+      // front-pair identification.  Permit it only on a calibrated reach,
+      // after paired onset, while the pair remains inside the measured
+      // extension corridor and roll is not moving outward.  Any worsening
+      // roll immediately restores the 30-kPa pivot instead of waiting for the
+      // former 4--10-deg pressure-support blend.
+      const bool allow_lift_rear_release=!identification_rear_anchor &&
+          powered_pair_onset &&
+          powered_pair_mismatch<=k.unload_pair_mismatch &&
+          !gait_roll_worsening && !roll_brake;
+      const double lift_release_phase=allow_lift_rear_release?
           clamp((minimum_front_extension/
                     std::max(.017453,required_pair_extension)-
                  k.lift_rear_release_start_ratio)/
@@ -3446,7 +3477,8 @@ class SinglePass {
       const bool front_pair_powered=
           std::min(s.thrust[0],s.thrust[1])>.3;
       double rear_exhaust_lead_phase=0.;
-      if(front_pair_powered && rear_vent_lead_seconds>1.e-3) {
+      if(allow_lift_rear_release && front_pair_powered &&
+         rear_vent_lead_seconds>1.e-3) {
         // Reused strokes have a measured Lift-entry-to-unload time.  On the
         // first stroke use the explicit 15-deg-class trajectory duration;
         // this is a timing prior only and cannot complete Motion 2.
@@ -3465,19 +3497,21 @@ class SinglePass {
       // raised the target from (for example) 29.6 back to 30 kPa and wasted
       // most of the pneumatic response time.  Never re-grasp here; only the
       // explicit Pull safety transfer below may do that.
-      lift_rear_release_progress=std::max(lift_rear_release_progress,
-          std::max(minimumJerkPosition(lift_release_phase),
-                   minimumJerkPosition(rear_exhaust_lead_phase)));
-      rear_pressure_command=in.base_pressure-
-          lift_rear_release_progress*(in.base_pressure-lift_rear_floor);
+      if(allow_lift_rear_release) {
+        lift_rear_release_progress=std::max(lift_rear_release_progress,
+            std::max(minimumJerkPosition(lift_release_phase),
+                     minimumJerkPosition(rear_exhaust_lead_phase)));
+        rear_pressure_command=in.base_pressure-
+            lift_rear_release_progress*(in.base_pressure-lift_rear_floor);
+      } else {
+        rear_pressure_command=in.base_pressure;
+      }
       if(!rear_release_commanded &&
          rear_pressure_command<in.base_pressure-.5) {
         rear_release_commanded=true;
         rear_release_pressure_threshold=std::min(in.base_pressure-.5,
             lift_rear_floor+k.catch_pressure_tolerance);
       }
-      const double powered_pair_mismatch=std::abs(
-          powered_front_extension[0]-powered_front_extension[1]);
       unload_pair_mismatch_measured=powered_pair_mismatch;
       // The useful unloaded interval is shorter than the pneumatic/IMU
       // skew.  Qualify each front arm from its own powered reference and keep
@@ -3570,7 +3604,14 @@ class SinglePass {
               unload_body_candidate_time+dt):
           std::max(0.,unload_body_candidate_time-2.*dt);
       if(unload_body_candidate_time+1.e-9>=body_cue_confirmation)
-        unload_body_memory_time=k.unload_event_fusion;
+        // The signed body cue and pair alignment are produced by the same
+        // short unloading impulse, but compliant arms need not align in the
+        // same IMU sample.  Preserve the confirmed physical cue through the
+        // bounded post-checkpoint capture window; the current roll corridor,
+        // both-arm extension history and pair mismatch are still required at
+        // handoff, so this cannot promote a one-arm or noisy event.
+        unload_body_memory_time=std::max(k.unload_event_fusion,
+            k.checkpoint_capture_timeout);
       else
         unload_body_memory_time=std::max(0.,unload_body_memory_time-dt);
       // Detect the unloading event from the measured arm/body response.  Do
@@ -3955,7 +3996,7 @@ class SinglePass {
       // term rises smoothly as the remaining reach time enters the exhaust
       // horizon and is merged monotonically with the measured-extension
       // schedule above.
-      if(powered_pair_onset &&
+      if(allow_lift_rear_release &&
          std::isfinite(predicted_lift_completion_seconds) &&
          rear_vent_lead_seconds>1e-3) {
         const double predicted_release_phase=clamp(
@@ -4141,6 +4182,18 @@ class SinglePass {
         pull_forward=std::max(pull_forward,
             std::min(k.slip_seed_pull_max,std::max(1.,fx)));
         enter(Pull,in);
+      } else if(lift_checkpoint_reached_pair &&
+                std::isfinite(lift_checkpoint_elapsed) &&
+                phase_time-lift_checkpoint_elapsed>=
+                    k.checkpoint_capture_timeout) {
+        // A long zero-pressure search after the nominal reach makes the two
+        // compliant arms exchange leader roles and excites roll.  The body
+        // cue has already been latched long enough for the differential
+        // controller to capture it.  If capture still fails, stop increasing
+        // thrust and let the outer controller regrasp/re-estimate this same
+        // locomotion goal before another stroke.
+        lift_checkpoint_capture_timed_out=true;
+        out.fault=true;
       } else if(lift_checkpoint_thrust_limit_time>=
                     k.checkpoint_thrust_limit_confirm) {
         // This is the post-checkpoint hard exit: the common search has
@@ -4250,7 +4303,9 @@ class SinglePass {
       // Release is monotonic over one Motion-2/3 stroke.  A measured roll risk
       // may start support_transfer below, but flexion itself never re-grasps
       // the old rear point and destroys the useful unloaded interval.
-      if(rear_support_safety_override>1.e-6)
+      if(gait_roll_worsening || roll_brake)
+        rear_pressure_command=in.base_pressure;
+      else if(rear_support_safety_override>1.e-6)
         rear_pressure_command=std::max(rear_pressure_command,
             scheduled_rear_pressure);
       else
@@ -5284,10 +5339,11 @@ class SinglePass {
         // timing but can never declare an unloading event by itself.
         const double bend_error=predicted_bend-target_bend;
         const double rate_error=predicted_rate-target_rate;
-        // Retain the simultaneous pulse level after both onsets. Per-arm
-        // feedback may raise or lower it only according to each arm's own
-        // relative travel; it must not collapse the early arm back to its
-        // smaller measured breakaway force while the other is being launched.
+        // Retain the simultaneous pulse level after both onsets. Before the
+        // pair checkpoint, per-arm feedback may raise or lower it according
+        // to each arm's own relative travel; it must not collapse the early
+        // arm back to its smaller measured breakaway force while the other is
+        // being launched.
         // The pre-checkpoint pulse may advance in discrete levels.  Freeze
         // that schedule when the pair reaches the checkpoint and let only the
         // slow common checkpoint search increase it afterwards.
@@ -5338,7 +5394,21 @@ class SinglePass {
           onset_ff=std::max(onset_ff,windup_force);
           rise_limit[j]=k.trajectory_windup_thrust_rise;
         }
-        if(holding_windup) {
+        const bool checkpoint_body_search=
+            lift_checkpoint_search_force>0. &&
+            lift_target_reached[0] && lift_target_reached[1] &&
+            !unload_event_detected;
+        if(checkpoint_body_search) {
+          // Once both arms have reached the soft checkpoint, the remaining
+          // objective is a measured body/contact unloading event.  Command
+          // the common force directly.  Applying the bend-path P/D terms here
+          // made `bend_error` and `rate_error` negative on every small extra
+          // extension and reduced a 6-N common search to roughly 3--4 N at the
+          // actuators, so pitch could never reach the Motion-3 handoff.  Hard
+          // bend/rate guards below still stop genuine over-extension.
+          raw[j]=lift_checkpoint_search_force;
+          rise_limit[j]=std::max(rise_limit[j],k.checkpoint_search_rise);
+        } else if(holding_windup) {
           // While chambers are still open, follow the planned deep reach with
           // measured bend rate and predicted angular acceleration.  A fixed
           // 6-N target drove the arm at 150--300 deg/s, so even an immediate
@@ -5363,6 +5433,94 @@ class SinglePass {
             k.identification_rate_control_fall);
       }
       identification_sync_active=false;
+      const bool checkpoint_body_search=
+          lift_checkpoint_search_force>0. &&
+          lift_target_reached[0] && lift_target_reached[1] &&
+          !unload_event_detected;
+      if(checkpoint_body_search) {
+        // The body-unloading search owns the common (average) thrust after
+        // both arms cross the nominal bend checkpoint.  Keep that authority,
+        // but close only the differential extension error so one compliant
+        // arm cannot run away while the other remains near 45 deg.  Relative
+        // travel from each arm's own reference is used because the two
+        // absolute grasp bends can legitimately differ on a tapered object.
+        // Use each arm's own powered-onset pose and the short-horizon
+        // bend/rate/acceleration observer.  This predicts which arm will lead
+        // after the pneumatic/actuator delay instead of reacting only after a
+        // large angle mismatch has already appeared.
+        Pair checkpoint_extension{},checkpoint_extension_rate{};
+        for(size_t j=0;j<2;++j) {
+          const double extension_reference=
+              powered_extension_reference_valid[j]?
+                  powered_extension_reference[j]:reference[j];
+          checkpoint_extension[j]=extension_reference-
+              trajectory_predicted_bend[j];
+          checkpoint_extension_rate[j]=-trajectory_rate_filtered[j];
+        }
+        const double signed_mismatch=
+            checkpoint_extension[0]-checkpoint_extension[1];
+        const double mismatch=std::abs(signed_mismatch);
+        const double signed_rate_mismatch=
+            checkpoint_extension_rate[0]-checkpoint_extension_rate[1];
+        const double rate_mismatch=std::abs(signed_rate_mismatch);
+        const double angle_correction=mismatch>
+            k.identification_sync_deadband?
+            std::copysign(k.identification_sync_gain*
+                (mismatch-k.identification_sync_deadband),signed_mismatch):0.;
+        const double rate_correction=rate_mismatch>
+            k.identification_rate_deadband?
+            std::copysign(k.identification_rate_kd*
+                (rate_mismatch-k.identification_rate_deadband),
+                signed_rate_mismatch):0.;
+        const double requested_signed_delta=clamp(
+            angle_correction+rate_correction,
+            -k.identification_sync_assist_max,
+            k.identification_sync_assist_max);
+        if(std::abs(requested_signed_delta)>1.e-9) {
+          const size_t leading=requested_signed_delta>0.?0:1;
+          const size_t lagging=1-leading;
+          // Apply equal and opposite changes.  Therefore this loop does not
+          // change the common force selected by the load-relief search; it
+          // only redistributes it between the two front rotors.  Saturation
+          // reduces the differential correction instead of changing the
+          // pair-average command.
+          const Pair redistributed=zeroSumPairRedistribution(raw,
+              requested_signed_delta,c.thrust_max);
+          const double differential_delta=std::abs(
+              redistributed[leading]-raw[leading]);
+          raw=redistributed;
+          // Preserve the zero-sum allocation at the actuator output as well
+          // as in `raw`.  With the former 0.7-N/s rise and 3-N/s fall limits,
+          // the leading side decreased much faster than the lagging side could
+          // increase, so the pair-average force collapsed even though the
+          // allocator itself was zero-sum.  One symmetric slew limit lets the
+          // redistribution track both edges together without turning this
+          // loop into extra common lift authority.
+          const double differential_slew=std::max(
+              k.identification_tracking_rise,
+              k.identification_rate_control_fall);
+          rise_limit[leading]=std::max(rise_limit[leading],
+              differential_slew);
+          rise_limit[lagging]=std::max(rise_limit[lagging],
+              differential_slew);
+          fall_limit[leading]=std::max(fall_limit[leading],
+              differential_slew);
+          fall_limit[lagging]=std::max(fall_limit[lagging],
+              differential_slew);
+          identification_sync_active=differential_delta>1.e-6;
+          identification_leading=leading;
+          identification_lagging=lagging;
+        }
+      }
+      if(checkpoint_body_search &&
+         (inner_roll_control || differential_worsens_roll)) {
+        // The common pitch command may still be reduced when measured roll is
+        // actively worsening.  This is a body-posture safety action, not bend
+        // tracking; a stationary contact-dependent roll bias leaves the common
+        // force untouched.
+        raw=dampLiftRollReductionOnly(raw,verified_roll_moment,
+            s.roll,s.roll_rate);
+      }
     }
     if(phase==Lift && unload_event_detected &&
        !unload_capture_started) {

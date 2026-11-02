@@ -170,7 +170,7 @@ void AttitudePressureController::resetRecoveryHandoffState()
   recovery_handoff_last_progress_time_ = -1.0;
   recovery_handoff_candidate_reference_rad_ =
       std::numeric_limits<double>::infinity();
-  recovery_handoff_candidate_worsening_since_ = -1.0;
+  recovery_handoff_candidate_reference_time_ = -1.0;
   recovery_handoff_braking_ = false;
   // A circle-model recovery may deliberately keep the selected pair flexed
   // and load bearing.  In that mode all four chambers already share support;
@@ -1191,6 +1191,12 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
     }
     if(command.fault) {
       if(hybrid_single_.phase==SinglePass::Lift &&
+         hybrid_single_.lift_checkpoint_capture_timed_out)
+        ROS_WARN("Hybrid Motion-2 checkpoint capture timed out after %.2f s: mismatch %.1f deg, body-cue memory %.2f s; restoring support and retrying the retained goal",
+            hybrid_single_config_.checkpoint_capture_timeout,
+            hybrid_single_.unload_pair_mismatch_measured*180./M_PI,
+            hybrid_single_.unload_body_memory_time);
+      else if(hybrid_single_.phase==SinglePass::Lift &&
          hybrid_single_.lift_checkpoint_thrust_limit_time>=
              hybrid_single_config_.checkpoint_thrust_limit_confirm)
         ROS_WARN("Hybrid Motion-2 checkpoint search reached the %.2f-N physical thrust limit for %.2f s without measured load relief; restoring support",

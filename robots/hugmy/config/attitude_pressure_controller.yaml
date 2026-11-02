@@ -111,10 +111,10 @@ hybrid_pull_terminal_anchor_wait_timeout_sec: 2.0
 hybrid_pull_terminal_front_pressure_stall_sec: 0.25
 hybrid_pull_terminal_front_pressure_progress_kpa: 0.2
 hybrid_pull_golden_roll_limit_rad: 0.20943951023931953 # 12 deg
-# Rear support is intentionally compliant during the lift/flex stroke.  Both
-# front arms must move before Motion 2 predicts a 30 -> 0-kPa exhaust at the
-# maximum-extension event.  During regrip it stays at 10 kPa until rotor
-# thrust is zero; only then is the 30-kPa four-arm grasp restored.
+# The first Motion-2 reach identifies the front extension/load-relief event
+# with an invariant 30-kPa rear pivot.  Only later, calibrated reaches may
+# lead rear exhaust into Motion 3 using the measured pneumatic delay.
+hybrid_identification_hold_rear_grasp: true
 hybrid_lift_rear_release_start_ratio: 0.10 # begin relaxing rear support after 10% of paired Motion-2 extension
 hybrid_lift_rear_pressure_floor_kpa: 15.0
 # The slip probe and first unloading stroke initialize one signed rear-support
@@ -131,17 +131,20 @@ hybrid_rear_pressure_adaptation_up_step_kpa: 5.0
 hybrid_rear_pressure_adaptation_down_step_kpa: 2.5
 hybrid_rear_pressure_adaptation_roll_limit_rad: 0.20943951023931953 # 12 deg
 hybrid_rear_pressure_adaptation_progress_m: 0.002
-hybrid_slip_preserve_rear_grasp: true # classify sliding without opening the rear anchor
+# During the slip probe, alternate rear release (2 s) and grasp (1 s).  This
+# reproduces the measured-contact test used before the fixed-anchor diagnostic.
+# Set true only when a pure front-force sliding classification is required.
+hybrid_slip_preserve_rear_grasp: false
 hybrid_rear_support_probe_sliding: -1.0
-hybrid_rear_support_probe_stable: 0.0 # no sustained slip: begin Motion 2 at a safe 15-kPa rear hold
+hybrid_rear_support_probe_stable: 0.0 # no sustained slip: use 15 kPa as the post-identification support prior
 hybrid_rear_support_probe_unstable: 0.25
 # A worsening roll can only increase support. At 4 deg it starts cancelling
 # release; by 10 deg it requests the full pressure/reverse-support end.
 hybrid_rear_support_roll_start_rad: 0.06981317007977318 # 4 deg
 hybrid_rear_support_roll_full_rad: 0.17453292519943295 # 10 deg
-# Motion 2 starts from the safe 15-kPa prior. Its measured extension/roll
-# result and the outer candidate search may then use the complete 0--30-kPa
-# range; the pressure is no longer clipped below the optimizer's request.
+# The initial Motion 2 is fixed at grasp pressure. After front calibration,
+# the measured extension/roll result and outer candidate search may use the
+# complete 0--30-kPa range without clipping the optimizer's request.
 hybrid_rear_motion_pressure_cap_kpa: 30.0
 hybrid_rear_release_angle_min_rad: 0.05235987755982989 # 3 deg
 hybrid_rear_release_angle_max_rad: 0.08726646259971647 # 5 deg
@@ -238,11 +241,19 @@ hybrid_lift_identification_rate_control_fall_n_s: 3.0 # smooth active braking; n
 hybrid_lift_identification_bend_rate_limit_rad_s: 6.0 # initial released test only; normal C remains pi rad/s
 hybrid_lift_identification_return_bend_rate_limit_rad_s: 8.0 # intentional pressure-driven flexion after the unloading test
 hybrid_lift_identification_return_pressure_slew_kpa_s: 30.0 # catch the first unloaded return before support is lost
-# Reaching 45 deg is a nominal checkpoint, not Motion-2 completion.  Continue
-# a common, angle/rate-regulated force search until measured pitch/height load
-# relief occurs.  Only a sustained physical thrust limit ends this search.
-hybrid_lift_checkpoint_search_rise_n_s: 0.25
+# Reaching 45 deg is a nominal checkpoint, not a bend-hold objective or
+# Motion-2 completion.  Continue one common force search until measured
+# pitch/height load relief occurs.  Ordinary bend tracking no longer removes
+# this common force after the checkpoint; only the independent bend/rate/roll
+# safety guards may reduce it.  Use the same bounded search rate as the first
+# contact-identification reach so the useful unloaded interval is not missed.
+hybrid_lift_checkpoint_search_rise_n_s: 0.70
 hybrid_lift_checkpoint_thrust_limit_confirm_sec: 0.50
+# The signed pitch/height cue and the two-arm alignment need not occur in the
+# same IMU sample.  Latch the cue through this bounded capture interval; if
+# Motion 3 is still unavailable, regrasp/retry instead of continuing to shake
+# the released front pair.
+hybrid_lift_checkpoint_capture_timeout_sec: 2.5
 # Front support is removed with one common pressure command. Motion 2 starts
 # once the command is near zero and both measured pressures are below 10 kPa;
 # the zero command remains active while rotor/roll feedback gains authority.
@@ -444,9 +455,10 @@ recovery_integral_slew_n_s: 0.5 # reach the measured breakaway thrust sooner aft
 recovery_thrust_rise_n_s: 2.0
 # Outward roll must be arrested before the slower contact-response estimator
 # finishes. The 2026-11-02 real-arm trial showed that 2 N is an appropriate
-# starting point but not a sufficient ceiling. While measured roll is still
-# worsening, let the rate PI add authority from 2 N up to 4 N. Ordinary return and
-# terminal braking retain their separate lower-gain behavior.
+# starting point but not a sufficient ceiling.  Four newtons is the ordinary
+# arrest ceiling.  On the positive-roll side only, a full-window lack of roll
+# error decay may raise this ceiling continuously to recovery_max_thrust_n.
+# Ordinary return and terminal braking retain their lower-gain behavior.
 recovery_preinflate_thrust_rise_n_s: 6.0
 recovery_rate_arrest_min_thrust_n: 2.0
 recovery_rate_arrest_max_thrust_n: 4.0
@@ -490,15 +502,17 @@ recovery_circle_min_signed_lever_m: 0.005
 # values remain pneumatic transition states, not moment-producing candidates.
 recovery_circle_pressure_candidates_kpa: [0.0, 10.0, 20.0, 30.0]
 recovery_extension_prediction_sec: 0.30 # angle-rate look-ahead for latching the released emergency mode
-recovery_rate_arrest_release_sec: 0.10  # require non-outward roll rate before switching from braking to angle return
+recovery_rate_arrest_release_sec: 0.20  # reject short contact rebound before switching to angle return
+recovery_rate_arrest_release_progress_rad: 0.008726646259971648 # require 0.5-deg retained roll improvement as well as inward rate
 recovery_circle_release_support_scale: 0.05 # deliberately light pressure-share proxy; thrust need remains the primary score
 recovery_wrong_sign_shaping_thrust_n: 0.6 # released pair: extend gently until its measured roll lever becomes restorative
-recovery_wrong_geometry_timeout_sec: 1.5 # reject a pressure-settled pair whose measured lever never becomes restorative
-recovery_wrong_geometry_worsening_rad: 0.03490658503988659 # reject 2-deg growth only after pressure settling and rate-response confirmation
+# Judge a pressure-settled candidate by averaged roll-error decay, not by a
+# fixed 0.5-deg displacement at 0.8 s.  This window is also used to decide
+# whether positive-roll rate arrest may exceed its ordinary 4-N ceiling.
+recovery_wrong_geometry_progress_window_sec: 1.0
+recovery_wrong_geometry_min_error_decay_rate_rad_s: 0.004363323129985824 # 0.25 deg/s
 recovery_wrong_geometry_response_confirm_sec: 0.30
 recovery_wrong_geometry_rate_improvement_rad_s: 0.03490658503988659 # 2 deg/s reduction of outward motion is useful response
-recovery_wrong_geometry_transition_confirm_sec: 0.25 # reject a worsening wrong-sign pressure path before a slow exhaust finishes
-recovery_wrong_geometry_transition_worsening_rad: 0.008726646259971648 # require 0.5-deg real growth, not one noisy sample
 recovery_wrong_geometry_transition_outward_rate_rad_s: 0.017453292519943295 # and at least 1 deg/s outward motion
 recovery_circle_max_age_sec: 30.0
 # Delay-aligned local response learning, separately for each correction pair.

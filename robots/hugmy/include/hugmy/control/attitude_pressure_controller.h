@@ -353,7 +353,7 @@ private:
   // whereas a demonstrably worsening response must be rejected early.
   double recovery_handoff_candidate_reference_rad_ =
       std::numeric_limits<double>::infinity();
-  double recovery_handoff_candidate_worsening_since_ = -1.0;
+  double recovery_handoff_candidate_reference_time_ = -1.0;
   bool recovery_handoff_braking_ = false;
   bool recovery_handoff_support_equalized_ = false;
   // True only when the released-pair recovery itself had a measured
@@ -412,8 +412,12 @@ private:
   // once pressure has reached its candidate state, a lever which remains
   // non-restoring must be rejected instead of being held until the global
   // recovery timeout while roll continues to deteriorate.
-  double recovery_wrong_geometry_timeout_sec_ = 1.5;
-  double recovery_wrong_geometry_worsening_rad_ = 2.0 * M_PI / 180.0;
+  // Candidate quality is evaluated from retained roll-error decay over a
+  // measured window.  This replaces the old fixed 0.5-deg/0.8-s rejection,
+  // which discarded a correct pair before it reached useful authority.
+  double recovery_wrong_geometry_progress_window_sec_ = 1.0;
+  double recovery_wrong_geometry_min_error_decay_rate_rad_s_ =
+      0.25 * M_PI / 180.0;
   // A released pair can keep moving outward for a short time after its
   // pressure has settled even though the new rotor/contact moment is already
   // decelerating that motion.  Observe signed rate after the pneumatic
@@ -426,17 +430,10 @@ private:
   // This supervisor is intentionally independent of the ordinary rotor
   // response-identification gate: during a predicted sign-changing pressure
   // path the rotor command is held at zero.
-  double recovery_wrong_geometry_transition_confirm_sec_ = 0.25;
-  double recovery_wrong_geometry_transition_worsening_rad_ =
-      0.5 * M_PI / 180.0;
   double recovery_wrong_geometry_transition_outward_rate_rad_s_ =
       1.0 * M_PI / 180.0;
   ros::Time recovery_wrong_geometry_since_;
   ros::Time recovery_wrong_geometry_transition_bad_since_;
-  // Independent of bend/gyro response-window resets: once a pressure-settled
-  // candidate has demonstrated useful roll correction, reject it if a later
-  // increasing-authority retry loses that retained improvement.
-  ros::Time recovery_candidate_retained_worsening_since_;
   ros::Time recovery_wrong_geometry_pressure_settled_since_;
   double recovery_wrong_geometry_reference_error_rad_ =
       std::numeric_limits<double>::quiet_NaN();
@@ -488,10 +485,14 @@ private:
   bool recovery_extension_mode_latched_ = false;
   bool recovery_rate_arrest_active_ = false;
   ros::Time recovery_rate_arrest_nonoutward_since_;
+  double recovery_rate_arrest_reference_error_rad_ =
+      std::numeric_limits<double>::quiet_NaN();
   double recovery_extension_prediction_sec_ = 0.30;
   double recovery_rate_arrest_min_thrust_n_ = 2.0;
   double recovery_rate_arrest_max_thrust_n_ = 4.0;
   double recovery_rate_arrest_release_sec_ = 0.10;
+  double recovery_rate_arrest_release_progress_rad_ =
+      0.5 * M_PI / 180.0;
   bool recovery_selected_pair_release_ = true;
   double recovery_selected_pair_pressure_kpa_ = 0.0;
   size_t recovery_selected_pressure_candidate_index_ = 0;
@@ -512,6 +513,7 @@ private:
   void updateCircularGraspGeometry(const ros::Time& now);
   PressureArray recoveryReselectionPressure() const;
   PressureArray recoveryMeasuredContactPressure() const;
+  PressureArray recoveryCandidateSwitchPressure() const;
   double recoverySelectedPairPressure(size_t arm) const;
   double recoverySupportPressure() const;
   hugmy::RollRecoveryModel measuredRecoveryModel() const;

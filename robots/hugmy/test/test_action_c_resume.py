@@ -22,9 +22,14 @@ assert 'recovery_rejected_candidate_mask_ |= candidate_bit;' in source
 assert 'recovery_candidate_reselect_pending_ = true;' in source
 assert 'Recovery pair %zu+%zu retained a non-restoring measured lever' in source
 assert 'const bool wrong_geometry_candidate =' in source
-assert 'const bool pressure_settled_timeout =' in source
-assert '!retained_probe_progress && !helpful_probe_motion' in source
-assert 'if (pressure_settled_timeout ||\n                      geometry_worsened)' in source
+assert 'const bool pressure_settled_insufficient_decay =' in source
+assert 'recovery_error_decay_rate <' in source
+assert 'recovery_wrong_geometry_min_error_decay_rate_rad_s_' in source
+assert 'if (pressure_settled_insufficient_decay ||\n                      geometry_worsened)' in source
+assert 'positive_roll_stalled_at_arrest_cap' in source
+assert '? roll_recovery_config_.limit\n                  : recovery_rate_arrest_max_thrust_n_' in source
+assert 'locomotion goal retained, rebuilding support and retrying' in source
+assert 'no restoring recovery pair after balanced-support geometry re-estimation' not in source
 assert 'const double active_pressure_target =\n                            prepare_pressure_[arm];' in source
 assert 'probe_pressure_target_changed' in source
 assert 'recovery_wrong_geometry_probe_target_valid_' in source
@@ -44,6 +49,10 @@ assert 'selected instantaneous restoring pair' not in source
 assert 'recovery_selected_path_requires_zero_thrust_' in source
 assert 'negative roll puts arms 0+1 lower' in source
 assert 'active_roll_recovery_config.angle_gain = 0.0;' in source
+assert 'const double retained_angle_progress =' in source
+assert 'retained_angle_progress >=\n                              recovery_rate_arrest_release_progress_rad_' in source
+assert 'recovery_wrong_geometry_response_observed_ = true;' in source
+assert 'preserving %.2f N and switching from rate arrest to angle return' in source
 assert 'const bool geometry_reestimate_ready =' in source
 assert 'grasp_pressure_ready && recovery_pressure_fresh' in source
 assert 'const bool recovery_restart_support_ready =' in source
@@ -68,9 +77,17 @@ assert 'best-pressure rollback settled at roll' in source
 assert 'recoveryMeasuredContactPressure()' in source
 measured_freeze = source.split(
     'AttitudePressureController::recoveryMeasuredContactPressure() const', 1
-)[1].split('double AttitudePressureController::recoverySupportPressure()', 1)[0]
+)[1].split(
+    'AttitudePressureController::recoveryCandidateSwitchPressure() const', 1
+)[0]
 assert 'prepare_arm_active_[arm]' not in measured_freeze
 assert 'measured_pressure_[arm], recovery_handoff_min_pressure_kpa_' in measured_freeze
+candidate_switch = source.split(
+    'AttitudePressureController::recoveryCandidateSwitchPressure() const', 1
+)[1].split('double AttitudePressureController::recoverySupportPressure()', 1)[0]
+assert 'prepare_arm_active_[arm] && recovery_selected_pair_release_' in candidate_switch
+assert '? 0.0 : recovery_handoff_min_pressure_kpa_' in candidate_switch
+assert source.count('recoveryCandidateSwitchPressure();') >= 4
 assert 'recoveryReselectionPressure()' in source
 assert 'clearing directional rejection mask' in source
 assert 'const bool handoff_candidate_stalled =' in source
@@ -164,8 +181,10 @@ public:
  bool recovery_extension_mode_latched_=false;
  bool recovery_rate_arrest_active_=false;
  ros::Time recovery_rate_arrest_nonoutward_since_;
+ double recovery_rate_arrest_reference_error_rad_=NAN;
  double recovery_extension_prediction_sec_=.30;
  double recovery_rate_arrest_release_sec_=.10;
+ double recovery_rate_arrest_release_progress_rad_=.5*M_PI/180.;
  size_t recovery_selected_pair_index_=0;
  hugmy::ContinuousRollRecovery continuous_roll_recovery_;
  struct Gate {int resets=0;void reset(){++resets;}} action_c_resume_gate_, action_c_boundary_settle_gate_;
@@ -217,7 +236,6 @@ public:
  bool recovery_selected_path_requires_zero_thrust_=false;
  double recovery_selected_path_min_lever_m_=NAN;
  ros::Time recovery_wrong_geometry_since_,recovery_wrong_geometry_transition_bad_since_;
- ros::Time recovery_candidate_retained_worsening_since_;
  ros::Time recovery_wrong_geometry_pressure_settled_since_;
  double recovery_wrong_geometry_reference_error_rad_=NAN;
  double recovery_wrong_geometry_reference_rate_rad_s_=NAN;

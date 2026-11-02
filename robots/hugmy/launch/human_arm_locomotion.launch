@@ -25,7 +25,7 @@
   <arg name="hybrid_trajectory_extension_rate_rad_s" default="0.70" />
   <arg name="hybrid_lift_rear_release_start_ratio" default="0.10" />
   <arg name="hybrid_lift_rear_pressure_floor_kpa" default="15.0" />
-  <arg name="hybrid_slip_preserve_rear_grasp" default="true" />
+  <arg name="hybrid_slip_preserve_rear_grasp" default="false" />
   <!-- The measured optimizer, rather than the launch profile, chooses any
        additional rear release around this probe-derived baseline. -->
   <arg name="hybrid_rear_support_probe_stable" default="0.0" />

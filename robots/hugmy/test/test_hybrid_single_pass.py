@@ -48,6 +48,14 @@ int main(){
  assert(sim_verified[0]<.0 && sim_verified[1]>.0);
  auto sim_crossed_geometry=verifiedPairRollMoments({{.02,-.03}},true);
  assert(sim_crossed_geometry[0]<.0 && sim_crossed_geometry[1]>.0);
+ auto zero_sum_sync=zeroSumPairRedistribution({{3.,3.}},.8,6.);
+ assert(std::abs(zero_sum_sync[0]-2.2)<1.e-9 &&
+        std::abs(zero_sum_sync[1]-3.8)<1.e-9 &&
+        std::abs(zero_sum_sync[0]+zero_sum_sync[1]-6.)<1.e-9);
+ auto saturated_sync=zeroSumPairRedistribution({{.2,5.9}},1.,6.);
+ assert(std::abs(saturated_sync[0]-.1)<1.e-9 &&
+        std::abs(saturated_sync[1]-6.)<1.e-9 &&
+        std::abs(saturated_sync[0]+saturated_sync[1]-6.1)<1.e-9);
  auto positive_roll=addRestoringRollSupport({{2.,2.}},verified,.2,.1,6.);
  assert(positive_roll[0]==2. && positive_roll[1]>2.); // +roll -> arm 3/2 side
  auto negative_roll=addRestoringRollSupport({{2.,2.}},verified,-.2,-.1,6.);
@@ -128,6 +136,8 @@ int main(){
  bad=k;bad.identification_rate_deadband=.2;assert(!bad.valid());
  bad=k;bad.identification_rate_control_gain=10.1;assert(!bad.valid());
  bad=k;bad.identification_rate_control_fall=12.1;assert(!bad.valid());
+ bad=k;bad.checkpoint_capture_timeout=.4;assert(!bad.valid());
+ bad=k;bad.checkpoint_capture_timeout=5.1;assert(!bad.valid());
  bad=k;bad.unload_pair_memory=bad.unload_confirm-.01;assert(!bad.valid());
  bad=k;bad.unload_pair_memory=.51;assert(!bad.valid());
  bad=k;bad.reused_lift_pressure_start_ratio=.95;assert(!bad.valid());
@@ -605,22 +615,24 @@ int main(){
  assert(anchored_rear.rear_reverse_thrust>=0. &&
         anchored_rear.rear_reverse_thrust<=
             k.trajectory_windup_rear_reverse_max+1e-9);
- // The production default keeps the rear anchor fully grasped during the
- // classifier. Rear release is identified by the following powered Lift.
+ // Fixed rear grasp remains available as an explicit pure-front-force
+ // diagnostic, but is no longer the production default.
+ assert(!k.slip_preserve_rear_grasp);
+ k.slip_preserve_rear_grasp=true;
  SinglePass held_probe;held_probe.begin(in);
  for(int i=0;i<180 && held_probe.phase==SinglePass::SlipProbe;++i) {
    const auto held=held_probe.update(in,c,k,model,geom);
    assert(held.rear_pressure==in.base_pressure);
    in.s.thrust=held.thrust;in.s.command=held.pressure;in.s.now+=in.dt;
  }
- // Retain the old cycle only as an explicit opt-out and cover it separately.
+ // The production slip probe repeats the measured release/grasp cycle.
  k.slip_preserve_rear_grasp=false;
  in.s.thrust={{0.,0.}};in.s.command={{30.,30.}};in.s.now=0.;
  SinglePass p;p.begin(in);bool high=false,low=false;
  for(int i=0;i<1600 && p.phase==SinglePass::SlipProbe;++i){
    const auto previous=in.s.thrust;auto o=p.update(in,c,k,model,geom);
-   // The explicit legacy mode begins grasped, then repeats the configured
-   // release/grasp cycle. These samples stay clear of the boundaries.
+   // The probe begins grasped, then repeats the configured release/grasp
+   // cycle. These samples stay clear of the boundaries.
    if(i==0 || i==40) assert(o.rear_pressure==30.);
    if(i==80 || i==120) assert(o.rear_pressure==0.);
    if(i==160) assert(o.rear_pressure==30.);
@@ -767,13 +779,16 @@ int main(){
  }
  in.s.roll=0.;
  in.s.roll_rate=0.;
- for(int i=0;i<50;++i){auto o=p.update(in,c,k,model,geom);assert(o.thrust[0]==0.);in.s.command=o.pressure;}
+ for(int i=0;i<50;++i){
+   auto o=p.update(in,c,k,model,geom);
+   assert(o.thrust[0]==0. && o.rear_pressure==in.base_pressure);
+   in.s.command=o.pressure;
+ }
  assert(p.phase==SinglePass::VentFront && p.powered_time==0.);
  const auto led_rear=p.update(in,c,k,model,geom);
- // Front-vent preparation leads the rear exhaust directly into the bounded
- // Motion-2/3 compliant corridor.  The outer regrip alone restores 30 kPa.
- assert(led_rear.rear_pressure<=k.rear_motion_pressure_cap &&
-        led_rear.rear_pressure>=k.rear_low_kpa);
+ // Front vent changes only the front support. The first extension test enters
+ // Motion 2 with the rear pair still at the measured grasp pressure.
+ assert(led_rear.rear_pressure==in.base_pressure);
  assert(in.s.command[0]>=0.); // command may already be zero; measured pressure still gates Lift
  // VentFront is a zero-thrust preparation boundary with one common pressure
  // target; relative extension is owned by the following powered phase.
@@ -786,7 +801,8 @@ int main(){
  assert(vent_sync.pressure_target[0]==vent_sync.pressure_target[1] &&
         vent_sync.pressure_target[0]<30. &&
         vent_sync_out.thrust[0]==0. && vent_sync_out.thrust[1]==0. &&
-        vent_sync_out.pressure[0]<30. && vent_sync_out.pressure[1]<30.);
+        vent_sync_out.pressure[0]<30. && vent_sync_out.pressure[1]<30. &&
+        vent_sync_out.rear_pressure==vent_sync_in.base_pressure);
  assert(vent_sync.phase==SinglePass::VentFront);
  // An asymmetric event-completion pair is not a valid breakaway pair.  It
  // cannot leak into VentFront, and without two measured onsets the next Lift
@@ -821,11 +837,13 @@ int main(){
  in.s.pressure={{0.,0.}};in.rear_pressure=30.;
  for(int i=0;i<11;++i){auto o=p.update(in,c,k,model,geom);in.s.command=o.pressure;in.s.thrust=o.thrust;}
  assert(p.phase==SinglePass::Lift && p.lift_probe_entries==1);
- // Motion 2 preserves the pre-vent command instead of returning the rear
- // pair to 30 kPa for one sample and losing the pneumatic lead.
+ // The first Motion-2 reach identifies only the front extension/unloading
+ // response. Its rear pair remains a 30-kPa pivot; rear angle feedback and
+ // positive assist are reserved for calibrated locomotion strokes.
  const auto preserved_rear=p.update(in,c,k,model,geom);
- assert(preserved_rear.rear_pressure<=k.regrip_rear_hold_pressure+1e-9 &&
-        preserved_rear.rear_pressure>=p.rearPressureFloor(k)-1e-9);
+ assert(std::abs(preserved_rear.rear_pressure-in.base_pressure)<1e-9 &&
+        !p.rear_angle_feedback_active &&
+        preserved_rear.rear_positive_thrust==0.);
  // Above 45 deg a physically extreme outward-rate spike is considered by
  // pausing the search for this sample. It must not erase the identified force,
  // and the chamber remains at zero until the measured target is reached.
@@ -1337,9 +1355,9 @@ int main(){
  // Crossing the angle guard alone no longer completes the reach.
  for(int i=0;i<4;++i) imminent.update(imminent_input,c,k,model,geom);
  assert(imminent.phase==SinglePass::Lift);
- // The nominal bend is a checkpoint rather than a 0.35-s abort. Keep both
- // chambers released, hold the bend with angle/rate feedback and continue a
- // slow common force search until a body-unloading event is measured.
+ // The nominal bend is a checkpoint rather than a 0.35-s abort or an exact
+ // angle-hold target. Keep both chambers released and continue one common
+ // force search until a body-unloading event is measured.
  const double checkpoint_force=imminent_input.s.thrust[0];
  SinglePassOutput checkpoint_search_output;
  for(int i=0;i<40;++i) {
@@ -1352,6 +1370,52 @@ int main(){
  assert(imminent.lift_checkpoint_search_force>checkpoint_force &&
         checkpoint_search_output.thrust[0]>checkpoint_force &&
         checkpoint_search_output.thrust[1]>checkpoint_force);
+ // Ordinary bend/rate tracking must not cancel the body-pitch force once both
+ // checkpoint latches exist. A small additional extension at non-dangerous
+ // speed therefore retains the increasing common command; hard guards remain
+ // independently exercised below.
+ const double common_checkpoint_command=
+     imminent.lift_checkpoint_search_force;
+ imminent_input.s.bend={{k.identification_bend-.02,
+                         k.identification_bend-.02}};
+ imminent_input.s.rate={{-.10,-.10}};
+ checkpoint_search_output=imminent.update(imminent_input,c,k,model,geom);
+ assert(!checkpoint_search_output.fault &&
+        checkpoint_search_output.thrust[0]+1.e-9>=
+            imminent_input.s.thrust[0] &&
+        checkpoint_search_output.thrust[1]+1.e-9>=
+            imminent_input.s.thrust[1] &&
+        imminent.lift_checkpoint_search_force>common_checkpoint_command);
+ imminent_input.s.thrust=checkpoint_search_output.thrust;
+ // After the checkpoint, preserve the common load-relief search but correct
+ // only relative extension mismatch.  Arm 0 is four degrees farther into
+ // extension, so the zero-sum differential term must move authority from 0
+ // to the lagging arm 1 without ending Motion 2.
+ imminent_input.s.bend={{k.identification_bend-.04,
+                         k.identification_bend+.03}};
+ imminent_input.s.rate={{0.,0.}};
+ checkpoint_search_output=imminent.update(imminent_input,c,k,model,geom);
+ assert(imminent.phase==SinglePass::Lift &&
+        checkpoint_search_output.thrust[1]>
+            checkpoint_search_output.thrust[0]);
+ // Even before the angle mismatch grows outside its deadband, a faster arm
+ // must be unloaded predictively from the filtered bend-rate difference. The
+ // zero-sum correction preserves the common force selected above.
+ imminent_input.s.bend={{k.identification_bend-.02,
+                         k.identification_bend-.02}};
+ imminent_input.s.rate={{-1.0,-.05}};
+ imminent_input.s.thrust={{imminent.lift_checkpoint_search_force,
+                           imminent.lift_checkpoint_search_force}};
+ for(int i=0;i<5;++i) {
+   checkpoint_search_output=imminent.update(imminent_input,c,k,model,geom);
+   imminent_input.s.thrust=checkpoint_search_output.thrust;
+ }
+ assert(checkpoint_search_output.thrust[0]<
+            checkpoint_search_output.thrust[1]);
+ imminent_input.s.bend={{k.identification_bend-.02,
+                         k.identification_bend-.02}};
+ imminent_input.s.rate={{-.10,-.10}};
+ imminent_input.s.thrust=checkpoint_search_output.thrust;
  // If measured load relief never appears, the search may continue past the
  // nominal bend and time checkpoints, but it must exit after dwelling at the
  // physical actuator ceiling.
@@ -1371,6 +1435,24 @@ int main(){
  assert(thrust_limit_output.fault &&
         thrust_limited.phase==SinglePass::Lift &&
         !thrust_limited.unload_event_detected);
+ // If the physical thrust ceiling is not reached, the post-checkpoint search
+ // still has a bounded capture window.  It must restore support instead of
+ // oscillating indefinitely with both front chambers open.
+ SinglePass capture_timeout=imminent;
+ auto capture_timeout_input=imminent_input;
+ auto capture_timeout_k=k;
+ capture_timeout_k.checkpoint_capture_timeout=.50;
+ capture_timeout.lift_checkpoint_elapsed=capture_timeout.phase_time;
+ capture_timeout.lift_checkpoint_capture_timed_out=false;
+ SinglePassOutput capture_timeout_output;
+ for(int i=0;i<40 && !capture_timeout_output.fault;++i) {
+   capture_timeout_output=capture_timeout.update(
+       capture_timeout_input,c,capture_timeout_k,model,geom);
+   capture_timeout_input.s.thrust=capture_timeout_output.thrust;
+ }
+ assert(capture_timeout_output.fault &&
+        capture_timeout.lift_checkpoint_capture_timed_out &&
+        capture_timeout.phase==SinglePass::Lift);
  imminent_input.height=.003;
  imminent_input.directional_pitch=k.unload_min_pitch+.01;
  for(int i=0;i<10 && imminent.phase==SinglePass::Lift;++i)
@@ -1538,7 +1620,17 @@ int main(){
  reused_input.s.thrust=fast_lift.thrust;
  fast_lift=reused.update(reused_input,c,k,model,geom);
  reused_input.s.thrust=fast_lift.thrust;
+ assert(fast_lift.thrust[0]+.02>=
+            reused.identified_extension_thrust[0]-k.onset_margin_n &&
+        fast_lift.thrust[1]+.02>=
+            reused.identified_extension_thrust[1]-k.onset_margin_n);
  reused_input.s.bend={{1.44,1.44}};reused_input.s.rate={{-.20,-.20}};
+ // Isolate the post-onset pneumatic scheduler; onset detection itself is
+ // covered above with measured bend histories.
+ reused.onset_this_stroke={{true,true}};
+ reused.powered_extension_reference={{1.5,1.5}};
+ reused.powered_extension_reference_valid={{true,true}};
+ reused.powered_body_reference_valid=true;
  auto predicted_vent=reused.update(reused_input,c,k,model,geom);
  // Once both front rotors are powered, rear exhaust is allowed to lead the
  // arm event by the measured pneumatic delay.  The command remains bounded
@@ -1558,6 +1650,16 @@ int main(){
  assert(predicted_vent.rear_pressure>=k.lift_rear_pressure_floor &&
         predicted_vent.rear_pressure<30.);
  assert(reused.phase==SinglePass::Lift);
+ // Rear exhaust is useful only while the front reach remains roll-stable.
+ // An outward incremental roll restores the rear pivot immediately, before
+ // the older 4-deg pressure-support blend would have produced authority.
+ SinglePass roll_guarded=reused;auto roll_guarded_input=reused_input;
+ roll_guarded_input.s.roll=.05;roll_guarded_input.s.roll_rate=.05;
+ auto restored_rear=roll_guarded.update(
+     roll_guarded_input,c,k,model,geom);
+ assert(std::abs(restored_rear.rear_pressure-in.base_pressure)<1e-9 &&
+        !roll_guarded.rear_angle_feedback_active &&
+        restored_rear.rear_positive_thrust==0.);
  reused_input.s.thrust={{2.,2.}};
  reused_input.height=k.unload_height;
  reused_input.directional_pitch=k.unload_min_pitch+.01;
@@ -1565,6 +1667,16 @@ int main(){
    reused.update(reused_input,c,k,model,geom);
  assert(reused.phase==SinglePass::Pull && reused.unload_event_detected);
  assert(reused.front_target_latched);
+ // The same rear-anchor restoration remains active after the Motion-2/3
+ // handoff; pressure-driven flexion must not continue opening the old rear
+ // contact while measured roll is still moving outward.
+ SinglePass pull_roll_guarded=reused;auto pull_roll_input=reused_input;
+ pull_roll_input.s.roll=.05;pull_roll_input.s.roll_rate=.05;
+ auto pull_restored_rear=pull_roll_guarded.update(
+     pull_roll_input,c,k,model,geom);
+ assert(std::abs(pull_restored_rear.rear_pressure-in.base_pressure)<1e-9 &&
+        !pull_roll_guarded.rear_angle_feedback_active &&
+        pull_restored_rear.rear_positive_thrust==0.);
  // With explicit simulation contacts, a weak pitch/height transient and less
  // than the requested pair travel are not an unloading event.  A sustained
  // response after BOTH arms extend is accepted before the binary contacts
@@ -2210,7 +2322,7 @@ int main(){
    pressure_roll_in.s.command=roll_shaped.pressure;
  }
  assert(roll_shaped.pressure[0]<roll_shaped.pressure[1]);
- std::cout<<"PASS: rear-grasped slip classifier, explicit legacy cycle, one lift pass, bounded outputs and timeout\n";
+ std::cout<<"PASS: cyclic rear-release slip classifier, fixed-grasp opt-in, one lift pass, bounded outputs and timeout\n";
 }
 '''
 with tempfile.TemporaryDirectory(prefix='hugmy_single_pass_') as folder:

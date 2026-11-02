@@ -67,7 +67,7 @@ assert args['forward_button'] == '3' and args['stop_button'] == '1'
 assert abs(float(args['ppg_settle_sec'])) < 1e-12
 assert abs(float(args['hybrid_lift_rear_release_start_ratio']) - .10) < 1e-12
 assert abs(float(args['hybrid_lift_rear_pressure_floor_kpa']) - 15.) < 1e-12
-assert args['hybrid_slip_preserve_rear_grasp'] == 'true'
+assert args['hybrid_slip_preserve_rear_grasp'] == 'false'
 assert abs(float(args['hybrid_rear_support_probe_stable'])) < 1e-12
 assert abs(float(args['hybrid_regrip_rear_hold_pressure_kpa']) - 7.5) < 1e-12
 assert args['hybrid_locomotion_outer_enabled'] == 'true'

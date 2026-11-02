@@ -35,7 +35,7 @@ assert 'beginHybridTerminalSettle(now,"hybrid measured bend/rate/tilt guard; sco
 # restoration, then waits only for the pair opposite the selected recovery
 # pair.  It must not regress to an all-four pressure prerequisite.
 handoff=hybrid[hybrid.index('  if(hybrid_phase_==2) {'):
-    hybrid.index('  if(hard_roll_or_rate && hybrid_phase_==2) {')]
+    hybrid.index('  // Use the same empty-bottom endpoint for the reverse-travel guard')]
 assert 'selectContinuousRecoveryPair(s.roll)' in handoff
 assert 'const size_t anchor_pair=1-hybrid_recovery_pair_preview_index_;' in handoff
 assert 'measured_pressure_[arm]>=recovery_handoff_min_pressure_kpa_' in handoff
@@ -82,10 +82,13 @@ struct AttitudePressureController {
  bool recovery_geometry_reestimate_attempted_=false;
  bool recovery_geometry_reestimate_pending_=false;
  bool recovery_circle_event_locked_=false;
+ bool recovery_event_contact_pivot_locked_=false;
+ bool recovery_selected_contact_pivot_enabled_=false;
  bool recovery_preferred_pair_locked_=false;
  bool recovery_extension_mode_latched_=false;
  bool recovery_rate_arrest_active_=false;
  ros::Time recovery_rate_arrest_nonoutward_since_;
+ double recovery_rate_arrest_reference_error_rad_=std::numeric_limits<double>::quiet_NaN();
  unsigned recovery_rejected_candidate_mask_=0;
  int recovery_rejected_direction_sign_=0;
  double action_c_requested_recovery_trigger_rad_=std::numeric_limits<double>::quiet_NaN();

@@ -19,14 +19,17 @@ assert 'probe_did_not_worsen_rate' in branch
 wrong_geometry = branch.split('const bool wrong_geometry_candidate =', 1)[1].split(';', 1)[0]
 assert 'recovery_extension_mode_latched_' not in wrong_geometry
 assert '!measured_restoring_geometry' in wrong_geometry
-assert '!retained_probe_progress && !helpful_probe_motion' in branch
+assert 'const bool pressure_settled_insufficient_decay =' in branch
+assert 'recovery_error_decay_rate <' in branch
+assert 'recovery_wrong_geometry_min_error_decay_rate_rad_s_' in branch
 assert 'const bool retained_candidate_worsening =' in branch
-assert 'Recovery candidate lost retained progress:' in branch
+assert 'Recovery candidate lost retained progress at %.2f deg/s' in branch
 assert 'std::max(recovery_wrong_sign_shaping_thrust_n_,' in branch
 assert 'roll_recovery_config_.response_fault_min_thrust)' in branch
 assert 'geometry_authority_limit)' in branch
 assert 'recovery_rate_arrest_min_thrust_n_' in branch
 assert 'recovery_rate_arrest_max_thrust_n_' in branch
+assert 'positive_roll_stalled_at_arrest_cap' in branch
 assert 'active_roll_recovery_config.fallback_thrust = std::min(' in branch
 assert 'recovery_preinflate_thrust_rise_n_s_' in branch
 assert 'Emergency roll deterioration resumed' in branch

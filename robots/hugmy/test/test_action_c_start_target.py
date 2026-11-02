@@ -37,10 +37,13 @@ struct AttitudePressureController {
  bool recovery_geometry_reestimate_attempted_=false;
  bool recovery_geometry_reestimate_pending_=false;
  bool recovery_circle_event_locked_=false;
+ bool recovery_event_contact_pivot_locked_=false;
+ bool recovery_selected_contact_pivot_enabled_=false;
  bool recovery_preferred_pair_locked_=false;
  bool recovery_extension_mode_latched_=false;
  bool recovery_rate_arrest_active_=false;
  ros::Time recovery_rate_arrest_nonoutward_since_;
+ double recovery_rate_arrest_reference_error_rad_=std::numeric_limits<double>::quiet_NaN();
  unsigned continuous_recovery_pair_switches_=0;
  unsigned recovery_rejected_candidate_mask_=0;
  int recovery_rejected_direction_sign_=0;
