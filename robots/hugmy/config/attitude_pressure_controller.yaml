@@ -266,7 +266,7 @@ hybrid_front_vent_pressure_fall_kpa_s: 15.0
 hybrid_lift_unload_min_extension_rad: 0.05235987755982989 # 3 deg on each front arm
 hybrid_lift_unload_pair_mismatch_rad: 0.17453292519943295 # allow <=10-deg mismatch while both arms remain independently qualified
 hybrid_lift_unload_pair_memory_sec: 0.15                 # fuse the two arm-extension events across pneumatic/IMU skew
-hybrid_lift_unload_pitch_rad: 0.05235987755982989         # pitch-led event: +3 deg in the commanded direction
+hybrid_lift_unload_pitch_rad: 0.03490658503988659         # pitch-led event: +2 deg in the commanded direction
 hybrid_lift_unload_height_m: 0.003                        # height-led event: +3 mm body rise
 hybrid_lift_unload_min_pitch_rad: 0.03490658503988659     # a height-led event still requires +2 deg pitch
 hybrid_lift_unload_height_floor_m: -0.0005                # a pitch-led event may sink by at most 0.5 mm

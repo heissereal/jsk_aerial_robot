@@ -701,10 +701,10 @@ struct SinglePassConfig {
   // same physical unloading event.  The current mismatch and the independent
   // roll/rate guards remain active, so this is not a one-arm escape path.
   double unload_pair_memory=.15;
-  // Either a pitch-led event (>=3 deg without sinking) or a height-led event
+  // Either a pitch-led event (>=2 deg without sinking) or a height-led event
   // (>=3 mm with >=2 deg of forward pitch) is required. Signed pitch is
   // deliberate: tipping in the opposite direction is never load relief.
-  double unload_pitch=.05235988;          // 3 deg in the travel direction
+  double unload_pitch=.03490659;          // 2 deg in the travel direction
   double unload_height=.003;              // 3 mm body rise
   double unload_min_pitch=.03490659;      // 2 deg for height-led evidence
   double unload_height_floor=-.0005;      // at most 0.5 mm downward motion
