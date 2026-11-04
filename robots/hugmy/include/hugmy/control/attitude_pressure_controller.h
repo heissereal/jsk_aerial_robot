@@ -483,6 +483,11 @@ private:
   // Once release is selected, noisy live bend/contact estimates may not turn
   // it back into a partial-contact candidate during the same recovery event.
   bool recovery_extension_mode_latched_ = false;
+  // Required-roll direction for which the emergency extension latch was
+  // armed.  Crossing the target creates a new, opposite correction problem;
+  // the old large-error latch must not force a straight-arm pair for that
+  // later small residual.
+  int recovery_extension_direction_sign_ = 0;
   bool recovery_rate_arrest_active_ = false;
   ros::Time recovery_rate_arrest_nonoutward_since_;
   double recovery_rate_arrest_reference_error_rad_ =

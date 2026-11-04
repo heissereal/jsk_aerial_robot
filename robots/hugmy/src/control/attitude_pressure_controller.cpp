@@ -1742,6 +1742,7 @@ void AttitudePressureController::targetCallback(const geometry_msgs::Vector3Stam
       recovery_selected_contact_pivot_enabled_ = false;
       recovery_preferred_pair_locked_ = false;
       recovery_extension_mode_latched_ = false;
+      recovery_extension_direction_sign_ = 0;
       recovery_rate_arrest_active_ = false;
       recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
       recovery_rate_arrest_reference_error_rad_ =
@@ -1761,6 +1762,7 @@ void AttitudePressureController::targetCallback(const geometry_msgs::Vector3Stam
   recovery_selected_contact_pivot_enabled_ = false;
   recovery_preferred_pair_locked_ = false;
   recovery_extension_mode_latched_ = false;
+  recovery_extension_direction_sign_ = 0;
   recovery_rate_arrest_active_ = false;
   recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   recovery_rate_arrest_reference_error_rad_ =
@@ -1986,6 +1988,7 @@ void AttitudePressureController::inchwormCommandCallback(
   recovery_selected_contact_pivot_enabled_ = false;
   recovery_preferred_pair_locked_ = false;
   recovery_extension_mode_latched_ = false;
+  recovery_extension_direction_sign_ = 0;
   recovery_rate_arrest_active_ = false;
   recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   recovery_rate_arrest_reference_error_rad_ =
@@ -2040,6 +2043,7 @@ bool AttitudePressureController::enableCallback(std_srvs::SetBool::Request& req,
   recovery_selected_contact_pivot_enabled_ = false;
   recovery_preferred_pair_locked_ = false;
   recovery_extension_mode_latched_ = false;
+  recovery_extension_direction_sign_ = 0;
   recovery_rate_arrest_active_ = false;
   recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   recovery_rate_arrest_reference_error_rad_ =
@@ -5290,6 +5294,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                       recovery_selected_contact_pivot_enabled_ = false;
                       recovery_preferred_pair_locked_ = false;
                       recovery_extension_mode_latched_ = false;
+                      recovery_extension_direction_sign_ = 0;
                       recovery_rate_arrest_active_ = false;
                       recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
                       recovery_rate_arrest_reference_error_rad_ =
@@ -5658,9 +5663,32 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   const bool predicted_emergency = outward_roll_rate &&
       std::abs(predicted_roll_error) >=
           recovery_circle_flexed_max_error_rad_;
+  // A large correction may legitimately latch the straight-arm topology.
+  // After the body crosses zero, however, the small opposite residual is a
+  // new correction problem.  Carrying the old latch across that sign change
+  // forced the planner to ignore a valid current-bend 0+1 candidate and to
+  // release 2+3 instead in the 2026-11-04 human-arm trial.
+  const bool crossed_from_latched_extension =
+      recovery_extension_mode_latched_ &&
+      recovery_extension_direction_sign_ != 0 &&
+      recovery_extension_direction_sign_ != correction_direction &&
+      std::abs(roll_error) < recovery_circle_flexed_max_error_rad_;
+  if (crossed_from_latched_extension)
+    {
+      ROS_INFO("Roll recovery crossed target into a small opposite residual: clearing old direction-%+d extension latch and re-evaluating current-bend candidates",
+               recovery_extension_direction_sign_);
+      recovery_extension_mode_latched_ = false;
+      recovery_extension_direction_sign_ = 0;
+      action_c_recovery_urgent_thrust_rise_ = false;
+      recovery_rate_arrest_active_ = false;
+      recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
+      recovery_rate_arrest_reference_error_rad_ =
+          std::numeric_limits<double>::quiet_NaN();
+      recovery_preferred_pair_locked_ = false;
+      continuous_recovery_use_opposite_pair_ = false;
+    }
   const bool emergency_extension_requested =
       recovery_extension_mode_latched_ ||
-      action_c_recovery_urgent_thrust_rise_ ||
       std::abs(roll_error) >= recovery_circle_flexed_max_error_rad_ ||
       predicted_emergency;
   if (emergency_extension_requested)
@@ -5672,7 +5700,12 @@ void AttitudePressureController::selectContinuousRecoveryPair(
                      ? measured_roll_rate * 180.0 / M_PI : 0.0,
                  recovery_extension_prediction_sec_,
                  predicted_roll_error * 180.0 / M_PI);
-      recovery_extension_mode_latched_ = true;
+      // Urgent thrust slew and contact topology are independent decisions.
+      // Do not latch the straight-arm topology until the candidate search
+      // has actually selected a released pair.  In particular, a small roll
+      // error whose outward rate has already stopped may retain a valid,
+      // load-bearing current-bend pair even if locomotion requested a fast
+      // initial thrust rise.
       if (outward_roll_rate)
         {
           recovery_rate_arrest_active_ = true;
@@ -5814,8 +5847,14 @@ void AttitudePressureController::selectContinuousRecoveryPair(
         // its contact location on the inferred circle determines the moment
         // sign, so applying the fixed mapping again inverted deep (>90-deg)
         // contacts.  Keep these two physical cases separate.
-        const double actuator_sign = selected_contact_retained
-            ? 1.0 : fixed_mapping_sign;
+        // A loaded arm can use its physical contact-dependent sign only when
+        // a reliable object centre exists.  With no circle estimate, both
+        // grasped and released candidates must use the verified Spinal/URDF
+        // actuator mapping; otherwise the fixed-pivot planner can disagree
+        // with the measured-angle allocator and select the opposite pair.
+        const double actuator_sign =
+            circle_fresh && selected_contact_retained
+                ? 1.0 : fixed_mapping_sign;
         candidate.lever += actuator_sign * correction_sign *
             recoveryRotorRawLeverAbout(
                 arm, evaluated_bend, candidate.pivot);
@@ -5962,7 +6001,11 @@ void AttitudePressureController::selectContinuousRecoveryPair(
           recovery_preferred_pair_locked_ = true;
         }
       recovery_selected_pair_release_ = selected.release;
-      if (selected.release) recovery_extension_mode_latched_ = true;
+      if (selected.release)
+        {
+          recovery_extension_mode_latched_ = true;
+          recovery_extension_direction_sign_ = correction_direction;
+        }
       recovery_selected_pair_pressure_kpa_ = selected.pressure;
       recovery_selected_pressure_candidate_index_ = selected.pressure_index;
       recovery_selected_contact_pivot_enabled_ = true;
@@ -6034,6 +6077,7 @@ void AttitudePressureController::selectContinuousRecoveryPair(
       : std::array<bool, ARM_COUNT>{{false, false, true, true}};
   recovery_selected_pair_release_ = true;
   recovery_extension_mode_latched_ = true;
+  recovery_extension_direction_sign_ = correction_direction;
   recovery_selected_pair_pressure_kpa_ = recovery_release_pressure_kpa_;
   recovery_selected_pressure_candidate_index_ = 0;
   recovery_selected_contact_pivot_enabled_ = false;
@@ -7227,6 +7271,7 @@ void AttitudePressureController::stopInchwormToGrasp(
   recovery_selected_contact_pivot_enabled_ = false;
   recovery_preferred_pair_locked_ = false;
   recovery_extension_mode_latched_ = false;
+  recovery_extension_direction_sign_ = 0;
   recovery_rate_arrest_active_ = false;
   recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   recovery_rate_arrest_reference_error_rad_ =
@@ -7291,7 +7336,12 @@ void AttitudePressureController::requestActionCPostureRecovery(
   recovery_event_contact_pivot_locked_ = false;
   recovery_selected_contact_pivot_enabled_ = false;
   recovery_preferred_pair_locked_ = false;
-  recovery_extension_mode_latched_ = urgent_thrust_rise;
+  // `urgent_thrust_rise` requests only the fast actuator slew.  Candidate
+  // geometry below independently decides whether the selected pair must be
+  // released/extended; coupling these two decisions forced a straight-arm
+  // pair for small roll errors after the outward motion had already stopped.
+  recovery_extension_mode_latched_ = false;
+  recovery_extension_direction_sign_ = 0;
   recovery_rate_arrest_active_ = false;
   recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   recovery_rate_arrest_reference_error_rad_ =
@@ -7360,6 +7410,7 @@ bool AttitudePressureController::resumeActionCAfterRecovery(
       recovery_geometry_reestimate_attempted_ = false;
       recovery_geometry_reestimate_pending_ = false;
       recovery_extension_mode_latched_ = false;
+      recovery_extension_direction_sign_ = 0;
       recovery_rate_arrest_active_ = false;
       recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
       recovery_rate_arrest_reference_error_rad_ =
@@ -7385,6 +7436,7 @@ bool AttitudePressureController::resumeActionCAfterRecovery(
   recovery_geometry_reestimate_attempted_ = false;
   recovery_geometry_reestimate_pending_ = false;
   recovery_extension_mode_latched_ = false;
+  recovery_extension_direction_sign_ = 0;
   recovery_rate_arrest_active_ = false;
   recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   recovery_rate_arrest_reference_error_rad_ =

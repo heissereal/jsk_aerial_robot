@@ -46,6 +46,7 @@ struct AttitudePressureController {
  double action_c_posture_recovery_trigger_rad_=0.2;
  bool action_c_recovery_urgent_thrust_rise_=false;
  bool recovery_extension_mode_latched_=false;
+ int recovery_extension_direction_sign_=0;
  bool recovery_rate_arrest_active_=false;
  ros::Time recovery_rate_arrest_nonoutward_since_;
  double recovery_rate_arrest_reference_error_rad_=std::numeric_limits<double>::quiet_NaN();

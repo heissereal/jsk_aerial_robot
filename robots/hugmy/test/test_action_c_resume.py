@@ -36,6 +36,21 @@ assert 'recovery_wrong_geometry_probe_target_valid_' in source
 assert 'Recovery candidates pair %zu+%zu' in source
 assert 'candidate_bend[arm] = 0.0' in source
 assert 'grasped_has_authority ? best_grasped : best_extended' in source
+assert 'crossed_from_latched_extension' in source
+assert 'recovery_extension_direction_sign_ != correction_direction' in source
+selector_request = source[source.index(
+    'const bool emergency_extension_requested ='
+):source.index('if (emergency_extension_requested)', source.index(
+    'const bool emergency_extension_requested ='))]
+assert 'action_c_recovery_urgent_thrust_rise_' not in selector_request
+recovery_request = source[source.index(
+    'void AttitudePressureController::requestActionCPostureRecovery('
+):source.index('bool AttitudePressureController::resumeActionCAfterRecovery(',
+               source.index(
+                   'void AttitudePressureController::requestActionCPostureRecovery('))]
+assert 'recovery_extension_mode_latched_ = false;' in recovery_request
+assert 'recovery_extension_mode_latched_ = urgent_thrust_rise;' not in recovery_request
+assert 'circle_fresh && selected_contact_retained' in source
 assert 'rotorDepthAngleAbout(' in source
 selector = source[source.index(
     'void AttitudePressureController::selectContinuousRecoveryPair('
@@ -179,6 +194,7 @@ public:
  bool recovery_geometry_reestimate_pending_=false;
  bool action_c_recovery_urgent_thrust_rise_=false;
  bool recovery_extension_mode_latched_=false;
+ int recovery_extension_direction_sign_=0;
  bool recovery_rate_arrest_active_=false;
  ros::Time recovery_rate_arrest_nonoutward_since_;
  double recovery_rate_arrest_reference_error_rad_=NAN;
@@ -379,6 +395,39 @@ int main() {
  assert(normal_choice.prepare_arm_active_[0] &&
         normal_choice.prepare_arm_active_[1]);
  assert(!normal_choice.recovery_selected_pair_release_);
+ // A locomotion guard may request a fast rise while the small roll error is
+ // no longer moving outward.  Fast slew alone must not exclude the safer
+ // current-bend candidate.
+ AttitudePressureController urgent_small_choice;
+ urgent_small_choice.recovery_circle_selection_enabled_=true;
+ urgent_small_choice.recovery_circle_estimate_=circle.recovery_circle_estimate_;
+ urgent_small_choice.recovery_circle_stamp_={9.9};
+ urgent_small_choice.recovery_circle_release_support_scale_=0.;
+ urgent_small_choice.recovery_circle_release_penalty_n_=0.;
+ urgent_small_choice.straight_pair_swap_=true;
+ urgent_small_choice.action_c_recovery_urgent_thrust_rise_=true;
+ urgent_small_choice.body_angular_velocity_[0]=0.;
+ urgent_small_choice.select(.2);
+ assert(urgent_small_choice.prepare_arm_active_[0] &&
+        urgent_small_choice.prepare_arm_active_[1]);
+ assert(!urgent_small_choice.recovery_selected_pair_release_ &&
+        !urgent_small_choice.recovery_extension_mode_latched_);
+ // The same small present error still uses straight-arm recovery when its
+ // measured outward rate predicts crossing the 15-deg emergency boundary.
+ AttitudePressureController predicted_emergency_choice;
+ predicted_emergency_choice.recovery_circle_selection_enabled_=true;
+ predicted_emergency_choice.recovery_circle_estimate_=
+     circle.recovery_circle_estimate_;
+ predicted_emergency_choice.recovery_circle_stamp_={9.9};
+ predicted_emergency_choice.recovery_circle_release_support_scale_=0.;
+ predicted_emergency_choice.recovery_circle_release_penalty_n_=0.;
+ predicted_emergency_choice.straight_pair_swap_=true;
+ predicted_emergency_choice.body_angular_velocity_[0]=-.35;
+ predicted_emergency_choice.select(.2);
+ assert(predicted_emergency_choice.prepare_arm_active_[2] &&
+        predicted_emergency_choice.prepare_arm_active_[3]);
+ assert(predicted_emergency_choice.recovery_selected_pair_release_ &&
+        predicted_emergency_choice.recovery_extension_mode_latched_);
  AttitudePressureController emergency_choice;
  emergency_choice.recovery_circle_selection_enabled_=true;
  emergency_choice.recovery_circle_estimate_=circle.recovery_circle_estimate_;
@@ -389,6 +438,28 @@ int main() {
  assert(emergency_choice.prepare_arm_active_[2] &&
         emergency_choice.prepare_arm_active_[3]);
  assert(emergency_choice.recovery_selected_pair_release_);
+ assert(emergency_choice.recovery_extension_mode_latched_ &&
+        emergency_choice.recovery_extension_direction_sign_==1);
+ // Crossing the target leaves only a small opposite residual. The previous
+ // emergency direction must not keep forcing a straight-arm pair.
+ emergency_choice.angles.fill(2.1);
+ emergency_choice.action_c_recovery_urgent_thrust_rise_=true;
+ emergency_choice.select(-.10);
+ assert(emergency_choice.prepare_arm_active_[0] &&
+        emergency_choice.prepare_arm_active_[1]);
+ assert(!emergency_choice.recovery_selected_pair_release_);
+ assert(!emergency_choice.recovery_extension_mode_latched_ &&
+        emergency_choice.recovery_extension_direction_sign_==0 &&
+        !emergency_choice.action_c_recovery_urgent_thrust_rise_);
+ // Without a fresh circle, grasped candidates must use the same verified
+ // actuator mapping as the measured-angle allocator.
+ AttitudePressureController no_circle;
+ no_circle.recovery_circle_selection_enabled_=true;
+ no_circle.correction_pair_reverse_spinal_mapping_=true;
+ no_circle.select(.2);
+ assert(no_circle.prepare_arm_active_[2] &&
+        no_circle.prepare_arm_active_[3]);
+ assert(!no_circle.recovery_selected_pair_release_);
  assert(circle.recovery_selected_pair_release_);
  // A later bend change cannot move actuation to the upper pair in the same
  // recovery event. The chosen lower-side pair remains locked; only its
