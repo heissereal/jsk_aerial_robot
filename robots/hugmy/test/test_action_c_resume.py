@@ -80,6 +80,9 @@ assert 'const double retained_angle_progress =' in source
 assert 'retained_angle_progress >=\n                              recovery_rate_arrest_release_progress_rad_' in source
 assert 'recovery_wrong_geometry_response_observed_ = true;' in source
 assert 'preserving %.2f N and switching from rate arrest to angle return' in source
+assert 'Recovery geometry pivot upgraded with first trusted circle' in source
+assert 'recovery_event_contact_pivot_[1] =\n              recovery_circle_event_estimate_.center_y;' in source
+assert 'recovery_event_contact_pivot_[2] =\n              recovery_circle_event_estimate_.center_z;' in source
 assert 'const bool geometry_reestimate_ready =' in source
 assert 'grasp_pressure_ready && recovery_pressure_fresh' in source
 assert 'const bool recovery_restart_support_ready =' in source
@@ -356,9 +359,20 @@ int main() {
  circle.recovery_circle_estimate_.confidence=1.;
  circle.recovery_circle_estimate_.radius=.05;
  circle.recovery_circle_estimate_.rms=.001;
+ circle.recovery_circle_estimate_.center_y=.012;
+ circle.recovery_circle_estimate_.center_z=-.108;
  circle.recovery_circle_estimate_.depth_angle={{2.,2.,2.,2.}};
  circle.recovery_circle_stamp_={9.9};
+ // The event may have entered through the fixed fallback before the first
+ // valid four-contact fit.  Acquiring that fit must replace the fallback
+ // centre once, otherwise the radius and moment pivot describe two different
+ // objects and can reverse the selected pair at small roll.
+ circle.recovery_event_contact_pivot_locked_=true;
+ circle.recovery_event_contact_pivot_={{0.,0.,-.07}};
  circle.select(.2);
+ assert(circle.recovery_circle_event_locked_);
+ assert(std::abs(circle.recovery_event_contact_pivot_[1]-.012)<1e-12);
+ assert(std::abs(circle.recovery_event_contact_pivot_[2]+.108)<1e-12);
  assert(circle.prepare_arm_active_[0] && circle.prepare_arm_active_[1]);
  assert(!circle.recovery_selected_pair_release_);
  const size_t first_pressure=circle.recovery_selected_pressure_candidate_index_;

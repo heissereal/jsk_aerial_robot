@@ -5595,6 +5595,29 @@ void AttitudePressureController::selectContinuousRecoveryPair(
     {
       recovery_circle_event_estimate_ = recovery_circle_estimate_;
       recovery_circle_event_locked_ = true;
+      // The recovery may have started before four reliable contact samples
+      // existed and therefore locked the fixed fallback pivot.  When the
+      // first trusted circle becomes available at a monitored regrasp
+      // boundary, promote the model and its centre atomically.  Keeping the
+      // old fallback centre while using the new circle radius reverses the
+      // predicted small-angle moment sign (observed in rolling_5 at +6 deg).
+      // This is a one-shot upgrade: later bend/contact transients cannot move
+      // the pivot because recovery_circle_event_locked_ is now true.
+      if (recovery_event_contact_pivot_locked_ &&
+          std::isfinite(recovery_circle_event_estimate_.center_y) &&
+          std::isfinite(recovery_circle_event_estimate_.center_z))
+        {
+          const double previous_y = recovery_event_contact_pivot_[1];
+          const double previous_z = recovery_event_contact_pivot_[2];
+          recovery_event_contact_pivot_[1] =
+              recovery_circle_event_estimate_.center_y;
+          recovery_event_contact_pivot_[2] =
+              recovery_circle_event_estimate_.center_z;
+          ROS_INFO("Recovery geometry pivot upgraded with first trusted circle: yz=[%.1f %.1f] -> [%.1f %.1f] mm; freezing the new centre for this event",
+                   1000.0 * previous_y, 1000.0 * previous_z,
+                   1000.0 * recovery_event_contact_pivot_[1],
+                   1000.0 * recovery_event_contact_pivot_[2]);
+        }
       if (!circle_model_fresh)
         ROS_INFO("Recovery reuses last trusted circle model: radius %.1f mm, confidence %.2f, age %.1f s; the event keeps this circle while rotor positions follow measured bend",
                  1000.0 * recovery_circle_event_estimate_.radius,
@@ -5605,7 +5628,8 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   // pressure.  A fitted circular centre is a geometric quantity; using the
   // commanded pressure as a contact-force weight made the centre move merely
   // because the controller requested exhaust.  If no reliable fit exists at
-  // event entry, retain the configured fixed pivot for the whole event.
+  // event entry, retain the configured fixed pivot until the first trusted
+  // circle is acquired at a monitored contact-reselection boundary.
   if (!recovery_event_contact_pivot_locked_)
     {
       recovery_event_contact_pivot_ = contact_position_;
