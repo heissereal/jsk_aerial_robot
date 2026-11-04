@@ -1680,15 +1680,19 @@ int main(){
  assert(predicted_vent.rear_pressure>=k.lift_rear_pressure_floor &&
         predicted_vent.rear_pressure<30.);
  assert(reused.phase==SinglePass::Lift);
- // Rear exhaust is useful only while the front reach remains roll-stable.
- // An outward incremental roll restores the rear pivot immediately, before
- // the older 4-deg pressure-support blend would have produced authority.
+ // Mild outward roll raises rear support continuously instead of jumping to
+ // 30 kPa. Only the confirmed soft-roll brake restores the full rear pivot.
  SinglePass roll_guarded=reused;auto roll_guarded_input=reused_input;
- roll_guarded_input.s.roll=.05;roll_guarded_input.s.roll_rate=.05;
+ roll_guarded_input.s.roll=.08;roll_guarded_input.s.roll_rate=.05;
  auto restored_rear=roll_guarded.update(
      roll_guarded_input,c,k,model,geom);
+ assert(restored_rear.rear_pressure+1e-9>=predicted_vent.rear_pressure &&
+        restored_rear.rear_pressure<in.base_pressure);
+ roll_guarded_input.s.roll=.20;roll_guarded_input.s.roll_rate=.10;
+ for(int i=0;i<10;++i)
+   restored_rear=roll_guarded.update(
+       roll_guarded_input,c,k,model,geom);
  assert(std::abs(restored_rear.rear_pressure-in.base_pressure)<1e-9 &&
-        !roll_guarded.rear_angle_feedback_active &&
         restored_rear.rear_positive_thrust==0.);
  reused_input.s.thrust={{2.,2.}};
  reused_input.height=k.unload_height;
@@ -1697,15 +1701,23 @@ int main(){
    reused.update(reused_input,c,k,model,geom);
  assert(reused.phase==SinglePass::Pull && reused.unload_event_detected);
  assert(reused.front_target_latched);
- // The same rear-anchor restoration remains active after the Motion-2/3
- // handoff; pressure-driven flexion must not continue opening the old rear
- // contact while measured roll is still moving outward.
+ // The same continuous support blend remains active after the Motion-2/3
+ // handoff. A mild outward trend increases pressure without destroying the
+ // low-pressure interval; a confirmed brake still restores full grasp.
  SinglePass pull_roll_guarded=reused;auto pull_roll_input=reused_input;
- pull_roll_input.s.roll=.05;pull_roll_input.s.roll_rate=.05;
+ auto pull_nominal_rear=pull_roll_guarded.update(
+     pull_roll_input,c,k,model,geom);
+ pull_roll_input.s.roll=.08;pull_roll_input.s.roll_rate=.05;
  auto pull_restored_rear=pull_roll_guarded.update(
      pull_roll_input,c,k,model,geom);
+ assert(pull_restored_rear.rear_pressure+1e-9>=
+            pull_nominal_rear.rear_pressure &&
+        pull_restored_rear.rear_pressure<in.base_pressure);
+ pull_roll_input.s.roll=.20;pull_roll_input.s.roll_rate=.10;
+ for(int i=0;i<10;++i)
+   pull_restored_rear=pull_roll_guarded.update(
+       pull_roll_input,c,k,model,geom);
  assert(std::abs(pull_restored_rear.rear_pressure-in.base_pressure)<1e-9 &&
-        !pull_roll_guarded.rear_angle_feedback_active &&
         pull_restored_rear.rear_positive_thrust==0.);
  // With explicit simulation contacts, a weak pitch/height transient and less
  // than the requested pair travel are not an unloading event.  A sustained
@@ -2293,7 +2305,7 @@ int main(){
  pull.lift_force=2.;pull.lift_up=1.;pull.pull_forward=8.;
  auto early=pull.update(pulling,c,k,model,geom);
  assert(early.thrust[0]<=2. &&
-        std::abs(early.rear_pressure-k.lift_rear_pressure_floor)<1e-9);
+        early.rear_pressure<=k.lift_rear_pressure_floor+1e-9);
  pulling.s.thrust=early.thrust;
  pulling.s.bend={{1.34,1.34}};
  auto flexed=pull.update(pulling,c,k,model,geom);

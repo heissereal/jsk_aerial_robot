@@ -503,19 +503,16 @@ struct SinglePassConfig {
   // starts support transfer before the independent hard guard is reached.
   double pull_golden_roll_limit=.20943951; // 12 deg stroke-relative roll
   // Rear support is transferred continuously instead of switching from full
-  // grasp to exhaust at one bend threshold.  The first Motion 2 keeps the
-  // rear pivot grasped. A calibrated Motion 2 reduces it only after BOTH
+  // grasp to exhaust at one bend threshold. Release starts only after BOTH
   // front arms have produced measured extension, and Motion 3 then uses the
   // slower front arm's flexion so an asymmetric pair cannot release the last
   // rear anchor prematurely.
   double lift_rear_release_start_ratio=.10;
-  double lift_rear_pressure_floor=0.;
-  // The first powered Lift is an identification experiment: its result must
-  // describe the front pair, not an unknown simultaneous loss of the rear
-  // pivot. Keep the rear pair at the measured grasp pressure until the first
-  // body-unloading event has calibrated the front trajectory. Reused strokes
-  // may then lead rear exhaust with the learned pneumatic timing.
-  bool identification_hold_rear_grasp=true;
+  double lift_rear_pressure_floor=7.5;
+  // The production first stroke uses the coarse rear-support prior measured
+  // by the preceding slip probe. Fixed 30-kPa rear grasp is retained only as
+  // an opt-in pure-front identification diagnostic.
+  bool identification_hold_rear_grasp=false;
   // Bounds used by the signed rear-support coordinate.  -1 maps to the
   // minimum pressure and positive rear thrust; +1 maps to the maximum
   // pressure and (only while pressure is late) reverse thrust.  The slip and
@@ -535,7 +532,7 @@ struct SinglePassConfig {
   // unloading event.
   bool slip_preserve_rear_grasp=false;
   double rear_support_probe_sliding=-1.;
-  double rear_support_probe_stable=0.;
+  double rear_support_probe_stable=-.5;
   double rear_support_probe_unstable=.25;
   double rear_support_roll_start=.06981317; // 4 deg
   double rear_support_roll_full=.17453293;  // 10 deg
@@ -1798,10 +1795,10 @@ class SinglePass {
   double rearPressureFloor(const SinglePassConfig& k) const {
     return pressureFromSupport(rear_support_command,k);
   }
-  // The slip probe gives a coarse prior, not an optimizer reward.  Retained
-  // sliding favours release; a stable but stuck contact starts at the neutral
-  // 15-kPa hold for Motion 2; an outward-roll rejection starts on the support
-  // side of the coordinate.
+  // The slip probe gives a coarse prior, not an optimizer reward. Retained
+  // sliding favours full release; a stable but stuck contact starts from the
+  // release side at 7.5 kPa; an outward-roll rejection starts on the support
+  // side. The measured rear-bend loop refines this from the first Motion 2.
   void identifyRearSupportFromSlip(const SinglePassConfig& k) {
     if(!k.rear_pressure_adaptation_enabled) return;
     rear_support_prior=clamp(slip_probe_unstable?
@@ -2332,7 +2329,7 @@ class SinglePass {
                   k.rear_release_mismatch_soft),0.,1.);
       rear_angle_feedback_active=
           (phase==Lift || phase==Pull || phase==FrontCatch) &&
-          !identification_rear_anchor && !gait_roll_worsening;
+          !identification_rear_anchor && !roll_brake;
       if(rear_angle_feedback_active) {
         const double error=rear_release_target-rear_release_pair;
         rear_angle_pressure_trim=clamp(
@@ -3463,15 +3460,14 @@ class SinglePass {
       const double powered_pair_mismatch=std::abs(
           powered_front_extension[0]-powered_front_extension[1]);
       // Rear release is locomotion assistance, not a prerequisite for the
-      // front-pair identification.  Permit it only on a calibrated reach,
-      // after paired onset, while the pair remains inside the measured
-      // extension corridor and roll is not moving outward.  Any worsening
-      // roll immediately restores the 30-kPa pivot instead of waiting for the
-      // former 4--10-deg pressure-support blend.
+      // front-pair identification. Permit it after paired onset while the
+      // pair remains inside the measured extension corridor. A mild outward
+      // roll raises the selected pressure floor continuously through the
+      // 4--10-deg support blend; only a confirmed roll brake restores 30 kPa.
       const bool allow_lift_rear_release=!identification_rear_anchor &&
           powered_pair_onset &&
           powered_pair_mismatch<=k.unload_pair_mismatch &&
-          !gait_roll_worsening && !roll_brake;
+          !roll_brake;
       const double lift_release_phase=allow_lift_rear_release?
           clamp((minimum_front_extension/
                     std::max(.017453,required_pair_extension)-
@@ -4314,7 +4310,7 @@ class SinglePass {
       // Release is monotonic over one Motion-2/3 stroke.  A measured roll risk
       // may start support_transfer below, but flexion itself never re-grasps
       // the old rear point and destroys the useful unloaded interval.
-      if(gait_roll_worsening || roll_brake)
+      if(roll_brake)
         rear_pressure_command=in.base_pressure;
       else if(rear_support_safety_override>1.e-6)
         rear_pressure_command=std::max(rear_pressure_command,

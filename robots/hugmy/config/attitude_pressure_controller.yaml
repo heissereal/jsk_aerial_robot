@@ -111,12 +111,12 @@ hybrid_pull_terminal_anchor_wait_timeout_sec: 2.0
 hybrid_pull_terminal_front_pressure_stall_sec: 0.25
 hybrid_pull_terminal_front_pressure_progress_kpa: 0.2
 hybrid_pull_golden_roll_limit_rad: 0.20943951023931953 # 12 deg
-# The first Motion-2 reach identifies the front extension/load-relief event
-# with an invariant 30-kPa rear pivot.  Only later, calibrated reaches may
-# lead rear exhaust into Motion 3 using the measured pneumatic delay.
-hybrid_identification_hold_rear_grasp: true
+# Use the rear-support prior measured by the slip probe from the first Motion-2
+# reach. A fixed 30-kPa rear pivot remains available as an explicit diagnostic
+# by setting this true, but is not the production default on compliant skin.
+hybrid_identification_hold_rear_grasp: false
 hybrid_lift_rear_release_start_ratio: 0.10 # begin relaxing rear support after 10% of paired Motion-2 extension
-hybrid_lift_rear_pressure_floor_kpa: 15.0
+hybrid_lift_rear_pressure_floor_kpa: 7.5
 # The slip probe and first unloading stroke initialize one signed rear-support
 # coordinate. -1 is release plus positive assist, +1 is pressure support plus
 # reverse assist when pressure is late. Subsequent changes are candidates in
@@ -136,15 +136,14 @@ hybrid_rear_pressure_adaptation_progress_m: 0.002
 # Set true only when a pure front-force sliding classification is required.
 hybrid_slip_preserve_rear_grasp: false
 hybrid_rear_support_probe_sliding: -1.0
-hybrid_rear_support_probe_stable: 0.0 # no sustained slip: use 15 kPa as the post-identification support prior
+hybrid_rear_support_probe_stable: -0.5 # no sustained slip: start at 7.5 kPa and close the rear-bend loop
 hybrid_rear_support_probe_unstable: 0.25
 # A worsening roll can only increase support. At 4 deg it starts cancelling
 # release; by 10 deg it requests the full pressure/reverse-support end.
 hybrid_rear_support_roll_start_rad: 0.06981317007977318 # 4 deg
 hybrid_rear_support_roll_full_rad: 0.17453292519943295 # 10 deg
-# The initial Motion 2 is fixed at grasp pressure. After front calibration,
-# the measured extension/roll result and outer candidate search may use the
-# complete 0--30-kPa range without clipping the optimizer's request.
+# From the first Motion 2, the slip-derived prior and rear-bend feedback may
+# use the complete 0--30-kPa range without clipping the optimizer's request.
 hybrid_rear_motion_pressure_cap_kpa: 30.0
 hybrid_rear_release_angle_min_rad: 0.05235987755982989 # 3 deg
 hybrid_rear_release_angle_max_rad: 0.08726646259971647 # 5 deg
