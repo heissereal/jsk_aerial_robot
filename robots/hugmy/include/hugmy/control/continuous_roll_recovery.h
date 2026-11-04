@@ -722,11 +722,19 @@ struct ContinuousRollRecovery {
           now - terminal_rearm_since >= c.confirm_sec;
       if (terminal_rearm_confirmed) {
         terminal_brake_latched = false;
-        // Continue from the actual rundown force when possible, but restore
-        // at least the configured gentle retry authority.  Static-friction
-        // escalation below remains available if this is insufficient.
-        reapproach_authority = recoveryClamp(
-            std::max(thrust, c.reapproach_limit), 0.05, c.limit);
+        // A stopping prediction can be triggered by a short contact-rate
+        // impulse while the body is still far from level.  Once that coast
+        // has stopped, do not keep the complete remaining recovery behind
+        // the gentle retry ceiling.  Reserve low-authority re-approach for
+        // the actual terminal neighbourhood; a far residual resumes the
+        // ordinary angle/rate law continuously from the rundown force.
+        const bool terminal_neighbourhood =
+            std::abs(error) <= stable_contact_limit;
+        low_authority_reapproach = terminal_neighbourhood;
+        reapproach_authority = terminal_neighbourhood
+            ? recoveryClamp(std::max(thrust, c.reapproach_limit),
+                            0.05, c.limit)
+            : c.limit;
         reapproach_best_error = std::abs(error);
         reapproach_last_improvement = now;
         terminal_rearm_since = -1.0;
@@ -753,8 +761,13 @@ struct ContinuousRollRecovery {
         std::min(c.angle_gain * zero_centered_error, approach_rate));
     if (low_authority_reapproach)
       target_rate = std::min(target_rate, c.reapproach_rate);
-    speed_braking = helpful_rate > target_rate ||
-        breakaway_acceleration_event;
+    // Ordinary rate error is already handled continuously by the PI term.
+    // Treating every small target-rate crossing as a separate actuator brake
+    // produced the observed ON/OFF sawtooth: the command fell, contact stuck,
+    // roll worsened, and the same authority was rebuilt.  The direct thrust
+    // brake is now reserved for a genuine breakaway acceleration, severe
+    // overspeed, or the stopping-distance terminal prediction below.
+    speed_braking = breakaway_acceleration_event;
     // Static friction can hold several newtons and then release abruptly.
     // That transition is whole-body motion even before the slower retained-
     // progress detector has completed its window.  A clearly supercritical

@@ -2957,33 +2957,13 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                           std::numeric_limits<double>::quiet_NaN();
                     }
                 }
-              else
-                {
-                  // Rate arrest is a reusable emergency state, not a
-                  // one-shot startup phase. A short compliant rebound can
-                  // make signed rate positive for the release dwell while
-                  // the body is still far from the target. If outward roll
-                  // subsequently resumes at a meaningful rate, restore the
-                  // 2-N floor and the wider PI authority immediately instead
-                  // of remaining behind the ordinary 1.5-N geometry probe
-                  // ceiling for the rest of this recovery event.
-                  const double rearrest_rate = std::max(
-                      0.01, 0.5 * roll_recovery_config_.start_rate);
-                  if (signed_error > roll_recovery_config_.stop &&
-                      phase_rate <= -rearrest_rate &&
-                      !continuous_roll_recovery_.terminal_brake_latched &&
-                      !continuous_roll_recovery_.fault &&
-                      !continuous_roll_recovery_.timed_out)
-                    {
-                      recovery_rate_arrest_active_ = true;
-                      recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
-                      recovery_rate_arrest_reference_error_rad_ =
-                          std::numeric_limits<double>::quiet_NaN();
-                      ROS_WARN("Emergency roll deterioration resumed at %.2f deg / %.2f deg/s; re-latching outward-rate arrest",
-                               signed_error * 180.0 / M_PI,
-                               phase_rate * 180.0 / M_PI);
-                    }
-                }
+              // Rate arrest is only the entry phase which supplies a bounded
+              // 2-N floor while the body is still moving outward.  After a
+              // retained inward response has been measured, the ordinary
+              // angle/rate PI already increases authority whenever roll
+              // worsens again.  Re-latching arrest from each instantaneous
+              // negative gyro sample repeatedly changed the target rate and
+              // caused the hardware's discontinuous thrust cycle.
               auto active_roll_recovery_config = roll_recovery_config_;
               // A positive measured roll requires the 2+3-side recovery on
               // the present hardware.  Its ordinary 4-N rate-arrest ceiling
@@ -3004,18 +2984,18 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   positive_roll_stalled_at_arrest_cap
                   ? roll_recovery_config_.limit
                   : recovery_rate_arrest_max_thrust_n_;
-              // During an emergency extension, first cancel the outward
-              // velocity.  A zero angle gain makes the existing rate PI aim
-              // at zero signed rate without introducing a second thrust
-              // controller; after the short non-outward dwell the ordinary
-              // geometry and angle-dependent target rate resume.
+              // During an emergency extension, keep the same zero-centred
+              // angle/rate target used by ordinary recovery, but add a
+              // bounded force floor and faster slew while outward motion is
+              // being arrested.  Aiming at exactly zero rate here made every
+              // small inward response trigger braking before the required
+              // retained 0.5-deg improvement could be observed.
               if (recovery_rate_arrest_active_)
                 {
                   active_roll_recovery_config.rate_arrest_mode = true;
                   active_roll_recovery_config.limit = std::min(
                       active_roll_recovery_config.limit,
                       active_rate_arrest_limit);
-                  active_roll_recovery_config.angle_gain = 0.0;
                   // Invalid/transitioning bend geometry otherwise reduces
                   // feed-forward to 0.5 N.  During outward-rate arrest only,
                   // retain enough bounded authority to oppose the measured
@@ -5738,23 +5718,37 @@ void AttitudePressureController::selectContinuousRecoveryPair(
     return hugmy::recoveryClamp(requested,
         minimum_prepare_pressure_kpa_, nominal_pressure(arm));
   };
+  const size_t grasp_pressure_index =
+      recovery_circle_pressure_candidates_kpa_.size() - 1;
   auto evaluate = [&](size_t pair_index, size_t pressure_index) {
     Candidate candidate;
     candidate.pair = pair_index;
     candidate.pressure_index = pressure_index;
+    const bool grasped_candidate = pressure_index == grasp_pressure_index;
     candidate.pressure = recovery_circle_pressure_candidates_kpa_[pressure_index];
     double release_fraction_sum = 0.0;
+    double selected_pressure_sum = 0.0;
     for (const size_t arm : pairs[pair_index])
       {
         const double nominal = nominal_pressure(arm);
-        const double target = selected_pressure(arm, candidate.pressure);
+        const double target = grasped_candidate
+            ? nominal : selected_pressure(arm, candidate.pressure);
+        selected_pressure_sum += target;
         release_fraction_sum += (nominal - target) /
             std::max(1.0e-6, nominal - minimum_prepare_pressure_kpa_);
       }
     candidate.release_fraction = hugmy::recoveryClamp(
         release_fraction_sum / static_cast<double>(pairs[pair_index].size()),
         0.0, 1.0);
-    candidate.release = candidate.release_fraction > 1.0e-3;
+    // The last entry is a topology, not merely a 30-kPa numerical sample:
+    // it means keep the currently load-bearing bend at each arm's actual
+    // nominal grasp pressure.  Otherwise a 40-kPa grasp made the nominal
+    // "grasped" candidate look partially released and evaluate alpha=0.
+    candidate.release = !grasped_candidate &&
+        candidate.release_fraction > 1.0e-3;
+    if (grasped_candidate)
+      candidate.pressure = selected_pressure_sum /
+          static_cast<double>(pairs[pair_index].size());
     const uint8_t candidate_bit = static_cast<uint8_t>(
         1u << (4u * pair_index + pressure_index));
     candidate.rejected =
@@ -5771,7 +5765,9 @@ void AttitudePressureController::selectContinuousRecoveryPair(
       candidate_bend[arm] = measuredArmBendAngle(arm);
     for (const size_t arm : pairs[pair_index])
       {
-        candidate_pressure[arm] = selected_pressure(arm, candidate.pressure);
+        candidate_pressure[arm] = grasped_candidate
+            ? nominal_pressure(arm)
+            : selected_pressure(arm, candidate.pressure);
         if (candidate.release) candidate_bend[arm] = 0.0;
       }
     for (size_t arm = 0; arm < ARM_COUNT; ++arm)
@@ -5889,8 +5885,6 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   if (recovery_circle_selection_enabled_ && circle_fresh)
     {
       const size_t extension_pressure_index = 0;
-      const size_t grasp_pressure_index =
-          recovery_circle_pressure_candidates_kpa_.size() - 1;
       Candidate best_grasped;
       Candidate best_extended;
       for (size_t pair = 0; pair < pairs.size(); ++pair)
@@ -5939,8 +5933,6 @@ void AttitudePressureController::selectContinuousRecoveryPair(
       // general attitude allocator and avoids selecting 2+3 solely because
       // body roll is positive.
       const size_t extension_pressure_index = 0;
-      const size_t grasp_pressure_index =
-          recovery_circle_pressure_candidates_kpa_.size() - 1;
       Candidate best_grasped;
       Candidate best_extended;
       for (size_t pair = 0; pair < pairs.size(); ++pair)
@@ -6182,6 +6174,7 @@ double AttitudePressureController::recoverySelectedPairPressure(
   const double nominal = hugmy::recoveryClamp(
       std::max(base_pressure_kpa_, grasp_pressure_[arm]),
       minimum_prepare_pressure_kpa_, maximum_pressure_kpa_);
+  if (!recovery_selected_pair_release_) return nominal;
   return hugmy::recoveryClamp(recovery_selected_pair_pressure_kpa_,
       minimum_prepare_pressure_kpa_, nominal);
 }

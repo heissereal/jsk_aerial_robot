@@ -32,7 +32,8 @@ assert 'recovery_rate_arrest_max_thrust_n_' in branch
 assert 'positive_roll_stalled_at_arrest_cap' in branch
 assert 'active_roll_recovery_config.fallback_thrust = std::min(' in branch
 assert 'recovery_preinflate_thrust_rise_n_s_' in branch
-assert 'Emergency roll deterioration resumed' in branch
+assert 'Emergency roll deterioration resumed' not in branch
+assert 'active_roll_recovery_config.angle_gain = 0.0;' not in branch
 assert 'recovery_predictive_.reset();' in source
 assert 'recoveryRotorLever(arms[j],angle)' in branch
 assert 'force+bend_model_thrust_offset_n_' in branch

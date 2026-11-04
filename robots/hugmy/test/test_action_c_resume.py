@@ -63,7 +63,10 @@ assert 'latched topology lower-side pair' in source
 assert 'selected instantaneous restoring pair' not in source
 assert 'recovery_selected_path_requires_zero_thrust_' in source
 assert 'negative roll puts arms 0+1 lower' in source
-assert 'active_roll_recovery_config.angle_gain = 0.0;' in source
+assert 'active_roll_recovery_config.angle_gain = 0.0;' not in source
+assert 're-latching outward-rate arrest' not in source
+assert 'const bool grasped_candidate = pressure_index == grasp_pressure_index;' in source
+assert 'if (!recovery_selected_pair_release_) return nominal;' in source
 assert 'const double retained_angle_progress =' in source
 assert 'retained_angle_progress >=\n                              recovery_rate_arrest_release_progress_rad_' in source
 assert 'recovery_wrong_geometry_response_observed_ = true;' in source
@@ -395,6 +398,23 @@ int main() {
  assert(normal_choice.prepare_arm_active_[0] &&
         normal_choice.prepare_arm_active_[1]);
  assert(!normal_choice.recovery_selected_pair_release_);
+ // The 30-kPa endpoint in the candidate table denotes the grasped topology,
+ // not a request to partially exhaust an arm whose actual grasp pressure is
+ // 40 kPa.  Such an arm must retain its measured bend and nominal pressure.
+ AttitudePressureController high_pressure_grasp;
+ high_pressure_grasp.recovery_circle_selection_enabled_=true;
+ high_pressure_grasp.recovery_circle_estimate_=circle.recovery_circle_estimate_;
+ high_pressure_grasp.recovery_circle_stamp_={9.9};
+ high_pressure_grasp.recovery_circle_release_support_scale_=0.;
+ high_pressure_grasp.recovery_circle_release_penalty_n_=0.;
+ high_pressure_grasp.straight_pair_swap_=true;
+ high_pressure_grasp.grasp_pressure_.fill(40.);
+ high_pressure_grasp.measured_pressure_.fill(40.);
+ high_pressure_grasp.select(.2);
+ assert(high_pressure_grasp.prepare_arm_active_[0] &&
+        high_pressure_grasp.prepare_arm_active_[1]);
+ assert(!high_pressure_grasp.recovery_selected_pair_release_ &&
+        std::abs(high_pressure_grasp.recovery_selected_pair_pressure_kpa_-40.)<1e-9);
  // A locomotion guard may request a fast rise while the small roll error is
  // no longer moving outward.  Fast slew alone must not exclude the safer
  // current-bend candidate.

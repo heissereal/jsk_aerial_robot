@@ -130,7 +130,10 @@ int main() {
     assert(arrest.thrust<=latched_authority+1e-9);
     assert(arrest.boost<=latched_integral+1e-9);
   }
-  assert(latched_integral<=integral_before_breakaway+1e-9);
+  // The unified angle/rate target may keep building authority until retained
+  // motion confirms breakaway.  Once latched, however, that measured force
+  // is a hard ceiling and the integral cannot grow further (checked above).
+  assert(latched_integral>=integral_before_breakaway-1e-9);
   arrest.beginAngleReturn();
   assert(!arrest.breakaway_latched && arrest.breakaway_authority==0. &&
          arrest.feedforward>=latched_authority-1e-9 && arrest.boost==0.);
@@ -238,10 +241,15 @@ int main() {
   ContinuousRollRecovery cap;cap.reset(.5,0.);
   for(int i=1;i<=400;++i)cap.update(.5,0.,i*.02,.02,m,no_pair_retry,response);
   assert(cap.thrust<=4. && cap.thrust>3.99 && cap.boost==0.); // anti-windup
-  // c13 regression: even a grossly high FF and retained I cannot continue
-  // increasing thrust after sustained roll rate exceeds its target. A single
-  // raw contact spike is deliberately rejected by the rate filter.
-  for(double rate: {.121,.186,.384}) {
+  // A small crossing of the requested rate stays in the continuous PI law;
+  // it must not toggle the direct actuator brake.
+  ContinuousRollRecovery moderate;moderate.reset(25*deg,0.);
+  moderate.thrust=2.39;moderate.boost=.72;
+  moderate.filtered_rate=.121;moderate.rate_initialized=true;
+  moderate.update(25*deg,.121,.02,.02,m,cfg,response);
+  assert(!moderate.speed_braking && !moderate.fault);
+  // A genuinely excessive retained rate still has priority over FF and I.
+  for(double rate: {.25,.384}) {
     ContinuousRollRecovery fast;fast.reset(25*deg,0.);
     fast.thrust=2.39;fast.boost=.72;fast.filtered_rate=rate;fast.rate_initialized=true;
     const double before=fast.thrust, old_i=fast.boost;
@@ -485,7 +493,7 @@ int main() {
   for(;margin_step<70 && !margin.finished;++margin_step)
     margin.update(4.4*deg,0.,margin_step*.02,.02,m,three,response);
   assert(margin.capture_active && margin.finished);
-  retained.update(9*deg,.15,.02,.02,m,three,response);
+  retained.update(9*deg,.25,.02,.02,m,three,response);
   assert(retained.speed_braking && !retained.predicted_braking && retained.boost>1.49);
   assert(retained.thrust>1.9 && retained.thrust<2.1);
   for(int i=2;i<=8 && !retained.predicted_braking;++i)
@@ -603,22 +611,23 @@ int main() {
   for(int i=2;i<=120 && latched_brake.terminal_brake_latched;++i)
     latched_brake.update(11*deg,-.02,i*.02,.02,m,cfg,response);
   assert(!latched_brake.terminal_brake_latched);
-  assert(latched_brake.low_authority_reapproach);
+  // Eleven degrees is outside the terminal contact neighbourhood.  Once the
+  // coast stops, resume the ordinary continuous controller instead of
+  // remaining behind the gentle retry ceiling.
+  assert(!latched_brake.low_authority_reapproach);
   assert(latched_brake.thrust<first_brake_thrust);
   assert(latched_brake.target_thrust<=
          latched_brake.reapproach_authority+1e-9);
   assert(latched_brake.boost<1e-9);
-  assert(latched_brake.reapproach_authority>=cfg.reapproach_limit-1e-9);
-  // A stationary residual now restores bounded authority and may escalate
-  // only after the ordinary no-progress dwell.
+  assert(std::abs(latched_brake.reapproach_authority-cfg.limit)<1e-9);
+  // A stationary far residual restores ordinary bounded authority directly.
   const double retry_start=latched_brake.last_update;
   for(int i=1;i<=100;++i)
     latched_brake.update(11*deg,0.,retry_start+i*.02,.02,m,cfg,response,
                          std::numeric_limits<double>::quiet_NaN(),false);
   assert(!latched_brake.terminal_brake_latched &&
          latched_brake.thrust>cfg.reapproach_limit &&
-         latched_brake.target_thrust<=
-             latched_brake.reapproach_authority+1e-9);
+         latched_brake.target_thrust<=cfg.limit+1e-9);
   // Capture hysteresis is wider than the requested stop angle.  A quiet
   // residual inside that hysteresis (the real bag plateaued near 5 deg for a
   // 3-deg target) must still recover authority instead of remaining at the
