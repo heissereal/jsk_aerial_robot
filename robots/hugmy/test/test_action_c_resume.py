@@ -38,6 +38,11 @@ assert 'candidate_bend[arm] = 0.0' in source
 assert 'grasped_has_authority ? best_grasped : best_extended' in source
 assert 'crossed_from_latched_extension' in source
 assert 'recovery_extension_direction_sign_ != correction_direction' in source
+assert 'const bool stable_small_angle_reselection =' in source
+assert 'std::isfinite(measured_roll_rate)' in source
+assert 'std::abs(measured_roll_rate) < correction_motion_start_rate_' in source
+assert 're-evaluating all current-bend candidates' in source
+assert 'recovery_preferred_pair_locked_ = false;' in source
 assert 'requiring the opposite physical pair' in source
 assert 'recovery_preferred_pair_index_ = 1 - previous_pair;' in source
 assert 'const bool large_error_emergency =' in source
@@ -477,6 +482,38 @@ int main() {
  assert(!emergency_choice.recovery_extension_mode_latched_ &&
         emergency_choice.recovery_extension_direction_sign_==0 &&
         !emergency_choice.action_c_recovery_urgent_thrust_rise_);
+ // A stable small residual after an extended correction is a fresh contact
+ // decision.  Do not force the opposite physical pair: in this geometry the
+ // same physical 0+1 pair has become restorative after it is re-grasped.
+ AttitudePressureController stable_small_reselection;
+ stable_small_reselection.recovery_circle_selection_enabled_=true;
+ stable_small_reselection.recovery_circle_estimate_=
+     circle.recovery_circle_estimate_;
+ stable_small_reselection.recovery_circle_stamp_={9.9};
+ stable_small_reselection.recovery_circle_release_support_scale_=0.;
+ stable_small_reselection.recovery_circle_release_penalty_n_=0.;
+ stable_small_reselection.straight_pair_swap_=true;
+ stable_small_reselection.recovery_extension_mode_latched_=true;
+ stable_small_reselection.recovery_extension_direction_sign_=-1;
+ stable_small_reselection.recovery_preferred_pair_index_=0;
+ stable_small_reselection.recovery_preferred_pair_locked_=true;
+ stable_small_reselection.body_angular_velocity_[0]=0.;
+ stable_small_reselection.select(.10);
+ assert(stable_small_reselection.prepare_arm_active_[0] &&
+        stable_small_reselection.prepare_arm_active_[1]);
+ assert(!stable_small_reselection.recovery_selected_pair_release_ &&
+        !stable_small_reselection.recovery_extension_mode_latched_);
+ // The same small angle with a fast outward body rate is not stable.  Keep
+ // the old emergency extension latch so it can arrest the existing motion.
+ AttitudePressureController moving_small=stable_small_reselection;
+ moving_small.recovery_extension_mode_latched_=true;
+ moving_small.recovery_extension_direction_sign_=1;
+ moving_small.recovery_preferred_pair_index_=1;
+ moving_small.recovery_preferred_pair_locked_=true;
+ moving_small.body_angular_velocity_[0]=-.20;
+ moving_small.select(.10);
+ assert(moving_small.recovery_selected_pair_release_ &&
+        moving_small.recovery_extension_mode_latched_);
  // Without a fresh circle, grasped candidates must use the same verified
  // actuator mapping as the measured-angle allocator.
  AttitudePressureController no_circle;
@@ -486,7 +523,10 @@ int main() {
  assert(no_circle.prepare_arm_active_[2] &&
         no_circle.prepare_arm_active_[3]);
  assert(!no_circle.recovery_selected_pair_release_);
- assert(circle.recovery_selected_pair_release_);
+ // The earlier large-error release latch was deliberately cleared when the
+ // subsequent small residual became quiet, so this valid grasped state is
+ // retained rather than returning to the straight-arm topology.
+ assert(!circle.recovery_selected_pair_release_);
  // A later bend change cannot move actuation to the upper pair in the same
  // recovery event. The chosen lower-side pair remains locked; only its
  // contact state and thrust may be recomputed.

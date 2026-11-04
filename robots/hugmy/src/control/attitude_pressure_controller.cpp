@@ -5658,11 +5658,43 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   const bool predicted_emergency = outward_roll_rate &&
       std::abs(predicted_roll_error) >=
           recovery_circle_flexed_max_error_rad_;
+  // A released/straight-arm topology is an emergency choice for one
+  // measured correction pass, not a permanent mapping for later residuals.
+  // Once a new PREPARE decision sees a small error whose unforced outward
+  // rate and short-horizon prediction both remain inside the flexed envelope,
+  // discard the old extension and pair locks.  Re-evaluate all pairs at the
+  // measured current bend first; vent an arm again only if no grasped state
+  // has a restorative signed lever.  Do not perform this reset while the
+  // small residual is still rolling outward quickly: that case retains the
+  // extended topology needed to arrest its momentum.
+  const bool stable_small_angle_reselection =
+      recovery_extension_mode_latched_ &&
+      std::isfinite(measured_roll_rate) &&
+      std::abs(roll_error) < recovery_circle_flexed_max_error_rad_ &&
+      std::abs(predicted_roll_error) <
+          recovery_circle_flexed_max_error_rad_ &&
+      (!outward_roll_rate ||
+       std::abs(measured_roll_rate) < correction_motion_start_rate_);
+  if (stable_small_angle_reselection)
+    {
+      ROS_INFO("Stable small-angle roll recovery: clearing the old extended-arm direction-%+d latch and physical-pair lock; re-evaluating all current-bend candidates",
+               recovery_extension_direction_sign_);
+      recovery_extension_mode_latched_ = false;
+      recovery_extension_direction_sign_ = 0;
+      recovery_preferred_pair_locked_ = false;
+      action_c_recovery_urgent_thrust_rise_ = false;
+      recovery_rate_arrest_active_ = false;
+      recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
+      recovery_rate_arrest_reference_error_rad_ =
+          std::numeric_limits<double>::quiet_NaN();
+      continuous_recovery_use_opposite_pair_ = false;
+    }
   // A large correction may legitimately latch the straight-arm topology.
-  // After the body crosses zero, however, the small opposite residual is a
-  // new correction problem.  Carrying the old latch across that sign change
-  // forced the planner to ignore a valid current-bend 0+1 candidate and to
-  // release 2+3 instead in the 2026-11-04 human-arm trial.
+  // If the body crosses zero while it is still moving outward too quickly to
+  // satisfy the stable-small-angle test above, the old one-directional pair
+  // cannot arrest the new sign.  Only that dynamic case requires the other
+  // physical pair immediately; a quiet residual is handled by the all-pair,
+  // current-bend re-evaluation above.
   const bool crossed_from_latched_extension =
       recovery_extension_mode_latched_ &&
       recovery_extension_direction_sign_ != 0 &&
@@ -5671,7 +5703,7 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   if (crossed_from_latched_extension)
     {
       const size_t previous_pair = recovery_preferred_pair_index_;
-      ROS_INFO("Roll recovery crossed target into a small opposite residual: clearing old direction-%+d extension latch and requiring the opposite physical pair %zu+%zu",
+      ROS_INFO("Roll recovery crossed target with an unstable opposite residual: clearing old direction-%+d extension latch and requiring the opposite physical pair %zu+%zu",
                recovery_extension_direction_sign_,
                previous_pair == 0 ? 2ul : 0ul,
                previous_pair == 0 ? 3ul : 1ul);
