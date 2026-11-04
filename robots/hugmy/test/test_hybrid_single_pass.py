@@ -969,6 +969,36 @@ int main(){
  assert(std::abs(unload.identified_bend_target[0]-1.20)<1e-9);
  assert(std::abs(unload.identified_bend_target[1]-1.20)<1e-9);
  assert(std::isfinite(unload.identified_extension_thrust[0]));
+ // The Motion-2 phase boundary has a non-scalable signed 3-deg pitch floor.
+ // Even a lower launch/config request and a clear 3-mm height rise cannot
+ // hand off to Pull below that floor.  This keeps bottom inflation and mocap
+ // height noise from replacing the requested body-pitch event.
+ auto hard_pitch_k=k;
+ hard_pitch_k.unload_pitch=1.*M_PI/180.;
+ hard_pitch_k.unload_min_pitch=1.*M_PI/180.;
+ Model hard_pitch_model;hard_pitch_model.reset(c);
+ SinglePass hard_pitch;auto hard_pitch_input=in;
+ hard_pitch_input.contact_available=false;
+ hard_pitch_input.s.bend={{1.5,1.5}};
+ hard_pitch_input.s.thrust={{2.,2.}};
+ hard_pitch_input.s.pressure={{0.,0.}};
+ hard_pitch_input.s.command={{0.,0.}};
+ hard_pitch_input.height=0.;hard_pitch_input.directional_pitch=0.;
+ hard_pitch.slip_tested=true;hard_pitch.begin(hard_pitch_input);
+ hard_pitch.enter(SinglePass::Lift,hard_pitch_input);
+ prime_powered_baseline(hard_pitch,hard_pitch_input);
+ hard_pitch_input.s.bend={{1.20,1.20}};
+ hard_pitch_input.height=.004;
+ hard_pitch_input.directional_pitch=2.9*M_PI/180.;
+ for(int i=0;i<10;++i)
+   hard_pitch.update(hard_pitch_input,c,hard_pitch_k,hard_pitch_model,geom);
+ assert(hard_pitch.phase==SinglePass::Lift &&
+        !hard_pitch.load_relief_detected);
+ hard_pitch_input.directional_pitch=3.1*M_PI/180.;
+ for(int i=0;i<10 && hard_pitch.phase==SinglePass::Lift;++i)
+   hard_pitch.update(hard_pitch_input,c,hard_pitch_k,hard_pitch_model,geom);
+ assert(hard_pitch.phase==SinglePass::Pull &&
+        hard_pitch.load_relief_detected);
  // Production deep-windup mode separates the first measured load-relief cue
  // from the pressure-flexion handoff. Height/pitch noise cannot end Motion 2;
  // the front chambers remain released while thrust builds pitch, then full
@@ -1035,7 +1065,7 @@ int main(){
  // provide unloading relative to the powered-onset body reference.
  baseline_input.s.bend={{1.16,1.16}};
  baseline_input.height=.007;
- baseline_input.directional_pitch=.08;
+ baseline_input.directional_pitch=.09; // >3 deg beyond the .03-rad onset pose
  for(int i=0;i<10 && powered_baseline.phase==SinglePass::Lift;++i)
    powered_baseline.update(baseline_input,c,k,model,geom);
  assert(powered_baseline.powered_extension_reference[0]<1.49 &&

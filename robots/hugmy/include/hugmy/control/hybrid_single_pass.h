@@ -4,6 +4,13 @@
 #include <hugmy/control/hybrid_trajectory_adaptation.h>
 
 namespace hugmy { namespace hybrid {
+// Motion 2 may adapt its planned extension/force trajectory, but it must not
+// reinterpret bottom motion, mocap height noise or an opposite-direction tip
+// as front-contact unloading.  Keep this signed body-pitch requirement as a
+// non-scalable physical phase boundary, independent of launch overrides and
+// the outer trajectory candidate's unload scale.
+constexpr double minimum_load_relief_pitch_rad=
+    .05235987755982989; // 3 deg in the commanded direction
 // Redistribute a front-pair command without changing its common component.
 // Positive signed_delta unloads arm 0 and assists arm 1; a negative value does
 // the opposite.  Saturation reduces only the differential term.
@@ -701,12 +708,14 @@ struct SinglePassConfig {
   // same physical unloading event.  The current mismatch and the independent
   // roll/rate guards remain active, so this is not a one-arm escape path.
   double unload_pair_memory=.15;
-  // Either a pitch-led event (>=2 deg without sinking) or a height-led event
-  // (>=3 mm with >=2 deg of forward pitch) is required. Signed pitch is
-  // deliberate: tipping in the opposite direction is never load relief.
-  double unload_pitch=.03490659;          // 2 deg in the travel direction
+  // Either a pitch-led event (>=3 deg without sinking) or a height-led event
+  // (>=3 mm with >=3 deg of forward pitch) is required. Signed pitch is
+  // deliberate: tipping in the opposite direction is never load relief. The
+  // update path enforces the same 3-deg floor even if a launch override or
+  // an adaptive trajectory scale requests less.
+  double unload_pitch=minimum_load_relief_pitch_rad;
   double unload_height=.003;              // 3 mm body rise
-  double unload_min_pitch=.03490659;      // 2 deg for height-led evidence
+  double unload_min_pitch=minimum_load_relief_pitch_rad;
   double unload_height_floor=-.0005;      // at most 0.5 mm downward motion
   // Retained for force-planning diagnostics and parameter compatibility.
   // Phase completion is deliberately based on measured signed body motion,
@@ -3537,12 +3546,14 @@ class SinglePass {
       //   2) height-led: a clear rise accompanied by forward pitch.
       // The reference is captured only after both front rotors break away, so
       // the preceding bottom inflation is excluded from both deltas.
-      const double requested_pitch=
-          k.unload_pitch*trajectory_choice.unload_scale;
+      const double requested_pitch=std::max(
+          minimum_load_relief_pitch_rad,
+          k.unload_pitch*trajectory_choice.unload_scale);
       const double requested_height=
           k.unload_height*trajectory_choice.unload_scale;
-      const double corroborating_pitch=
-          k.unload_min_pitch*trajectory_choice.unload_scale;
+      const double corroborating_pitch=std::max(
+          minimum_load_relief_pitch_rad,
+          k.unload_min_pitch*trajectory_choice.unload_scale);
       const bool pitch_led_unload=
           unload_pitch_delta>=requested_pitch &&
           unload_height_delta>=k.unload_height_floor;

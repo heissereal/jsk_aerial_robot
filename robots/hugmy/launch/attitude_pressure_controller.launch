@@ -75,7 +75,7 @@
   <!-- Keep these launch overrides consistent with the fail-closed YAML:
        pitch-led unloading is 4 deg; height-led unloading is 3 mm and still
        requires the YAML's 2-deg directional pitch. -->
-  <arg name="hybrid_lift_unload_pitch_rad" default="0.06981317007977318" />
+  <arg name="hybrid_lift_unload_pitch_rad" default="0.05235987755982989" />
   <arg name="hybrid_lift_unload_height_m" default="0.003" />
   <!-- Front-pair load relief decreases measured pitch on both the current
        Spinal hardware and MuJoCo model; convert that motion to positive. -->

@@ -146,8 +146,8 @@ def main():
                         help='independent relative Motion-2 excursion guard, 20..120 degrees')
     parser.add_argument('--unload-min-extension-deg', type=float, default=3.,
                         help='minimum measured extension required on both front arms, 1..10 degrees')
-    parser.add_argument('--unload-pitch-deg', type=float, default=4.,
-                        help='commanded-direction pitch change accepted as unloading, 0.5..10 degrees')
+    parser.add_argument('--unload-pitch-deg', type=float, default=3.,
+                        help='commanded-direction pitch change accepted as unloading, 3..10 degrees')
     parser.add_argument('--unload-height-mm', type=float, default=2.,
                         help='body-height increase accepted as unloading, 0.5..10 mm')
     parser.add_argument('--unload-confirm-sec', type=float, default=.06,
@@ -244,7 +244,7 @@ def main():
             math.isfinite(args.identification_extension_limit_deg) and
               20.<=args.identification_extension_limit_deg<=120. and
             math.isfinite(args.unload_min_extension_deg) and 1.<=args.unload_min_extension_deg<=10. and
-            math.isfinite(args.unload_pitch_deg) and .5<=args.unload_pitch_deg<=10. and
+            math.isfinite(args.unload_pitch_deg) and 3.<=args.unload_pitch_deg<=10. and
             math.isfinite(args.unload_height_mm) and .5<=args.unload_height_mm<=10. and
             math.isfinite(args.unload_confirm_sec) and .06<=args.unload_confirm_sec<=.5 and
             math.isfinite(args.unload_prefill_kpa) and 1.<=args.unload_prefill_kpa<=10. and

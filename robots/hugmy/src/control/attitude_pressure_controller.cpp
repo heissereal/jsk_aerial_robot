@@ -1310,13 +1310,13 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   pnh_.param("hybrid_lift_unload_pair_memory_sec",
       hybrid_single_config_.unload_pair_memory,.15);
   pnh_.param("hybrid_lift_unload_pitch_rad",
-      hybrid_single_config_.unload_pitch,2.*M_PI/180.);
+      hybrid_single_config_.unload_pitch,3.*M_PI/180.);
   pnh_.param("hybrid_lift_unload_height_m",
       hybrid_single_config_.unload_height,.003);
   pnh_.param("hybrid_directional_pitch_sign",
       hybrid_directional_pitch_sign_,-1.0);
   pnh_.param("hybrid_lift_unload_min_pitch_rad",
-      hybrid_single_config_.unload_min_pitch,2.*M_PI/180.);
+      hybrid_single_config_.unload_min_pitch,3.*M_PI/180.);
   pnh_.param("hybrid_lift_unload_height_floor_m",
       hybrid_single_config_.unload_height_floor,-.0005);
   pnh_.param("hybrid_lift_unload_min_up_force_n",

@@ -64,7 +64,7 @@
   <arg name="hybrid_lift_identification_rate_filter_tau_sec" default="0.25"/>
   <arg name="hybrid_lift_identification_rate_confirm_sec" default="0.15"/>
   <arg name="hybrid_lift_unload_min_extension_rad" default="0.05235987755982989"/>
-  <arg name="hybrid_lift_unload_pitch_rad" default="0.06981317007977318"/>
+  <arg name="hybrid_lift_unload_pitch_rad" default="0.05235987755982989"/>
   <arg name="hybrid_lift_unload_height_m" default="0.003"/>
   <!-- A +x front-pair lift decreases measured pitch in both current Spinal
        hardware and MuJoCo; normalize it to positive load-relief pitch. -->
