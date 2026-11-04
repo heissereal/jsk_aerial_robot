@@ -20,35 +20,98 @@ struct BodyRateFilter {
   }
 };
 // Pressure excursions hold commands and skip learning for a bounded time.
-// Both the soft and hard thresholds require the configured confirmation time:
-// the real ADC can produce one impossible sample (99.3 kPa between 33.9 and
-// 35.5 kPa samples).  Invalid/stale data still fail immediately, while a
-// physically sustained overpressure still stops after the same confirmation
-// interval used by the controller-wide pressure safety check.
+// Both the soft and hard thresholds require the configured confirmation time.
+// In addition to isolated spikes, the real ADC can alternate between a small
+// negative gauge value and an implausibly high value every 20 ms while the
+// physical chamber is exhausting.  Such opposite-side jumps cannot be a
+// pneumatic response.  Treat a short alternating burst as unavailable sensor
+// data, keep the previous command, and wait for a quiet interval.  A one-sided
+// overpressure/underrange still faults after the normal confirmation time, and
+// an alternating burst that persists for 0.5 s faults as a failed sensor.
 struct PressureGuard {
   enum Status { Ready, Pending, Fault };
-  double since=-1., last=-1.;
-  void reset() {since=last=-1.;}
+  struct Channel {
+    double excursion_since=-1.;
+    double last_extreme_time=-1.;
+    double alternating_since=-1.;
+    double quiet_since=-1.;
+    int last_extreme_side=0;
+    bool alternating=false;
+    void reset() {*this=Channel();}
+  };
+  std::array<Channel,4> channel{};
+  double last=-1.;
+  unsigned alternating_mask=0;
+  void reset() {
+    for(auto& state:channel) state.reset();
+    last=-1.;alternating_mask=0;
+  }
+  bool rejectingAlternatingSpike() const {return alternating_mask!=0;}
+  unsigned alternatingSpikeMask() const {return alternating_mask;}
   Status update(const std::array<double,4>& pressure,double now,bool fresh,
                 double soft,double hard,double confirmation) {
     if(!fresh || !std::isfinite(now) || (last>=0. && now<last) ||
        !std::isfinite(soft) || !std::isfinite(hard) || hard<=soft ||
        !std::isfinite(confirmation) || confirmation<0.) {reset();return Fault;}
     last=now;
-    bool excursion=false;
-    for(double p:pressure) {
+    alternating_mask=0;
+    bool pending=false;
+    const double alternating_window=std::max(.06,1.5*confirmation);
+    const double alternating_limit=std::max(.5,6.*confirmation);
+    for(size_t arm=0;arm<pressure.size();++arm) {
+      const double p=pressure[arm];
+      auto& state=channel[arm];
       // A non-finite sample is safety critical.
-      // Small negative gauge readings, however, are observed as isolated ADC
-      // outliers while exhausting a real chamber.  Treat those with the same
-      // short confirmation used for a high excursion.  A hard-threshold
-      // sample is included in this confirmation rather than stopping on one
-      // ADC spike; sustained hard pressure still fails closed below.
       if(!std::isfinite(p)) {reset();return Fault;}
-      excursion=excursion || p< -5. || p>soft || p>=hard;
+      const int side=p< -5. ? -1 : (p>soft || p>=hard ? 1 : 0);
+
+      // Recognize the alternating pattern before evaluating the ordinary
+      // excursion timer.  The first extreme remains Pending; only a prompt
+      // excursion to the opposite rail proves the physically impossible
+      // pattern.  A normal sample between the rails does not hide a pair of
+      // opposite spikes within the short detection window.
+      if(!state.alternating && side!=0 && state.last_extreme_side!=0 &&
+         side!=state.last_extreme_side && state.last_extreme_time>=0. &&
+         now-state.last_extreme_time<=alternating_window) {
+        state.alternating=true;
+        state.alternating_since=state.last_extreme_time;
+        state.quiet_since=-1.;
+        state.excursion_since=-1.;
+      }
+      if(side!=0) {
+        state.last_extreme_side=side;
+        state.last_extreme_time=now;
+      }
+
+      if(state.alternating) {
+        alternating_mask|=1u<<arm;
+        if(side!=0) state.quiet_since=-1.;
+        else {
+          if(state.quiet_since<0.) state.quiet_since=now;
+          if(now-state.quiet_since+1e-9>=confirmation) {
+            state.reset();
+            alternating_mask&=~(1u<<arm);
+            continue;
+          }
+        }
+        if(now-state.alternating_since+1e-9>=alternating_limit) {
+          reset();return Fault;
+        }
+        pending=true;
+        continue;
+      }
+
+      if(side==0) {
+        state.excursion_since=-1.;
+        continue;
+      }
+      if(state.excursion_since<0.) state.excursion_since=now;
+      if(now-state.excursion_since+1e-9>=confirmation) {
+        reset();return Fault;
+      }
+      pending=true;
     }
-    if(!excursion) {since=-1.;return Ready;}
-    if(since<0.) since=now;
-    return now-since+1e-9>=confirmation ? Fault : Pending;
+    return pending ? Pending : Ready;
   }
 };
 

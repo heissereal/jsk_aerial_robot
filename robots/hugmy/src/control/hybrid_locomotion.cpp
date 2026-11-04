@@ -493,6 +493,11 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
   if(pressure_status==PressureGuard::Fault) {
     stopInchwormToGrasp(now,"hybrid raw pressure invalid/hard limit or sustained overpressure");return;
   }
+  if(hybrid_pressure_guard_.rejectingAlternatingSpike())
+    ROS_WARN_THROTTLE(0.5,
+        "Hybrid pressure filter holding commands during physically impossible alternating ADC spikes (arm mask 0x%x, raw [%.1f %.1f %.1f %.1f] kPa)",
+        hybrid_pressure_guard_.alternatingSpikeMask(),measured_pressure_[0],
+        measured_pressure_[1],measured_pressure_[2],measured_pressure_[3]);
   const bool pressure_pending=pressure_status==PressureGuard::Pending;
   PressureArray base_target,enter_tolerance;
   base_target=hybrid_grasp_pressure_;enter_tolerance.fill(pressure_tolerance_kpa_);

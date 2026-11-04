@@ -47,6 +47,34 @@ int main(int argc,char**) {
  p[2]=30.;assert(tick(3.02)==PressureGuard::Ready);
  p[2]=-5.1;assert(tick(3.04)==PressureGuard::Pending);
  assert(tick(3.12)==PressureGuard::Fault);
+ // Opposite ADC rails within a few samples are not a physical chamber
+ // response. Hold the command through the burst, then resume only after a
+ // complete quiet confirmation interval.
+ g.reset();p[2]=10.;assert(tick(10.)==PressureGuard::Ready);
+ p[2]=-5.56;assert(tick(10.02)==PressureGuard::Pending);
+ p[2]=49.89;assert(tick(10.04)==PressureGuard::Pending);
+ assert(g.rejectingAlternatingSpike());assert(g.alternatingSpikeMask()==4u);
+ p[2]=48.97;assert(tick(10.06)==PressureGuard::Pending);
+ p[2]=-5.52;assert(tick(10.08)==PressureGuard::Pending);
+ p[2]=49.82;assert(tick(10.10)==PressureGuard::Pending);
+ p[2]=10.;assert(tick(10.12)==PressureGuard::Pending);
+ assert(tick(10.18)==PressureGuard::Pending);
+ assert(tick(10.20)==PressureGuard::Ready);
+ assert(!g.rejectingAlternatingSpike());
+ // Do not mask a failed sensor forever: persistent alternating rails fault
+ // after the bounded 0.5-s filter interval.
+ g.reset();p[2]=-5.5;assert(tick(20.)==PressureGuard::Pending);
+ p[2]=50.;assert(tick(20.02)==PressureGuard::Pending);
+ for(int i=2;i<25;++i) {
+   p[2]=i%2 ? 50. : -5.5;
+   assert(tick(20.+.02*i)==PressureGuard::Pending);
+ }
+ p[2]=50.;assert(tick(20.50)==PressureGuard::Fault);
+ // A real one-sided overpressure remains governed by the original 80-ms
+ // safety confirmation and is never classified as alternating noise.
+ g.reset();p[2]=60.;assert(tick(21.)==PressureGuard::Pending);
+ assert(tick(21.07)==PressureGuard::Pending);
+ assert(tick(21.08)==PressureGuard::Fault);
  p[2]=30.;assert(tick(4.,false)==PressureGuard::Fault);
  assert(tick(5.)==PressureGuard::Ready);assert(tick(4.)==PressureGuard::Fault);
  assert(g.update(p,6.,true,45.,45.,.08)==PressureGuard::Fault);
@@ -71,10 +99,12 @@ int main(int argc,char**) {
  assert(complete); // periodic ripple no longer starves .8 + .4 s settlement
  if(argc==1) {std::cout<<"PASS hybrid pressure: transient/persistent/hard/invalid, motion guards, preparation hysteresis\n";return 0;}
  g.reset();ready.reset();window.reset();since=-1.;
- double t,old_since=-1.,old_best=0.,new_since=-1.,new_best=0.;
- int pending=0,fault=0,old_fault=0;
+ double t,first_t=-1.,last_t=-1.,old_since=-1.,old_best=0.,new_since=-1.,new_best=0.;
+ int pending=0,fault=0,old_fault=0;double first_fault=-1.;
  while(std::cin>>t>>p[0]>>p[1]>>p[2]>>p[3]) {
+   if(first_t<0.) first_t=t;last_t=t;
    auto status=tick(t);pending+=status==PressureGuard::Pending;fault+=status==PressureGuard::Fault;
+   if(status==PressureGuard::Fault && first_fault<0.) first_fault=t;
    bool old_ready=true;
    for(double v:p) {old_ready &= std::abs(v-30.)<=2.;old_fault+=v>45.;}
    bool new_ready=ready.update(p,target,tol,t,true);
@@ -82,10 +112,11 @@ int main(int argc,char**) {
    if(new_ready) {if(new_since<0.) new_since=t;new_best=std::max(new_best,t-new_since);} else new_since=-1.;
  }
  std::cout<<"old_peak_faults="<<old_fault<<" pending="<<pending<<" confirmed_faults="<<fault
-          <<" old_ready_longest="<<old_best<<" new_ready_longest="<<new_best<<"\n";
+          <<" first_fault="<<first_fault
+          <<" old_ready_longest="<<old_best<<" new_ready_longest="<<new_best<<std::endl;
  assert(fault==0);
  if(old_fault) assert(pending>0);
- else assert(new_best>=1.2 && new_best>old_best);
+ else if(last_t-first_t>=1.2) assert(new_best>=1.2 && new_best>old_best);
 }
 '''
 
@@ -98,10 +129,14 @@ def main():
         subprocess.run([binary], check=True)
         if len(sys.argv) > 1:
             import rosbag
-            windows = [(37.5, 41.), (59.1, 62.7), (95., 103.), (116., 142.), (170., 201.), (202.2, 209.)]
-            samples = [[] for _ in windows]
             with rosbag.Bag(sys.argv[1]) as bag:
                 start = bag.get_start_time()
+                duration = bag.get_end_time()-start
+                windows = [(37.5, 41.), (53., 57.), (59.1, 62.7),
+                           (95., 103.), (116., 142.), (170., 201.)]
+                if duration >= 209.:
+                    windows.append((202.2, 209.))
+                samples = [[] for _ in windows]
                 topic = '/quadrotor/independent_arm_pressure_controller/pressure'
                 for _, msg, stamp in bag.read_messages(topics=[topic]):
                     t = stamp.to_sec()-start
