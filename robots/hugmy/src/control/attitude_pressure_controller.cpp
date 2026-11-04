@@ -175,6 +175,9 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
                  roll_recovery_config_.terminal_brake_fall, 1.0, 15.0);
   roll_recovery_config_.terminal_brake_fall = std::max(
       roll_recovery_config_.fall, roll_recovery_config_.terminal_brake_fall);
+  recovery_param("recovery_terminal_brake_max_error_rad",
+                 roll_recovery_config_.terminal_brake_max_error,
+                 roll_recovery_config_.stop, 0.785398);
   recovery_param("recovery_reapproach_max_thrust_n",
                  roll_recovery_config_.reapproach_limit, 0.25, 3.0);
   recovery_param("recovery_reapproach_rate_rad_s",
@@ -2929,7 +2932,9 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                       if ((now - recovery_rate_arrest_nonoutward_since_).toSec() >=
                               recovery_rate_arrest_release_sec_ &&
                           retained_angle_progress >=
-                              recovery_rate_arrest_release_progress_rad_)
+                              recovery_rate_arrest_release_progress_rad_ &&
+                          std::abs(signed_error) <=
+                              recovery_circle_flexed_max_error_rad_)
                         {
                           recovery_rate_arrest_active_ = false;
                           recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
@@ -3183,7 +3188,10 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                           std::numeric_limits<double>::quiet_NaN();
                       recovery_wrong_geometry_best_rate_rad_s_ =
                           -std::numeric_limits<double>::infinity();
-                      recovery_wrong_geometry_response_observed_ = false;
+                      // Keep an already measured restorative response for
+                      // this selected pair. A pressure-target transition may
+                      // reset the observation window, but it must not put the
+                      // same verified pair back behind the 1.5-N probe cap.
                       ROS_INFO("Recovery response probe follows active pair pressure target [%.1f %.1f %.1f %.1f] kPa",
                                prepare_pressure_[0], prepare_pressure_[1],
                                prepare_pressure_[2], prepare_pressure_[3]);
@@ -3346,7 +3354,11 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                       std::numeric_limits<double>::quiet_NaN();
                   recovery_wrong_geometry_best_rate_rad_s_ =
                       -std::numeric_limits<double>::infinity();
-                  recovery_wrong_geometry_response_observed_ = false;
+                  // Do not erase a pressure-settled measured response merely
+                  // because the instantaneous bend lever has crossed back
+                  // into its valid region. Pair selection resets this flag
+                  // for a new event; retained roll worsening still rejects a
+                  // genuinely reversed contact state.
                 }
               const double geometry_authority_limit =
                   recovery_selected_pair_release_ &&
@@ -5573,15 +5585,21 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   recovery_wrong_geometry_response_observed_ = false;
   recovery_wrong_geometry_probe_target_valid_ = false;
 
-  const bool circle_directly_fresh = recovery_circle_estimate_.valid &&
+  const bool circle_model_available = recovery_circle_estimate_.valid &&
       recovery_circle_estimate_.confidence >= recovery_circle_min_confidence_ &&
-      !recovery_circle_stamp_.isZero() &&
+      !recovery_circle_stamp_.isZero();
+  const bool circle_model_fresh = circle_model_available &&
       (ros::Time::now() - recovery_circle_stamp_).toSec() <=
           recovery_circle_max_age_sec_;
-  if (circle_directly_fresh && !recovery_circle_event_locked_)
+  if (circle_model_available && !recovery_circle_event_locked_)
     {
       recovery_circle_event_estimate_ = recovery_circle_estimate_;
       recovery_circle_event_locked_ = true;
+      if (!circle_model_fresh)
+        ROS_INFO("Recovery reuses last trusted circle model: radius %.1f mm, confidence %.2f, age %.1f s; the event keeps this circle while rotor positions follow measured bend",
+                 1000.0 * recovery_circle_event_estimate_.radius,
+                 recovery_circle_event_estimate_.confidence,
+                 (ros::Time::now() - recovery_circle_stamp_).toSec());
     }
   // Freeze the representative object centre before changing any chamber
   // pressure.  A fitted circular centre is a geometric quantity; using the
@@ -6286,8 +6304,14 @@ void AttitudePressureController::updateCircularGraspGeometry(
   const double age = recovery_circle_stamp_.isZero()
       ? std::numeric_limits<double>::infinity()
       : (now - recovery_circle_stamp_).toSec();
+  // A circle fitted from reliable contact samples remains the object model
+  // until a newer reliable fit replaces it.  Its radius and center do not
+  // expire merely because the recovery event starts later; only the current
+  // rotor locations are recomputed from the live bend measurements.
   const bool usable = recovery_circle_estimate_.valid &&
-      age <= recovery_circle_max_age_sec_;
+      recovery_circle_estimate_.confidence >=
+          recovery_circle_min_confidence_ &&
+      !recovery_circle_stamp_.isZero();
   // Layout: usable, radius, center y/z, RMS, confidence, sample count, age,
   // four CURRENT ROTOR depth angles (0=top, pi/2=side, pi=underside),
   // selected pair (0=01, 1=23, -1=none), release flag, and selected

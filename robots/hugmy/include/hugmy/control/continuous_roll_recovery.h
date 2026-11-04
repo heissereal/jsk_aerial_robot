@@ -66,6 +66,10 @@ struct RollRecoveryConfig {
   // motion will cross the target. The command is tapered monotonically to
   // zero; a residual error is handled by a fresh measured-contact pass.
   double terminal_brake_fall = 8.0;
+  // Far from level, a stopping-distance prediction is only a continuous
+  // speed limit.  Reserve the latched rotor rundown for the final envelope;
+  // otherwise contact-rate impulses repeatedly unload and reload the arm.
+  double terminal_brake_max_error = 0.26179939; // 15 deg
   // Initial authority for a non-terminal, explicitly reset re-approach.
   double reapproach_limit = 1.5, reapproach_rate = 0.04;
   // Start a post-brake retry gently, but do not hold it below static-friction
@@ -340,6 +344,8 @@ struct ContinuousRollRecovery {
         c.pair_retry_thrust_fraction > 1.0 ||
         !std::isfinite(c.terminal_brake_fall) ||
         c.terminal_brake_fall < c.fall ||
+        !std::isfinite(c.terminal_brake_max_error) ||
+        c.terminal_brake_max_error < c.stop ||
         !std::isfinite(c.reapproach_limit) || c.reapproach_limit <= 0.0 ||
         !std::isfinite(c.reapproach_rate) || c.reapproach_rate <= 0.0 ||
         !std::isfinite(c.reapproach_authority_rise) ||
@@ -684,7 +690,10 @@ struct ContinuousRollRecovery {
         0.5 * helpful_acceleration * acceleration_horizon *
             acceleration_horizon;
     predicted_braking = predicted <= 0.0;
+    const bool inside_terminal_brake_envelope =
+        std::abs(error) <= c.terminal_brake_max_error;
     const bool terminal_brake_request = predicted_braking &&
+        inside_terminal_brake_envelope &&
         thrust >= c.detect_thrust && helpful_rate >= c.start_rate;
     if (terminal_brake_request && !terminal_brake_latched) {
       // Discard accumulated static-friction integral, but retain the actual
@@ -780,7 +789,11 @@ struct ContinuousRollRecovery {
     // Far from the target, an overspeed is a request to reduce thrust, not to
     // run it all the way to zero.  A full terminal brake is reserved for the
     // bounded stopping-distance prediction below.
-    speed_braking = speed_braking || severe_overspeed;
+    const bool far_prediction_braking = predicted_braking &&
+        !inside_terminal_brake_envelope &&
+        thrust >= c.detect_thrust && helpful_rate >= c.start_rate;
+    speed_braking = speed_braking || severe_overspeed ||
+        far_prediction_braking;
     // Do not release terminal braking merely because measured rate has
     // fallen. Static/contact rebound can make the rate briefly small and
     // previously restored the full feed-forward command in the same pass.
@@ -814,7 +827,8 @@ struct ContinuousRollRecovery {
           (requested_ff - running_feedforward) * dt / (0.25 + dt),
           model_fall, c.rise * dt);
     }
-    if (c.rate_arrest_mode && breakaway_latched)
+    if (c.rate_arrest_mode && breakaway_latched &&
+        filtered_rate >= 0.5 * c.start_rate)
       running_feedforward = std::min(
           running_feedforward, breakaway_authority);
     feedforward = running_feedforward;
@@ -843,8 +857,8 @@ struct ContinuousRollRecovery {
     // active, grow the one bounded integral whenever the filtered body rate
     // has not yet become clearly corrective.  This uses the existing PI and
     // its anti-windup; no parallel fixed boost is added.
-    const bool breakaway_hold_active =
-        c.rate_arrest_mode && breakaway_latched;
+    const bool breakaway_hold_active = c.rate_arrest_mode &&
+        breakaway_latched && filtered_rate >= 0.5 * c.start_rate;
     const bool rate_arrest_authority_search = c.rate_arrest_mode &&
         !breakaway_hold_active &&
         error > c.stop && filtered_rate < 0.5 * c.start_rate;

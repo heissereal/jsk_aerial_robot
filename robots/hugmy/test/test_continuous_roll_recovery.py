@@ -270,6 +270,16 @@ int main() {
          early.low_authority_reapproach && early.boost==0.);
   assert(early.terminal_brake_latched); // no retained-progress latch required
   assert(std::abs(early.braking_horizon-(.2+3.17/6.))<1e-9);
+  // The same stopping-distance prediction outside 15 deg reduces thrust
+  // continuously, but cannot latch a zero-thrust/re-approach cycle.
+  ContinuousRollRecovery far_velocity;far_velocity.reset(30*deg,0.);
+  far_velocity.thrust=3.5;far_velocity.filtered_rate=.70;
+  far_velocity.rate_initialized=true;
+  far_velocity.update(30*deg,.70,.02,.02,m,cfg,response);
+  assert(far_velocity.predicted_braking && far_velocity.speed_braking &&
+         !far_velocity.terminal_brake_latched &&
+         !far_velocity.low_authority_reapproach &&
+         far_velocity.thrust<3.5 && far_velocity.thrust>0.);
   // A short stick-slip acceleration contributes only over its bounded
   // forecast horizon.  It may trigger an early terminal brake near the
   // target, but must not extrapolate over the complete actuator rundown and

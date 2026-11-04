@@ -463,6 +463,7 @@ recovery_rate_arrest_min_thrust_n: 2.0
 recovery_rate_arrest_max_thrust_n: 4.0
 recovery_thrust_fall_n_s: 3.0   # avoid unloading the extended pair as an impulse
 recovery_terminal_brake_fall_n_s: 8.0 # predicted crossing tapers continuously from the current force; no forced zero dwell
+recovery_terminal_brake_max_error_rad: 0.2617993877991494 # 15 deg: farther predictions only reduce thrust continuously
 recovery_reapproach_max_thrust_n: 1.5 # legacy/default terminal-approach authority; measured current force is retained first
 recovery_reapproach_rate_rad_s: 0.04
 recovery_reapproach_authority_rise_n_s: 0.8 # if the 1.5-N retry remains stuck, recover breakaway authority gradually
@@ -513,7 +514,7 @@ recovery_wrong_geometry_min_error_decay_rate_rad_s: 0.004363323129985824 # 0.25 
 recovery_wrong_geometry_response_confirm_sec: 0.30
 recovery_wrong_geometry_rate_improvement_rad_s: 0.03490658503988659 # 2 deg/s reduction of outward motion is useful response
 recovery_wrong_geometry_transition_outward_rate_rad_s: 0.017453292519943295 # and at least 1 deg/s outward motion
-recovery_circle_max_age_sec: 30.0
+recovery_circle_max_age_sec: 30.0  # live-fit freshness; last trusted object model remains cached
 # Delay-aligned local response learning, separately for each correction pair.
 # No learning while pressure/bend change; at least 3 accepted windows to use it.
 recovery_response_delay_sec: 0.20
