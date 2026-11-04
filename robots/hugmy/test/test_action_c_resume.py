@@ -38,6 +38,10 @@ assert 'candidate_bend[arm] = 0.0' in source
 assert 'grasped_has_authority ? best_grasped : best_extended' in source
 assert 'crossed_from_latched_extension' in source
 assert 'recovery_extension_direction_sign_ != correction_direction' in source
+assert 'requiring the opposite physical pair' in source
+assert 'recovery_preferred_pair_index_ = 1 - previous_pair;' in source
+assert 'const bool large_error_emergency =' in source
+assert 'if (large_error_emergency || predicted_emergency)' in source
 selector_request = source[source.index(
     'const bool emergency_extension_requested ='
 ):source.index('if (emergency_extension_requested)', source.index(
@@ -204,6 +208,7 @@ public:
  double recovery_extension_prediction_sec_=.30;
  double recovery_rate_arrest_release_sec_=.10;
  double recovery_rate_arrest_release_progress_rad_=.5*M_PI/180.;
+ double correction_motion_start_rate_=.05;
  size_t recovery_selected_pair_index_=0;
  hugmy::ContinuousRollRecovery continuous_roll_recovery_;
  struct Gate {int resets=0;void reset(){++resets;}} action_c_resume_gate_, action_c_boundary_settle_gate_;
@@ -459,7 +464,8 @@ int main() {
         emergency_choice.prepare_arm_active_[3]);
  assert(emergency_choice.recovery_selected_pair_release_);
  assert(emergency_choice.recovery_extension_mode_latched_ &&
-        emergency_choice.recovery_extension_direction_sign_==1);
+        emergency_choice.recovery_extension_direction_sign_==1 &&
+        emergency_choice.recovery_rate_arrest_active_);
  // Crossing the target leaves only a small opposite residual. The previous
  // emergency direction must not keep forcing a straight-arm pair.
  emergency_choice.angles.fill(2.1);

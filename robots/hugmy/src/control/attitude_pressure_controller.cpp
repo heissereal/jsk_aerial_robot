@@ -3438,10 +3438,25 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                    continuous_roll_recovery_.predicted_braking) &&
                   (continuous_roll_recovery_.progress_observed ||
                    pneumatic_capture_imminent);
+              // Stopping-distance prediction can become true on a short
+              // stick-slip rate impulse while the body is still tens of
+              // degrees from level. Rotor braking is appropriate there,
+              // but pneumatic regrasp is not: changing 0 -> support pressure
+              // bends the long arm, resets the measured-response probe and
+              // restores the 1.5-N wrong-geometry ceiling. Keep the released
+              // geometry until the measured angle itself reaches the same
+              // terminal capture neighbourhood used by the inner law.
+              const double pressure_capture_limit =
+                  roll_recovery_config_.stop +
+                  roll_recovery_config_.capture_margin_factor *
+                      roll_recovery_config_.stop_margin;
+              const bool pressure_capture_angle_ready =
+                  std::abs(signed_error) <= pressure_capture_limit;
               const double pressure_brake_thrust_gate = std::max(
                   0.35, 0.25 * roll_recovery_config_.limit);
               if ((continuous_roll_recovery_.capture_active ||
-                   predictive_pressure_brake) &&
+                   (predictive_pressure_brake &&
+                    pressure_capture_angle_ready)) &&
                   thrust <= pressure_brake_thrust_gate)
                 recovery_pressure_brake_started_ = true;
               if (recovery_pressure_brake_started_)
@@ -5655,8 +5670,11 @@ void AttitudePressureController::selectContinuousRecoveryPair(
       std::abs(roll_error) < recovery_circle_flexed_max_error_rad_;
   if (crossed_from_latched_extension)
     {
-      ROS_INFO("Roll recovery crossed target into a small opposite residual: clearing old direction-%+d extension latch and re-evaluating current-bend candidates",
-               recovery_extension_direction_sign_);
+      const size_t previous_pair = recovery_preferred_pair_index_;
+      ROS_INFO("Roll recovery crossed target into a small opposite residual: clearing old direction-%+d extension latch and requiring the opposite physical pair %zu+%zu",
+               recovery_extension_direction_sign_,
+               previous_pair == 0 ? 2ul : 0ul,
+               previous_pair == 0 ? 3ul : 1ul);
       recovery_extension_mode_latched_ = false;
       recovery_extension_direction_sign_ = 0;
       action_c_recovery_urgent_thrust_rise_ = false;
@@ -5664,12 +5682,21 @@ void AttitudePressureController::selectContinuousRecoveryPair(
       recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
       recovery_rate_arrest_reference_error_rad_ =
           std::numeric_limits<double>::quiet_NaN();
-      recovery_preferred_pair_locked_ = false;
+      // A flexed version of the same pair may have a modeled opposite lever,
+      // but hardware must first unload/reload that contact before the sign is
+      // physically observable. Reusing it immediately produced no visible
+      // reversal after a target crossing. Select the other physical pair;
+      // its grasped or straight topology is still chosen by the same signed
+      // moment calculation below.
+      recovery_preferred_pair_index_ = 1 - previous_pair;
+      recovery_preferred_pair_locked_ = true;
       continuous_recovery_use_opposite_pair_ = false;
     }
+  const bool large_error_emergency =
+      std::abs(roll_error) >= recovery_circle_flexed_max_error_rad_;
   const bool emergency_extension_requested =
       recovery_extension_mode_latched_ ||
-      std::abs(roll_error) >= recovery_circle_flexed_max_error_rad_ ||
+      large_error_emergency ||
       predicted_emergency;
   if (emergency_extension_requested)
     {
@@ -5686,7 +5713,13 @@ void AttitudePressureController::selectContinuousRecoveryPair(
       // error whose outward rate has already stopped may retain a valid,
       // load-bearing current-bend pair even if locomotion requested a fast
       // initial thrust rise.
-      if (outward_roll_rate)
+      // A large residual needs the bounded 2--4 N breakaway search even when
+      // the entry gyro sample happens to point inward. Contact rebound made
+      // that sample alternate in the real bag and otherwise left a 24--46
+      // deg correction behind the 1.5-N geometry probe ceiling. Release
+      // rate-arrest only after sustained inward rate plus retained angle
+      // improvement, as checked by the PREPARE state.
+      if (large_error_emergency || predicted_emergency)
         {
           recovery_rate_arrest_active_ = true;
           recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
@@ -5694,6 +5727,14 @@ void AttitudePressureController::selectContinuousRecoveryPair(
               std::numeric_limits<double>::quiet_NaN();
         }
     }
+  // For a small residual, do not impose the emergency 2-N floor, but allow
+  // the ordinary PI request to reach the actuator quickly when the body is
+  // already rolling away. Its magnitude remains governed by the model and
+  // rate feedback rather than by this slew-only flag.
+  if (outward_roll_rate && std::isfinite(measured_roll_rate) &&
+      std::abs(measured_roll_rate) >=
+          0.5 * correction_motion_start_rate_)
+    action_c_recovery_urgent_thrust_rise_ = true;
   // Candidate rejection is evidence for one requested moment direction.
   // Regrasp can move the contacts across the cylinder side and reverse both
   // the roll error and the effective rotor moment. Carrying the old mask into

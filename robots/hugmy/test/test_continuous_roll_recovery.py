@@ -44,6 +44,8 @@ assert 'recovery_predictive_config_.pressure_tau' in pressure_handoff
 assert 'continuous_roll_recovery_.progress_observed ||' in pressure_handoff
 assert 'continuous_roll_recovery_.speed_braking ||' in pressure_handoff
 assert 'continuous_roll_recovery_.predicted_braking' in pressure_handoff
+assert 'const bool pressure_capture_angle_ready =' in pressure_handoff
+assert 'predictive_pressure_brake &&\n                    pressure_capture_angle_ready' in pressure_handoff
 assert '0.25 * roll_recovery_config_.limit' in pressure_handoff
 assert 'thrust <= pressure_brake_thrust_gate' in pressure_handoff
 assert 'recovery_pressure_brake_started_ = true' in pressure_handoff
