@@ -25,6 +25,11 @@
   <arg name="hybrid_trajectory_extension_rate_rad_s" default="0.70" />
   <arg name="hybrid_lift_rear_release_start_ratio" default="0.10" />
   <arg name="hybrid_lift_rear_pressure_floor_kpa" default="15.0" />
+  <!-- Opt-in: short Motion-2 paired extension with stall-triggered rear
+       pressure steps. Keep disabled until a fixture-supported dry run. -->
+  <arg name="hybrid_motion2_rear_anchor_search_enabled" default="false" />
+  <arg name="hybrid_motion2_rear_min_pressure_kpa" default="20.0" />
+  <arg name="hybrid_motion2_release_start_ratio" default="0.10" />
   <arg name="hybrid_slip_preserve_rear_grasp" default="false" />
   <!-- The measured optimizer, rather than the launch profile, chooses any
        additional rear release around this probe-derived baseline. -->
@@ -78,6 +83,12 @@
          value="$(arg hybrid_lift_rear_release_start_ratio)" />
     <arg name="hybrid_lift_rear_pressure_floor_kpa"
          value="$(arg hybrid_lift_rear_pressure_floor_kpa)" />
+    <arg name="hybrid_motion2_rear_anchor_search_enabled"
+         value="$(arg hybrid_motion2_rear_anchor_search_enabled)" />
+    <arg name="hybrid_motion2_rear_min_pressure_kpa"
+         value="$(arg hybrid_motion2_rear_min_pressure_kpa)" />
+    <arg name="hybrid_motion2_release_start_ratio"
+         value="$(arg hybrid_motion2_release_start_ratio)" />
     <arg name="hybrid_slip_preserve_rear_grasp"
          value="$(arg hybrid_slip_preserve_rear_grasp)" />
     <arg name="hybrid_rear_support_probe_stable"

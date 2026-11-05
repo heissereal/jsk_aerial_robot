@@ -370,6 +370,56 @@ inline Pair dampLiftRollReductionOnly(Pair thrust,const Pair& moment,
   }
   return thrust;
 }
+// Minimal rear-anchor search for Motion 2. Start each stroke with the rear
+// pair grasped. Only a measured front-pair extension stall can request one
+// small pressure reduction; a later stall requests the next step. This is a
+// bounded, one-dimensional search, not a parallel actuator optimizer.
+struct Motion2RearAnchorSearch {
+  double pressure=0.,best_extension=0.,stalled_seconds=0.;
+  unsigned release_steps=0;
+  void reset(double grasp_pressure) {
+    pressure=grasp_pressure;
+    best_extension=0.;stalled_seconds=0.;release_steps=0;
+  }
+  double update(double grasp_pressure,double minimum_pressure,
+      double release_start_ratio,double required_extension,
+      double paired_extension,bool paired_powered,bool posture_safe,
+      double dt) {
+    if(!posture_safe) {
+      // Recovery has priority over a locomotion candidate. Never keep
+      // bleeding pressure merely because a previous sample was stalled.
+      pressure=grasp_pressure;
+      stalled_seconds=0.;
+      return pressure;
+    }
+    if(!paired_powered) {stalled_seconds=0.;return pressure;}
+    const double travel=std::max(0.,paired_extension);
+    constexpr double meaningful_progress=.017453292519943295; // 1 deg
+    constexpr double stall_confirm_seconds=.60; // includes pneumatic lag
+    constexpr double pressure_step_kpa=2.5;
+    if(travel>=best_extension+meaningful_progress) {
+      best_extension=travel;
+      stalled_seconds=0.;
+    } else {
+      stalled_seconds+=dt;
+    }
+    // Ordinarily wait for the configured part of the intended extension.
+    // A genuinely stuck pair is also eligible after twice the dwell, so the
+    // guard cannot permanently block the only way to start extension.
+    const bool release_eligible=travel>=
+        release_start_ratio*required_extension ||
+        stalled_seconds>=2.*stall_confirm_seconds;
+    if(release_eligible && stalled_seconds>=stall_confirm_seconds &&
+       pressure>minimum_pressure+1.e-6) {
+      pressure=std::max(minimum_pressure,
+          pressure-pressure_step_kpa);
+      stalled_seconds=0.;
+      best_extension=travel;
+      ++release_steps;
+    }
+    return pressure;
+  }
+};
 // One identification pass per operator task. Subsequent strokes reuse the
 // measured envelope; they are locomotion, not repeated calibration trials.
 struct SinglePassConfig {
@@ -509,6 +559,13 @@ struct SinglePassConfig {
   // rear anchor prematurely.
   double lift_rear_release_start_ratio=.10;
   double lift_rear_pressure_floor=7.5;
+  // Opt-in short Motion-2 pulse for object-dependent locomotion. Keep the
+  // rear anchor at grasp pressure unless the powered front pair stalls.
+  // Only the two values below need tuning for each contact object; extension
+  // travel uses the existing trajectory_min_extension (15 deg by default).
+  bool motion2_rear_anchor_search_enabled=false;
+  double motion2_rear_min_pressure=20.;
+  double motion2_release_start_ratio=.10;
   // The production first stroke uses the coarse rear-support prior measured
   // by the preceding slip probe. Fixed 30-kPa rear grasp is retained only as
   // an opt-in pure-front identification diagnostic.
@@ -940,6 +997,7 @@ struct SinglePassConfig {
         pull_terminal_front_pressure_progress_kpa,
         pull_golden_roll_limit,
         lift_rear_release_start_ratio,lift_rear_pressure_floor,
+        motion2_rear_min_pressure,motion2_release_start_ratio,
         rear_pressure_adaptation_min,rear_pressure_adaptation_max,
         rear_pressure_adaptation_up_step,rear_pressure_adaptation_down_step,
         rear_pressure_adaptation_roll_limit,
@@ -1133,6 +1191,10 @@ struct SinglePassConfig {
       lift_rear_release_start_ratio<=.8 &&
       lift_rear_pressure_floor>=rear_low_kpa &&
       lift_rear_pressure_floor<=30. &&
+      motion2_rear_min_pressure>=rear_low_kpa &&
+      motion2_rear_min_pressure<=30. &&
+      motion2_release_start_ratio>=0. &&
+      motion2_release_start_ratio<=.8 &&
       rear_pressure_adaptation_min>=rear_low_kpa &&
       rear_pressure_adaptation_min<=rear_pressure_adaptation_max &&
       rear_pressure_adaptation_max<=30. &&
@@ -1621,6 +1683,8 @@ class SinglePass {
   // These values are public diagnostics as well as controller state.
   double rear_pressure_command=0.;
   double lift_rear_release_progress=0.;
+  Motion2RearAnchorSearch motion2_rear_anchor;
+  bool motion2_direct_extension_handoff=false;
   double rear_release_progress=0.;
   // A single signed rear-support coordinate unifies rear pressure and thrust.
   // The prior is identified by the slip/first-unloading probes.  The outer
@@ -1929,6 +1993,8 @@ class SinglePass {
     }
     if(p==Lift) {reference=in.s.bend;minimum=in.s.bend;start_height=in.height;
       start_pitch=in.directional_pitch;
+      motion2_rear_anchor.reset(in.base_pressure);
+      motion2_direct_extension_handoff=false;
       // `support_transfer_started` belongs to the preceding Pull/FrontCatch
       // only.  Leaving it latched across regrasp made the final output mapper
       // overwrite the next Motion-2 rear schedule with base pressure: the
@@ -2211,6 +2277,8 @@ class SinglePass {
     const bool identification_rear_anchor=
         k.identification_hold_rear_grasp && !calibrated &&
         (phase==VentFront || phase==Lift);
+    const bool simple_motion2=k.motion2_rear_anchor_search_enabled &&
+        phase==Lift;
     if(phase==Lift || phase==Pull || phase==FrontCatch) {
       stroke_peak_abs_gait_roll=std::max(stroke_peak_abs_gait_roll,
           std::abs(gait_roll));
@@ -2329,7 +2397,7 @@ class SinglePass {
                   k.rear_release_mismatch_soft),0.,1.);
       rear_angle_feedback_active=
           (phase==Lift || phase==Pull || phase==FrontCatch) &&
-          !identification_rear_anchor && !roll_brake;
+          !identification_rear_anchor && !simple_motion2 && !roll_brake;
       if(rear_angle_feedback_active) {
         const double error=rear_release_target-rear_release_pair;
         rear_angle_pressure_trim=clamp(
@@ -2931,6 +2999,14 @@ class SinglePass {
             reference[j]-k.identification_extension_limit));
         safety_bend_target=std::min(safety_bend_target,
             reference[j]-k.onset_angle);
+        if(simple_motion2) {
+          // The 100-mm textile ellipse and 160-mm bare cylinder start with
+          // very different bends. Ask for travel from THIS grasp, never the
+          // same absolute 45-deg pose on both contact geometries.
+          safety_bend_target=std::max(.035,
+              reference[j]-std::min(k.trajectory_min_extension,
+                  k.identification_extension_limit));
+        }
         active_bend_target[j]=safety_bend_target;
         active_extension_target[j]=clamp(reference[j]-safety_bend_target,
             k.onset_angle,k.identification_extension_limit);
@@ -3312,7 +3388,8 @@ class SinglePass {
       }
       const bool lift_checkpoint_reached_pair=
           lift_target_reached[0] && lift_target_reached[1];
-      if(lift_checkpoint_reached_pair && !unload_event_detected) {
+      if(!simple_motion2 && lift_checkpoint_reached_pair &&
+         !unload_event_detected) {
         // The nominal bend checkpoint is a measured event boundary, not an
         // exact angle-hold objective.  Continue increasing one common force
         // for body pitch/load relief.  The post-checkpoint command path below
@@ -3464,7 +3541,8 @@ class SinglePass {
       // pair remains inside the measured extension corridor. A mild outward
       // roll raises the selected pressure floor continuously through the
       // 4--10-deg support blend; only a confirmed roll brake restores 30 kPa.
-      const bool allow_lift_rear_release=!identification_rear_anchor &&
+      const bool allow_lift_rear_release=!simple_motion2 &&
+          !identification_rear_anchor &&
           powered_pair_onset &&
           powered_pair_mismatch<=k.unload_pair_mismatch &&
           !roll_brake;
@@ -3684,7 +3762,7 @@ class SinglePass {
       unload_evidence_time=unload_sample?
           std::min(unload_confirmation,unload_evidence_time+dt):
           std::max(0.,unload_evidence_time-.25*dt);
-      if(!load_relief_detected &&
+      if(!simple_motion2 && !load_relief_detected &&
          unload_evidence_time+1e-9>=unload_confirmation) {
         load_relief_detected=true;
         load_relief_elapsed=phase_time;
@@ -3938,7 +4016,8 @@ class SinglePass {
           std::min(k.trajectory_windup_confirm,
                    windup_evidence_time+dt):
           0.;
-      if(!unload_event_detected && load_relief_detected &&
+      if(!simple_motion2 && !unload_event_detected &&
+         load_relief_detected &&
          windup_evidence_time+1e-9>=k.trajectory_windup_confirm) {
         unload_event_detected=true;
         unload_from_arm_trajectory=false;
@@ -4013,6 +4092,33 @@ class SinglePass {
             minimumJerkPosition(predicted_release_phase));
         rear_pressure_command=in.base_pressure-
             lift_rear_release_progress*(in.base_pressure-lift_rear_floor);
+      }
+      if(simple_motion2) {
+        // The two safe, inspectable tuning knobs are a pressure floor and
+        // the earliest fraction of the requested paired travel at which an
+        // extension stall may release the rear grasp. The controller steps
+        // only after confirmed stagnation; no elapsed-time pressure ramp.
+        const double minimum_pressure=std::min(in.base_pressure,
+            k.motion2_rear_min_pressure);
+        rear_pressure_command=motion2_rear_anchor.update(
+            in.base_pressure,minimum_pressure,
+            k.motion2_release_start_ratio,k.trajectory_min_extension,
+            minimum_front_extension,
+            powered_pair_onset && front_pair_powered &&
+                std::min(s.thrust[0],s.thrust[1])>=
+                    .5*k.initial_pulse_max,
+            !roll_brake && !posture_brake &&
+                std::abs(predicted_roll)<k.rear_support_roll_full,
+            dt);
+        lift_rear_release_progress=clamp(
+            (in.base_pressure-rear_pressure_command)/
+                std::max(1.,in.base_pressure-minimum_pressure),0.,1.);
+        if(!rear_release_commanded &&
+           rear_pressure_command<in.base_pressure-.5) {
+          rear_release_commanded=true;
+          rear_release_pressure_threshold=std::min(in.base_pressure-.5,
+              minimum_pressure+k.catch_pressure_tolerance);
+        }
       }
       // Before paired onset the rear pair remains the physical anchor.  The
       // predictor is enabled only after both released fronts are demonstrably
@@ -4122,9 +4228,26 @@ class SinglePass {
         out.calibration_regrip=true;
         rear_low=false;
       }
-      const bool handoff_due=front_target_latched &&
-          !calibration_only_regrip_pending;
+      const bool short_extension_ready=simple_motion2 &&
+          lift_target_reached[0] && lift_target_reached[1] &&
+          powered_pair_onset && front_pair_powered &&
+          powered_front_extension[0]>=k.unload_min_extension &&
+          powered_front_extension[1]>=k.unload_min_extension &&
+          event_pair_mismatch<=handoff_pair_mismatch &&
+          !roll_brake && !posture_brake &&
+          std::abs(predicted_roll)<k.rear_support_roll_full;
+      const bool handoff_due=(front_target_latched ||
+          short_extension_ready) && !calibration_only_regrip_pending;
       if(handoff_due) {
+        if(short_extension_ready && !unload_event_detected) {
+          // This is deliberately NOT a claimed body-unloading event. The
+          // next phase must grip/pull promptly after paired extension, as
+          // in the Oct-7 short-pulse gait, even on a contact that supplies
+          // no positive pitch/height signature.
+          motion2_direct_extension_handoff=true;
+          unload_event_bend=s.bend;
+          unload_event_thrust=s.thrust;
+        }
         stroke_lifted=true;
         // Learn the pair-aligned support-transfer pose, not the earlier
         // instant at which unloading was first detected.  The earlier sample
@@ -5673,7 +5796,8 @@ class SinglePass {
     rear_positive_front_envelope=rear_front_envelope;
     rear_positive_pressure_envelope=rear_pressure_envelope;
     const bool rear_positive_phase=
-        phase==Lift || phase==Pull || phase==FrontCatch;
+        (phase==Lift && !simple_motion2) ||
+        phase==Pull || phase==FrontCatch;
     const bool rear_positive_posture_safe=!posture_brake &&
         std::abs(predicted_roll)<k.pull_golden_roll_limit;
     const bool rear_positive_start_request=rear_positive_phase &&

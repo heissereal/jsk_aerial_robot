@@ -37,6 +37,9 @@
   <arg name="hybrid_trajectory_extension_rate_rad_s" default="0.70"/>
   <arg name="hybrid_lift_rear_release_start_ratio" default="0.10"/>
   <arg name="hybrid_lift_rear_pressure_floor_kpa" default="15.0"/>
+  <arg name="hybrid_motion2_rear_anchor_search_enabled" default="false"/>
+  <arg name="hybrid_motion2_rear_min_pressure_kpa" default="20.0"/>
+  <arg name="hybrid_motion2_release_start_ratio" default="0.10"/>
   <arg name="hybrid_regrip_rear_hold_pressure_kpa" default="10.0"/>
   <arg name="hybrid_pull_rear_release_start_ratio" default="0.05"/>
   <arg name="hybrid_pull_rear_release_end_ratio" default="0.65"/>
@@ -310,6 +313,9 @@
     <arg name="hybrid_trajectory_extension_rate_rad_s" value="$(arg hybrid_trajectory_extension_rate_rad_s)"/>
     <arg name="hybrid_lift_rear_release_start_ratio" value="$(arg hybrid_lift_rear_release_start_ratio)"/>
     <arg name="hybrid_lift_rear_pressure_floor_kpa" value="$(arg hybrid_lift_rear_pressure_floor_kpa)"/>
+    <arg name="hybrid_motion2_rear_anchor_search_enabled" value="$(arg hybrid_motion2_rear_anchor_search_enabled)"/>
+    <arg name="hybrid_motion2_rear_min_pressure_kpa" value="$(arg hybrid_motion2_rear_min_pressure_kpa)"/>
+    <arg name="hybrid_motion2_release_start_ratio" value="$(arg hybrid_motion2_release_start_ratio)"/>
     <arg name="hybrid_regrip_rear_hold_pressure_kpa" value="$(arg hybrid_regrip_rear_hold_pressure_kpa)"/>
     <arg name="hybrid_pull_rear_release_start_ratio" value="$(arg hybrid_pull_rear_release_start_ratio)"/>
     <arg name="hybrid_pull_rear_release_end_ratio" value="$(arg hybrid_pull_rear_release_end_ratio)"/>

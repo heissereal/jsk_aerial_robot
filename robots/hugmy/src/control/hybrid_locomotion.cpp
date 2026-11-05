@@ -1163,6 +1163,8 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
         hybrid_single_.phase==SinglePass::Lift &&
         hybrid_single_.lift_target_reached[0] &&
         hybrid_single_.lift_target_reached[1];
+    const unsigned previous_motion2_release_steps=
+        hybrid_single_.motion2_rear_anchor.release_steps;
     const std::array<unsigned,2> previous_samples{{hybrid_single_.onset[0].samples,hybrid_single_.onset[1].samples}};
     command=hybrid_single_.update(input,hybrid_config_,hybrid_single_config_,
         hybrid_planner_.model,geometry,equilibrium);
@@ -1172,7 +1174,8 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
         hybrid_single_.lift_target_reached[0] &&
         hybrid_single_.lift_target_reached[1] &&
         !hybrid_single_.unload_event_detected;
-    if(lift_checkpoint_without_unload && !previous_lift_checkpoint) {
+    if(lift_checkpoint_without_unload && !previous_lift_checkpoint &&
+       !hybrid_single_config_.motion2_rear_anchor_search_enabled) {
       ROS_INFO("Hybrid Motion-2 reached nominal bend checkpoint [%.1f %.1f] deg without measured load relief; continuing the common %.2f-N/s angle/rate-regulated search up to the %.2f-N physical thrust limit",
           hybrid_single_.active_bend_target[0]*180./M_PI,
           hybrid_single_.active_bend_target[1]*180./M_PI,
@@ -1181,6 +1184,22 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
     }
     if(previous_phase==SinglePass::VentFront && hybrid_single_.phase==SinglePass::Lift)
       hybrid_start_bend_=s.bend;
+    if(hybrid_single_config_.motion2_rear_anchor_search_enabled &&
+       hybrid_single_.motion2_rear_anchor.release_steps>
+           previous_motion2_release_steps)
+      ROS_INFO("Hybrid Motion-2 rear-anchor search: front pair stalled; step %u, rear command %.1f kPa (measured %.1f kPa), relative front travel [%.1f %.1f] deg, roll %.1f deg",
+          hybrid_single_.motion2_rear_anchor.release_steps,
+          hybrid_single_.rear_pressure_command,input.rear_pressure,
+          (hybrid_single_.reference[0]-s.bend[0])*180./M_PI,
+          (hybrid_single_.reference[1]-s.bend[1])*180./M_PI,
+          s.roll*180./M_PI);
+    if(hybrid_single_config_.motion2_rear_anchor_search_enabled &&
+       previous_phase==SinglePass::Lift &&
+       hybrid_single_.phase==SinglePass::Pull &&
+       hybrid_single_.motion2_direct_extension_handoff)
+      ROS_INFO("Hybrid Motion-2 short-pulse extension complete: front angles [%.1f %.1f] deg, rear pressure %.1f kPa; entering Motion 3 WITHOUT requiring body pitch/height load relief",
+          s.bend[0]*180./M_PI,s.bend[1]*180./M_PI,
+          input.rear_pressure);
     if(command.recover_roll) {
       requestActionCPostureRecovery(now,
           hybrid_single_.phase==SinglePass::StopForLift
@@ -1237,7 +1256,9 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
           hybrid_single_.onset[1].thrust,
           hybrid_single_.calibrated?"complete":"pending");
     if(!previous_bend_calibrated && hybrid_single_.calibrated)
-      ROS_INFO("Hybrid unloading-event calibration complete: measured event bends [%.1f %.1f] deg, required peak thrust [%.2f %.2f] N; paired onset identification %s",
+      ROS_INFO("Hybrid %s calibration complete: measured bends [%.1f %.1f] deg, required peak thrust [%.2f %.2f] N; paired onset identification %s",
+          hybrid_single_.motion2_direct_extension_handoff?
+              "short-extension":"unloading-event",
           hybrid_single_.identified_bend_target[0]*180./M_PI,
           hybrid_single_.identified_bend_target[1]*180./M_PI,
           hybrid_single_.identified_extension_thrust[0],

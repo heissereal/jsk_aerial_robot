@@ -1152,6 +1152,12 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
       hybrid_single_config_.lift_rear_release_start_ratio,.10);
   pnh_.param("hybrid_lift_rear_pressure_floor_kpa",
       hybrid_single_config_.lift_rear_pressure_floor,7.5);
+  pnh_.param("hybrid_motion2_rear_anchor_search_enabled",
+      hybrid_single_config_.motion2_rear_anchor_search_enabled,false);
+  pnh_.param("hybrid_motion2_rear_min_pressure_kpa",
+      hybrid_single_config_.motion2_rear_min_pressure,20.0);
+  pnh_.param("hybrid_motion2_release_start_ratio",
+      hybrid_single_config_.motion2_release_start_ratio,.10);
   pnh_.param("hybrid_identification_hold_rear_grasp",
       hybrid_single_config_.identification_hold_rear_grasp,false);
   pnh_.param("hybrid_rear_pressure_adaptation_enabled",
