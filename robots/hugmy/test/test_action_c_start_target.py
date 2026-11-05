@@ -30,6 +30,8 @@ struct AttitudePressureController {
  double base_pressure_kpa_=30,pressure_tolerance_kpa_=2;
  bool continuous_recovery_blocked_=false,continuous_recovery_started_=false;
  bool continuous_recovery_waiting_for_settle_=false,action_c_resume_pending_=false;
+ bool recovery_safe_transfer_failed_=false,recovery_safe_transfer_retry_allowed_=false;
+ ros::Time recovery_safe_transfer_settled_since_;
  bool action_c_preserve_adaptation_on_start_=false;
  bool continuous_recovery_use_opposite_pair_=false;
  bool continuous_recovery_retry_opposite_pending_=false;

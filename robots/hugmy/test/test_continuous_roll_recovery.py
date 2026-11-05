@@ -29,7 +29,10 @@ assert 'enterState(THRUST_CORRECTION' not in branch
 assert 'active_pair_pressure_ready' not in branch
 assert 'prepare_arm_active_[arm] ? thrust : 0.0' in branch
 assert 'publishBottomTarget(0.0)' in branch
-assert 'continuous_recovery_blocked_ = true' in branch
+assert 'hugmy::recoveryExitDecision(' in branch
+assert 'beginPostureSafeTransfer(now,' in branch
+assert 'continuous_roll_recovery_.finished = true;' not in branch.split(
+    'ROS_WARN("Action C continuous recovery ended:')[1]
 assert 'measuredRecoveryModel()' in branch
 assert 'crossed_recovery_target' not in branch
 assert 'roll_recovery_response_[correction_axis_[0] > 0.0 ? 0 : 1]' in branch

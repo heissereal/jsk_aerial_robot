@@ -28,6 +28,7 @@
 #include <hugmy/control/rear_release_gate.h>
 #include <hugmy/control/roll_trend_gate.h>
 #include <hugmy/control/continuous_roll_recovery.h>
+#include <hugmy/control/posture_recovery_phase.h>
 #include <hugmy/control/roll_recovery_planner.h>
 #include <hugmy/control/recovery_predictive_control.h>
 #include <hugmy/control/pulse_bend_observer.h>
@@ -162,6 +163,7 @@ private:
   ros::Publisher correction_thrust_pub_, root_correction_thrust_pub_;
   ros::Publisher pwm_test_pub_, root_pwm_test_pub_;
   ros::Publisher flight_config_pub_, root_flight_config_pub_, state_pub_;
+  ros::Publisher posture_phase_pub_;
   ros::ServiceServer enable_server_;
   ros::ServiceClient pressure_enable_client_;
   ros::Timer timer_;
@@ -266,7 +268,10 @@ private:
     ACTION_A_FRONT_PLACE = 25,
     ACTION_D_PREPARE = 26,
     ACTION_D_RAMP = 27,
-    ACTION_D_REGRIP = 28
+    ACTION_D_REGRIP = 28,
+    // Physical safety state for interrupted roll recovery. This is distinct
+    // from RECOVER, which restores contact only after angle capture.
+    POSTURE_SAFE_TRANSFER = 29
   };
   uint8_t state_ = GRASP;
   bool correction_roll_only_;
@@ -278,6 +283,18 @@ private:
   bool continuous_recovery_blocked_ = false;
   bool continuous_recovery_started_ = false;
   bool continuous_recovery_waiting_for_settle_ = false;
+  hugmy::PostureRecoveryPhase posture_recovery_phase_ =
+      hugmy::PostureRecoveryPhase::HOLD;
+  PressureArray recovery_safe_transfer_target_pressure_{};
+  double recovery_safe_transfer_timeout_sec_ = 8.0;
+  double recovery_safe_transfer_rate_n_s_ = 3.0;
+  double recovery_contact_restore_thrust_limit_n_ = 2.5;
+  double recovery_safe_transfer_pressure_tolerance_kpa_ = 1.5;
+  double recovery_response_min_probe_sec_ = 1.2;
+  ros::Time recovery_response_probe_since_;
+  ros::Time recovery_safe_transfer_settled_since_;
+  bool recovery_safe_transfer_retry_allowed_ = false;
+  bool recovery_safe_transfer_failed_ = false;
   // The nominal hardware/MuJoCo pair mapping is the first choice. A released
   // arm can move the contact pivot through a moment-sign change, however, so
   // one measured wrong-way pass may request one opposite-pair retry after a
@@ -528,6 +545,8 @@ private:
   // pressure-induced contact shift carries roll across the target.
   int recovery_rejected_direction_sign_ = 0;
   void resetRecoveryHandoffState();
+  void beginPostureSafeTransfer(const ros::Time& now, const char* reason,
+                                bool retry_after_settle = false);
   void updateCircularGraspGeometry(const ros::Time& now);
   PressureArray recoveryReselectionPressure() const;
   PressureArray recoveryMeasuredContactPressure() const;

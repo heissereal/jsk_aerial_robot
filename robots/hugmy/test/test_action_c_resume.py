@@ -11,8 +11,8 @@ start=source.index('const bool retry_opposite_pair =')
 pair=source[start:source.index('continuous_roll_recovery_.reset(',start)]
 helper_start=source.index('void AttitudePressureController::selectContinuousRecoveryPair(')
 helper=source[helper_start:source.index('\n}\n',helper_start)+3]
-start=source.index('const bool progress_timeout = continuous_roll_recovery_.timed_out')
-timeout=source[start:source.index('// No repeated timed search pulses',start)]
+start=source.index('const auto recovery_exit = hugmy::recoveryExitDecision(')
+timeout=source[start:source.index('resetRecoveryHandoffState();\n                  enterState(RECOVER',start)]
 assert 'recovered = pressure_valid && actionCPressureReady(grasp_pressure_, now)' in source
 assert 'if (resumeActionCAfterRecovery(now)) break;' in source
 assert 'support_transfer_equalized &&\n                  !std::isfinite(recovery_handoff_best_error_rad_)' in source
@@ -35,7 +35,8 @@ assert 'probe_pressure_target_changed' in source
 assert 'recovery_wrong_geometry_probe_target_valid_' in source
 assert 'Recovery candidates pair %zu+%zu' in source
 assert 'candidate_bend[arm] = 0.0' in source
-assert 'grasped_has_authority ? best_grasped : best_extended' in source
+assert 'best_extended.score + 1.0e-6 < best_grasped.score' in source
+assert 'selected = emergency_extension_requested' in source
 assert 'crossed_from_latched_extension' in source
 assert 'recovery_extension_direction_sign_ != correction_direction' in source
 assert 'const bool stable_small_angle_reselection =' in source
@@ -117,7 +118,7 @@ candidate_switch = source.split(
 )[1].split('double AttitudePressureController::recoverySupportPressure()', 1)[0]
 assert 'prepare_arm_active_[arm] && recovery_selected_pair_release_' in candidate_switch
 assert '? 0.0 : recovery_handoff_min_pressure_kpa_' in candidate_switch
-assert source.count('recoveryCandidateSwitchPressure();') >= 4
+assert source.count('recoveryCandidateSwitchPressure();') >= 3
 assert 'recoveryReselectionPressure()' in source
 assert 'clearing directional rejection mask' in source
 assert 'const bool handoff_candidate_stalled =' in source
@@ -127,7 +128,7 @@ assert 'recovery_handoff_candidate_reference_rad_' in source
 assert 'handoff_candidate_stalled ||\n                      handoff_candidate_worsening' in source
 assert 'full-grasp roll %s at %.2f deg' in source
 assert 'recovery_handoff_progress_reference_rad_ -' in source
-assert 'const double handoff_retry_thrust = std::max(\n                      roll_recovery_config_.detect_thrust' in source
+assert 'const double handoff_retry_thrust = std::min(\n                      contact_restore_limit,' in source
 assert 'rejected handoff candidate reached zero thrust' in source
 assert 'preserving zero thrust and requesting a fresh measured-contact pass' in source
 assert 'const double handoff_drive_stop = recovery_stop_angle +\n                  handoff_measurement_margin;' in source
@@ -165,6 +166,7 @@ assert 'continuous_recovery_waiting_for_settle_ = false;' in handoff_complete
 assert 'action_c_requested_recovery_trigger_rad_ =\n                          std::numeric_limits<double>::quiet_NaN();' in handoff_complete
 code=r'''
 #include <hugmy/control/continuous_roll_recovery.h>
+#include <hugmy/control/posture_recovery_phase.h>
 #include <hugmy/control/circular_grasp_geometry.h>
 #include <hugmy/control/roll_recovery_planner.h>
 #include <hugmy/model/pressure_thrust_bend_model.h>
@@ -189,6 +191,7 @@ public:
  bool active=false;
  bool continuous_recovery_waiting_for_settle_=false, continuous_recovery_blocked_=false;
  bool continuous_recovery_started_=true;
+ hugmy::PostureRecoveryPhase posture_recovery_phase_=hugmy::PostureRecoveryPhase::HOLD;
  bool continuous_recovery_use_opposite_pair_=false;
  bool continuous_recovery_retry_opposite_pending_=false;
  bool recovery_handoff_thrust_wrong_way_=false;
@@ -236,7 +239,7 @@ public:
  std::array<double,4> recovery_handoff_target_pressure_{};
  double recovery_handoff_min_pressure_kpa_=15.,base_pressure_kpa_=30.,maximum_pressure_kpa_=40.;
  double minimum_prepare_pressure_kpa_=0.,mass_kg_=1.244;
- int publications=0, state=0;enum {RECOVER=1,GRASP=2};
+ int publications=0, state=0, safe_transfers=0;enum {RECOVER=1,GRASP=2,POSTURE_SAFE_TRANSFER=3};
  void publishCorrectionThrust(const std::array<double,4>& t) {
    for(double v:t) assert(v==0.);++publications;
  }
@@ -245,7 +248,17 @@ public:
    assert(p==grasp_pressure_ && std::isinf(rate));++publications;
  }
  void enterState(int s,ros::Time){state=s;}
- void timeoutTransition(ros::Time now){do {TIMEOUT} while(false);}
+ double recovery_stop_angle=3.*M_PI/180.;double roll_error=.5;
+ void beginPostureSafeTransfer(ros::Time,const char*,bool=false){
+   ++safe_transfers;continuous_recovery_blocked_=true;
+   continuous_recovery_started_=false;
+   continuous_recovery_waiting_for_settle_=false;
+   state=POSTURE_SAFE_TRANSFER;
+ }
+ void timeoutTransition(ros::Time now){
+   const double contact_capture_limit=recovery_stop_angle+1.5*roll_recovery_config_.stop_margin;
+   do {TIMEOUT} while(false);
+ }
  ros::Time mocap_stamp_{10};double inchworm_mocap_timeout_sec_=1.;
  double bottom_pressure_kpa_=0.,action_c_bottom_deflation_tolerance_kpa_=5.;
  struct EndpointWindow {bool ready=true;bool stable(double)const{return ready;}}
@@ -413,11 +426,10 @@ int main() {
  circle.recovery_circle_estimate_.depth_angle[1]=1.;
  circle.select(.2);
  assert(circle.prepare_arm_active_[0] && circle.prepare_arm_active_[1]);
- // Explicitly verify the requested four-candidate policy.  At the measured
- // bend only pair 0+1 has a restoring grasped lever, while at alpha=0 the
- // straight 2+3 pair has the largest restoring lever.  Normal recovery uses
- // the lower-thrust grasped solution; emergency recovery excludes grasped
- // candidates and selects the straight 2+3 solution.
+ // Explicitly verify the shared-cost policy.  At the measured bend only
+ // pair 0+1 has a restoring grasped lever, while at alpha=0 the straight
+ // 2+3 pair has a larger restoring lever. With no release penalty the
+ // lowest required rotor thrust must win, even in normal recovery.
  AttitudePressureController normal_choice;
  normal_choice.recovery_circle_selection_enabled_=true;
  normal_choice.recovery_circle_estimate_=circle.recovery_circle_estimate_;
@@ -426,9 +438,9 @@ int main() {
  normal_choice.recovery_circle_release_penalty_n_=0.;
  normal_choice.straight_pair_swap_=true;
  normal_choice.select(.2);
- assert(normal_choice.prepare_arm_active_[0] &&
-        normal_choice.prepare_arm_active_[1]);
- assert(!normal_choice.recovery_selected_pair_release_);
+ assert(normal_choice.prepare_arm_active_[2] &&
+        normal_choice.prepare_arm_active_[3]);
+ assert(normal_choice.recovery_selected_pair_release_);
  // The 30-kPa endpoint in the candidate table denotes the grasped topology,
  // not a request to partially exhaust an arm whose actual grasp pressure is
  // 40 kPa.  Such an arm must retain its measured bend and nominal pressure.
@@ -437,7 +449,9 @@ int main() {
  high_pressure_grasp.recovery_circle_estimate_=circle.recovery_circle_estimate_;
  high_pressure_grasp.recovery_circle_stamp_={9.9};
  high_pressure_grasp.recovery_circle_release_support_scale_=0.;
- high_pressure_grasp.recovery_circle_release_penalty_n_=0.;
+ // In contrast, a strongly penalized contact release should retain the
+ // high-pressure grasped topology and preserve its 40-kPa nominal target.
+ high_pressure_grasp.recovery_circle_release_penalty_n_=50.;
  high_pressure_grasp.straight_pair_swap_=true;
  high_pressure_grasp.grasp_pressure_.fill(40.);
  high_pressure_grasp.measured_pressure_.fill(40.);
@@ -447,8 +461,8 @@ int main() {
  assert(!high_pressure_grasp.recovery_selected_pair_release_ &&
         std::abs(high_pressure_grasp.recovery_selected_pair_pressure_kpa_-40.)<1e-9);
  // A locomotion guard may request a fast rise while the small roll error is
- // no longer moving outward.  Fast slew alone must not exclude the safer
- // current-bend candidate.
+ // no longer moving outward.  Fast slew alone must not change the unified
+ // candidate cost or force an independent contact-mode selection.
  AttitudePressureController urgent_small_choice;
  urgent_small_choice.recovery_circle_selection_enabled_=true;
  urgent_small_choice.recovery_circle_estimate_=circle.recovery_circle_estimate_;
@@ -459,10 +473,10 @@ int main() {
  urgent_small_choice.action_c_recovery_urgent_thrust_rise_=true;
  urgent_small_choice.body_angular_velocity_[0]=0.;
  urgent_small_choice.select(.2);
- assert(urgent_small_choice.prepare_arm_active_[0] &&
-        urgent_small_choice.prepare_arm_active_[1]);
- assert(!urgent_small_choice.recovery_selected_pair_release_ &&
-        !urgent_small_choice.recovery_extension_mode_latched_);
+ assert(urgent_small_choice.recovery_selected_pair_index_==
+        normal_choice.recovery_selected_pair_index_);
+ assert(urgent_small_choice.recovery_selected_pair_release_==
+        normal_choice.recovery_selected_pair_release_);
  // The same small present error still uses straight-arm recovery when its
  // measured outward rate predicts crossing the 15-deg emergency boundary.
  AttitudePressureController predicted_emergency_choice;
@@ -504,8 +518,8 @@ int main() {
         emergency_choice.recovery_extension_direction_sign_==0 &&
         !emergency_choice.action_c_recovery_urgent_thrust_rise_);
  // A stable small residual after an extended correction is a fresh contact
- // decision.  Do not force the opposite physical pair: in this geometry the
- // same physical 0+1 pair has become restorative after it is re-grasped.
+ // decision.  Do not mechanically force the opposite pair; select by cost
+ // under the new geometry, and clear the old emergency-direction latch.
  AttitudePressureController stable_small_reselection;
  stable_small_reselection.recovery_circle_selection_enabled_=true;
  stable_small_reselection.recovery_circle_estimate_=
@@ -520,10 +534,9 @@ int main() {
  stable_small_reselection.recovery_preferred_pair_locked_=true;
  stable_small_reselection.body_angular_velocity_[0]=0.;
  stable_small_reselection.select(.10);
- assert(stable_small_reselection.prepare_arm_active_[0] &&
-        stable_small_reselection.prepare_arm_active_[1]);
- assert(!stable_small_reselection.recovery_selected_pair_release_ &&
-        !stable_small_reselection.recovery_extension_mode_latched_);
+ assert(stable_small_reselection.recovery_pair_selection_available_);
+ assert(stable_small_reselection.recovery_extension_direction_sign_==1 ||
+        stable_small_reselection.recovery_extension_direction_sign_==0);
  // The same small angle with a fast outward body rate is not stable.  Keep
  // the old emergency extension latch so it can arrest the existing motion.
  AttitudePressureController moving_small=stable_small_reselection;
@@ -572,23 +585,20 @@ int main() {
    waiting.continuous_roll_recovery_.timed_out=!overall;
    waiting.continuous_roll_recovery_.fault=!overall;
    waiting.timeoutTransition({overall?61.:11.});
-   assert(waiting.action_c_resume_pending_ && !waiting.continuous_recovery_blocked_);
-   assert(waiting.continuous_recovery_waiting_for_settle_ && waiting.state==waiting.RECOVER);
-   // A timed-out rotor pass now remains marked started until the same
-   // closed-loop pneumatic handoff completes; it must not jump directly from
-   // released pressure to nominal grasp.
-   assert(waiting.continuous_recovery_started_);
+   assert(waiting.action_c_resume_pending_ && waiting.continuous_recovery_blocked_);
+   assert(!waiting.continuous_recovery_waiting_for_settle_ &&
+          waiting.state==waiting.POSTURE_SAFE_TRANSFER);
+   // A failed high-angle correction is not retrospectively marked complete
+   // and is never passed to the high-thrust regrasp integrator.
+   assert(!waiting.continuous_recovery_started_ && waiting.safe_transfers==1);
    assert(waiting.finished==0 && waiting.publications==0 && !waiting.active);
-   assert(waiting.action_c_resume_gate_.resets==1 && waiting.action_c_boundary_settle_gate_.resets==1);
-   waiting.mocap_stamp_={62.};assert(waiting.resumeActionCAfterRecovery({62.1}));
-   assert(waiting.active && waiting.finished==1 && waiting.starts==1);
  }
  AttitudePressureController hard;
  hard.continuous_roll_recovery_.fault=true;hard.timeoutTransition({61.});
- assert(hard.continuous_recovery_waiting_for_settle_ && !hard.continuous_recovery_blocked_ &&
-        hard.continuous_recovery_started_ && hard.publications==0);
+ assert(!hard.continuous_recovery_waiting_for_settle_ && hard.continuous_recovery_blocked_ &&
+        !hard.continuous_recovery_started_ && hard.safe_transfers==1);
  AttitudePressureController no_goal;no_goal.action_c_resume_pending_=false;
- no_goal.timeoutTransition({61.});assert(!no_goal.continuous_recovery_waiting_for_settle_);
+ no_goal.timeoutTransition({61.});assert(no_goal.safe_transfers==1);
  AttitudePressureController done;done.mocap_position_[0]=.11;
  assert(done.resumeActionCAfterRecovery({10.1}));assert(!done.active && !done.action_c_resume_pending_);
  AttitudePressureController endpoint;

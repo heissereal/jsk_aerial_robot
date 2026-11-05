@@ -476,6 +476,7 @@ recovery_reapproach_rate_rad_s: 0.04
 recovery_reapproach_authority_rise_n_s: 0.8 # if the 1.5-N retry remains stuck, recover breakaway authority gradually
 recovery_reapproach_escalation_delay_sec: 0.50
 recovery_response_fault_min_thrust_n: 1.5 # pressure transfer and sub-authority motion are not rotor wrong-way evidence
+recovery_response_min_probe_sec: 1.2 # after measured pressure settles AND meaningful thrust starts; does not slow thrust rise
 recovery_settle_rate_rad_s: 0.05 # do not hand regrasp a body still coasting through the roll target
 recovery_settle_sec: 0.08       # catch/regrip in one pass once actually inside +/-3 deg
 recovery_stop_margin_rad: 0.017453292519943295 # 1 deg tolerance around the 3-deg target
@@ -510,7 +511,7 @@ recovery_circle_small_radius_m: 0.035 # release pressure itself creates apprecia
 recovery_circle_small_radius_capture_margin_factor: 3.0 # start regrasp about 6 deg from target instead of waiting for 3.5 deg
 recovery_circle_small_radius_support_pressure_kpa: 25.0 # keep deep wraps supported while the released pair is bent back
 recovery_circle_flexed_max_error_rad: 0.2617993877991494 # 15 deg; larger corrections transfer support and use the released long-arm geometry
-recovery_circle_release_penalty_n: 0.10 # full 30->0 kPa release penalty; partial release is scaled by pressure drop
+recovery_circle_release_penalty_n: 0.10 # common score: required per-rotor thrust + this penalty times release fraction; increase for slippery/small-radius supports
 recovery_circle_min_signed_lever_m: 0.005
 # Active recovery is deliberately binary: 30 kPa retains a demonstrably
 # below-side grasp, while 0 kPa creates the long-arm geometry.  The 10/20-kPa
@@ -541,7 +542,8 @@ recovery_stable_bend_rad: 0.035
 # a measured-zero prerequisite. The selected pair remains at or below this
 # pressure for the ENTIRE active recovery; speed/prediction braking changes
 # rotor thrust only. Full 30-kPa grasp is restored after the +/-3-deg low-rate
-# dwell succeeds, or during an explicit timeout/fault handoff.
+# dwell succeeds. A fault instead enters a separate slow, bounded support
+# transfer, with no high-angle posture-PI regrasp.
 recovery_release_pressure_kpa: 0.0
 recovery_pressure_down_rate_kpa_s: 0.5
 # After roll enters the terminal band, restore the selected pair gradually.
@@ -553,9 +555,18 @@ recovery_pressure_down_rate_kpa_s: 0.5
 recovery_handoff_pressure_rate_kpa_s: 6.0
 # While the released pair is rebuilt to its 15-kPa support floor, retain
 # enough bounded rotor authority to reject the pneumatic bending moment.
-# The normal 5-N recovery limit and all measured wrong-way guards still apply.
+# This is a contact-restoration limit, NOT the active 5.5-N recovery limit.
 recovery_handoff_stage_a_thrust_max_n: 1.5
 recovery_handoff_thrust_fall_n_s: 0.75
+# Successful capture: bounded PI only for the near-target contact adjustment.
+# Large angle rebound enters SAFE_TRANSFER instead of continuing PI.
+recovery_contact_restore_thrust_limit_n: 2.5
+# Fault/timeout: restore minimum load-bearing pair pressure at 6 kPa/s and
+# monotonically *decrease* rotor thrust (0.75 N/s until measured pressure
+# settles, then 3 N/s). No integral, no immediate 0->30 kPa step.
+recovery_safe_transfer_thrust_fall_n_s: 3.0
+recovery_safe_transfer_pressure_tolerance_kpa: 1.5
+recovery_safe_transfer_timeout_sec: 8.0
 recovery_handoff_reopen_angle_rad: 0.017453292519943295 # resume PI after 1 deg worsening during thrust rundown
 recovery_handoff_settle_sec: 0.30
 recovery_handoff_timeout_sec: 60.0

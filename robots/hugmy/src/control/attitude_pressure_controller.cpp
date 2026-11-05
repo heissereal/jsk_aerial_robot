@@ -223,6 +223,18 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
                  recovery_handoff_stage_a_thrust_max_n_, 0.25, 3.0);
   recovery_param("recovery_handoff_thrust_fall_n_s",
                  recovery_handoff_thrust_fall_n_s_, 0.1, 3.0);
+  // CONTACT_RESTORE may retain a small stabilizing thrust, but must never
+  // become a second full-authority attitude recovery controller.
+  recovery_param("recovery_contact_restore_thrust_limit_n",
+                 recovery_contact_restore_thrust_limit_n_, 0.25, 3.0);
+  recovery_param("recovery_safe_transfer_timeout_sec",
+                 recovery_safe_transfer_timeout_sec_, 2.0, 30.0);
+  recovery_param("recovery_safe_transfer_thrust_fall_n_s",
+                 recovery_safe_transfer_rate_n_s_, 0.5, 8.0);
+  recovery_param("recovery_safe_transfer_pressure_tolerance_kpa",
+                 recovery_safe_transfer_pressure_tolerance_kpa_, 0.5, 4.0);
+  recovery_param("recovery_response_min_probe_sec",
+                 recovery_response_min_probe_sec_, 0.5, 4.0);
   recovery_param("recovery_handoff_reopen_angle_rad",
                  recovery_handoff_reopen_angle_rad_, 0.005, 0.0872665);
   recovery_param("recovery_handoff_settle_sec",
@@ -1022,6 +1034,8 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
     root_flight_config_pub_ = nh_.advertise<spinal::FlightConfigCmd>(
         "/flight_config_cmd", 1);
   state_pub_ = pnh_.advertise<std_msgs::UInt8>("state", 1, true);
+  posture_phase_pub_ = pnh_.advertise<std_msgs::UInt8>(
+      "posture_recovery_phase", 1, true);
   pnh_.param("hybrid_locomotion_outer_enabled", hybrid_search_.enabled, true);
   pnh_.param("hybrid_locomotion_initial_bottom_kpa", hybrid_search_.initial.bottom, 30.0);
   hybrid_single_config_.bottom_kpa=hybrid_search_.initial.bottom;
@@ -2006,6 +2020,9 @@ void AttitudePressureController::inchwormCommandCallback(
   continuous_recovery_blocked_ = false;
   continuous_recovery_started_ = false;
   continuous_recovery_waiting_for_settle_ = false;
+  recovery_safe_transfer_failed_ = false;
+  recovery_safe_transfer_retry_allowed_ = false;
+  recovery_safe_transfer_settled_since_ = ros::Time(0);
   continuous_recovery_use_opposite_pair_ = false;
   continuous_recovery_retry_opposite_pending_ = false;
   continuous_recovery_pair_switches_ = 0;
@@ -2061,6 +2078,9 @@ bool AttitudePressureController::enableCallback(std_srvs::SetBool::Request& req,
   continuous_recovery_blocked_ = false;
   continuous_recovery_started_ = false;
   continuous_recovery_waiting_for_settle_ = false;
+  recovery_safe_transfer_failed_ = false;
+  recovery_safe_transfer_retry_allowed_ = false;
+  recovery_safe_transfer_settled_since_ = ros::Time(0);
   continuous_recovery_use_opposite_pair_ = false;
   continuous_recovery_retry_opposite_pending_ = false;
   continuous_recovery_pair_switches_ = 0;
@@ -2212,6 +2232,9 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
       std_msgs::UInt8 state_msg;
       state_msg.data = state_;
       state_pub_.publish(state_msg);
+      std_msgs::UInt8 posture_phase_msg;
+      posture_phase_msg.data = static_cast<uint8_t>(posture_recovery_phase_);
+      posture_phase_pub_.publish(posture_phase_msg);
 
       if (!body_imu_fresh || !pressure_valid || !neurons_fresh)
         {
@@ -2225,7 +2248,8 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
           action_c_roll_trend_.reset();
 
           publishCorrectionThrust(zero_thrust);
-          if (!inchworm_active_ && state_ != GRASP && state_ != RECOVER)
+          if (!inchworm_active_ && state_ != GRASP && state_ != RECOVER &&
+              state_ != POSTURE_SAFE_TRANSFER)
             {
               ROS_ERROR("Perching correction cancelled by stale body IMU, Neuron IMU, or pressure");
               enterState(RECOVER, now);
@@ -2647,6 +2671,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   const bool contact_candidate_retry =
                       recovery_candidate_reselect_pending_;
                   continuous_recovery_started_ = true;
+                  posture_recovery_phase_ = hugmy::PostureRecoveryPhase::SELECT;
                   // A previous timed pass may have been waiting only for a
                   // safe regrasp.  Once a new measured correction actually
                   // starts, return to the normal post-success resume gate;
@@ -2779,6 +2804,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                         }
                     }
                   continuous_roll_recovery_.reset(attitude_error, now.toSec());
+                  recovery_response_probe_since_ = ros::Time(0);
                   // A body which is still rolling away from the target needs
                   // correction authority before the slower contact-response
                   // estimator has identified breakaway.  Use the emergency
@@ -2903,6 +2929,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
           {
           if (continuous_c_recovery)
             {
+              posture_recovery_phase_ = hugmy::PostureRecoveryPhase::RECOVERY;
               publishBottomTarget(0.0);
               for (size_t arm = 0; arm < ARM_COUNT; ++arm)
                 {
@@ -3178,6 +3205,20 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                                 roll_recovery_config_.stable_pressure;
                       }
                 }
+              if (recovery_response_faults_enabled &&
+                  continuous_roll_recovery_.thrust + 0.05 >=
+                      roll_recovery_config_.response_fault_min_thrust)
+                {
+                  if (recovery_response_probe_since_.isZero())
+                    recovery_response_probe_since_ = now;
+                }
+              else
+                recovery_response_probe_since_ = ros::Time(0);
+              const bool recovery_response_evaluation_ready =
+                  recovery_response_faults_enabled &&
+                  !recovery_response_probe_since_.isZero() &&
+                  (now - recovery_response_probe_since_).toSec() >=
+                      recovery_response_min_probe_sec_;
               // The circle planner evaluates the geometry expected after a
               // released pair has extended.  On the positive-roll hardware
               // trial, its current measured lever was still negative while
@@ -3274,6 +3315,18 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                       recovery_wrong_geometry_pressure_settled_since_.isZero()
                       ? 0.0
                       : (now - recovery_wrong_geometry_pressure_settled_since_).toSec();
+                  // Probe validity is judged after a *measured-pressure*
+                  // and meaningful-thrust dwell, not 0.6 s after the
+                  // release command while the contact lever is moving.
+                  // This gate does not delay the fast RECOVERY thrust ramp.
+                  const bool response_probe_complete =
+                      hugmy::recoveryResponseCanBeJudged(
+                          recovery_response_faults_enabled,
+                          recovery_wrong_geometry_probe_target_valid_,
+                          continuous_roll_recovery_.thrust,
+                          roll_recovery_config_.response_fault_min_thrust,
+                          pressure_settled_age,
+                          recovery_response_min_probe_sec_);
                   const bool rate_response_confirmed =
                       pressure_settled_age >=
                           recovery_wrong_geometry_response_confirm_sec_ &&
@@ -3331,6 +3384,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                                    180.0 / M_PI);
                     }
                   const bool geometry_worsened =
+                      response_probe_complete &&
                       recovery_decay_window_ready &&
                       !recovery_wrong_geometry_response_observed_ &&
                       recovery_error_decay_rate <=
@@ -3338,6 +3392,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                       omega <=
                           -recovery_wrong_geometry_transition_outward_rate_rad_s_;
                   const bool pressure_settled_insufficient_decay =
+                      response_probe_complete &&
                       pressure_settled_age >=
                           recovery_wrong_geometry_progress_window_sec_ &&
                       recovery_decay_window_ready &&
@@ -3404,7 +3459,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   recovery_inputs_valid ? signed_error : std::numeric_limits<double>::quiet_NaN(),
                   omega, now.toSec(), dt, model, active_roll_recovery_config, response,
                   predictive_target,
-                  recovery_response_faults_enabled &&
+                  recovery_response_evaluation_ready &&
                       (!wrong_geometry_candidate ||
                        recovery_wrong_geometry_response_observed_),
                   geometry_authority_limit);
@@ -3429,7 +3484,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               // static-friction plateau, and do not blame a candidate while
               // predictive braking is intentionally reducing force.
               const bool retained_candidate_worsening =
-                  recovery_response_faults_enabled &&
+                  recovery_response_evaluation_ready &&
                   continuous_roll_recovery_.progress_observed &&
                   !continuous_roll_recovery_.terminal_brake_latched &&
                   continuous_roll_recovery_.recent_thrust_change >= -0.1 &&
@@ -3549,7 +3604,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               if (!continuous_roll_recovery_.model_valid &&
                   (!recovery_predictive_config_.enabled || recovery_predictive_config_.shadow))
                 ROS_WARN_THROTTLE(1.0, "Recovery geometry unavailable/wrong-sign lever: bounded rate-PI fallback, no absolute-value inversion");
-              if (continuous_roll_recovery_.fault || continuous_roll_recovery_.finished ||
+                  if (continuous_roll_recovery_.fault || continuous_roll_recovery_.finished ||
                   (now - state_start_).toSec() >= prepare_timeout_)
                 {
                   // A wrong-way flag is latched until the old pair's thrust
@@ -3584,6 +3639,8 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   const bool pair_never_corrected = never_effective_pair ||
                       (measured_pair_sign_reversal &&
                        !continuous_roll_recovery_.progress_observed);
+                  const double contact_capture_limit = recovery_stop_angle +
+                      1.5 * roll_recovery_config_.stop_margin;
                   // Crossing the target is evidence that this candidate did
                   // produce the requested moment; it is not a bad candidate.
                   // The rotor pair is one-directional, however, so first
@@ -3593,6 +3650,14 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   if (continuous_roll_recovery_.fault &&
                       continuous_roll_recovery_.target_crossed)
                     {
+                      if (hugmy::recoveryExitDecision(false, true, true,
+                              roll_error, contact_capture_limit) !=
+                          hugmy::RecoveryExit::TARGET_CROSSED)
+                        {
+                          beginPostureSafeTransfer(now,
+                              "target crossed but residual outside contact capture");
+                          break;
+                        }
                       recovery_rejected_candidate_mask_ = 0;
                       recovery_rejected_direction_sign_ = 0;
                       recovery_candidate_reselect_pending_ = false;
@@ -3653,44 +3718,20 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                       recovery_rejected_candidate_mask_ |= candidate_bit;
                       recovery_rejected_direction_sign_ =
                           roll_error >= 0.0 ? 1 : -1;
-                      recovery_candidate_reselect_pending_ = true;
-                      continuous_recovery_blocked_ = false;
-                      continuous_recovery_waiting_for_settle_ = true;
-                      continuous_recovery_started_ = false;
-                      continuous_roll_recovery_.finished = true;
-                      resetRecoveryHandoffState();
-                      // The controller reports `fault` only after the old
-                      // rotor command has reached zero.  At that safe instant
-                      // freeze the measured chamber state and select again;
-                      // waiting another 1--2 s for a prescribed support
-                      // pressure allowed the disproved contact geometry to
-                      // keep rolling the body.  The non-selected nominal pair
-                      // remains the mechanical anchor throughout the switch.
-                      recovery_handoff_target_pressure_ =
-                          recoveryCandidateSwitchPressure();
-                      prepare_pressure_ = recovery_handoff_target_pressure_;
-                      grasp_pressure_ = recovery_handoff_target_pressure_;
-                      if (hybridLocomotionActive() && action_c_resume_pending_)
-                        {
-                          hybrid_grasp_pressure_ = grasp_pressure_;
-                          hybrid_hold_pressure_ = true;
-                        }
-                      prepare_shape_thrust_.fill(0.0);
-                      publishCorrectionThrust(prepare_shape_thrust_);
-                      publishPressureTarget(prepare_pressure_,
-                          std::numeric_limits<double>::infinity());
-                      action_c_resume_gate_.reset();
-                      action_c_boundary_settle_gate_.reset();
-                      ROS_WARN("Circular recovery rejected candidate pair %zu+%zu at %.1f kPa after measured %s response; mask=0x%02x. Froze measured contact pressure [%.1f %.1f %.1f %.1f] kPa for immediate geometry re-selection",
+                      const bool measured_retry_safe =
+                          std::abs(roll_error) <
+                          action_c_posture_hard_roll_rad_;
+                      ROS_WARN("Circular recovery rejected candidate pair %zu+%zu at %.1f kPa after measured %s response; mask=0x%02x, safe retry=%d (requires restored measured support)",
                           recovery_selected_pair_index_ == 0 ? 0ul : 2ul,
                           recovery_selected_pair_index_ == 0 ? 1ul : 3ul,
                           recovery_selected_pair_pressure_kpa_,
                           measured_pair_sign_reversal
                               ? "reversed" : "no-progress",
                           recovery_rejected_candidate_mask_,
-                          grasp_pressure_[0], grasp_pressure_[1],
-                          grasp_pressure_[2], grasp_pressure_[3]);
-                      enterState(GRASP, now);
+                          measured_retry_safe);
+                      beginPostureSafeTransfer(now,
+                          "measured contact candidate ineffective",
+                          measured_retry_safe);
                       break;
                     }
                   if (continuous_roll_recovery_.fault &&
@@ -3698,115 +3739,57 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                       action_c_resume_pending_ &&
                       continuous_recovery_pair_switches_ < 1)
                     {
-                      const bool retry_after_wrong_way =
-                          continuous_roll_recovery_.wrong_way;
-                      // Only a measured wrong-sign/no-response result selects
-                      // the alternate pair.  Crossing the target after real
-                      // progress is a braking/regrasp event, not permission
-                      // to release the opposite support and fire a second
-                      // correction pulse.
-                      continuous_recovery_use_opposite_pair_ =
-                          !continuous_recovery_use_opposite_pair_;
-                      ++continuous_recovery_pair_switches_;
-                      correction_axis_ = {{roll_error >= 0.0 ? 1.0 : -1.0,
-                                           0.0}};
-                      selectContinuousRecoveryPair(roll_error);
-                      continuous_roll_recovery_.reset(
-                          attitude_error, now.toSec());
-                      resetRecoveryHandoffState();
-                      recovery_predictive_.reset();
-                      prepare_shape_thrust_.fill(0.0);
-                      for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-                        prepare_pressure_[arm] = prepare_arm_active_[arm]
-                            ? (recovery_selected_pair_release_
-                                ? recoverySelectedPairPressure(arm)
-                                : std::min(maximum_pressure_kpa_,
-                                    std::max(base_pressure_kpa_,
-                                        grasp_pressure_[arm])))
-                            : std::min(maximum_pressure_kpa_,
-                                std::max(base_pressure_kpa_,
-                                    grasp_pressure_[arm]));
-                      publishCorrectionThrust(prepare_shape_thrust_);
-                      publishPressureTarget(prepare_pressure_,
-                          std::numeric_limits<double>::infinity());
-                      enterState(PREPARE, now);
-                      ROS_WARN("Measured %s roll response: thrust is zero; transferring support and retrying rotor pair (%u/1)",
-                          (retry_after_wrong_way ?
-                              "wrong-way" : "no-progress"),
-                          continuous_recovery_pair_switches_);
+                      const bool measured_retry_safe =
+                          std::abs(roll_error) <
+                          action_c_posture_hard_roll_rad_;
+                      // Preserve the one-shot alternate-pair request, but
+                      // never release it from an unconfirmed pressure state.
+                      continuous_recovery_retry_opposite_pending_ =
+                          measured_retry_safe;
+                      beginPostureSafeTransfer(now,
+                          "fallback pair had no measured restoring response",
+                          measured_retry_safe);
                       break;
                     }
                   ROS_WARN("Action C continuous recovery ended: finished=%d fault=%d elapsed=%.2f s; restoring grasp",
                            continuous_roll_recovery_.finished, continuous_roll_recovery_.fault,
                            (now - state_start_).toSec());
-                  if (!continuous_roll_recovery_.finished)
+                  // Only a verified near-target completion is allowed to
+                  // enter contact restoration.  In particular, a model/rate
+                  // fault while pressure is still releasing must not be
+                  // converted into `finished=true`: that previously ran the
+                  // regrasp PI for ~20 s and drove thrust to its 5.5-N cap.
+                  // The existing rapid rotor slew during PREPARE/RECOVERY is
+                  // untouched; this gate applies only to exit arbitration.
+                  const auto recovery_exit = hugmy::recoveryExitDecision(
+                      continuous_roll_recovery_.finished,
+                      continuous_roll_recovery_.fault ||
+                          continuous_roll_recovery_.timed_out ||
+                          (!continuous_roll_recovery_.finished &&
+                           (now - state_start_).toSec() >= prepare_timeout_),
+                      continuous_roll_recovery_.target_crossed,
+                      roll_error, contact_capture_limit);
+                  if (recovery_exit != hugmy::RecoveryExit::CONTACT_RESTORE)
                     {
-                      const bool progress_timeout = continuous_roll_recovery_.timed_out ||
-                          (!continuous_roll_recovery_.fault && (now - state_start_).toSec() >= prepare_timeout_);
-                      if ((progress_timeout || continuous_roll_recovery_.fault) &&
-                          action_c_resume_pending_)
-                        {
-                          // The selected pair can reverse its effective
-                          // moment after extending. Do not bypass the
-                          // closed-loop pneumatic handoff with a 0 -> 30 kPa
-                          // step on this controlled wrong-way/timeout exit.
-                          // Mark the rotor pass complete only for handoff,
-                          // restore minimum contact under feedback, then let
-                          // GRASP retry from the measured residual roll.
-                          continuous_recovery_blocked_ = false;
-                          continuous_recovery_waiting_for_settle_ = true;
-                          continuous_recovery_started_ = true;
-                          const bool measured_wrong_way =
-                              continuous_roll_recovery_.wrong_way;
-                          const bool pair_proven_wrong_without_progress =
-                              measured_wrong_way &&
-                              !continuous_roll_recovery_.progress_observed;
-                          continuous_roll_recovery_.finished = true;
-                          resetRecoveryHandoffState();
-                          // Preserve the measured sign result across RECOVER;
-                          // otherwise the handoff starts another pulse with
-                          // the pair which has just been proven wrong.
-                          // A pair which first produced substantial measured
-                          // correction and reversed only after the arm became
-                          // over-extended is not globally the wrong pair.  It
-                          // must retain bounded roll authority while pressure
-                          // rebuilds its moment geometry.  Disable it during
-                          // handoff only when it was wrong before producing
-                          // any useful progress.
-                          recovery_handoff_thrust_wrong_way_ =
-                              pair_proven_wrong_without_progress;
-                          recovery_handoff_pair_was_wrong_ =
-                              pair_proven_wrong_without_progress;
-                          if (measured_wrong_way)
-                            {
-                              recovery_handoff_pressure_trimmed_ = true;
-                              for (size_t arm = 0; arm < ARM_COUNT; ++arm)
-                                // Balance the contact before asking either
-                                // rotor pair for another measured response.
-                                // The old [30,30,15,15]-kPa handoff was a
-                                // persistent roll command and could never be
-                                // corrected by a bounded 1.5-N retained
-                                // thrust.  The inactive pair decreases while
-                                // the active pair fills, so total pneumatic
-                                // support is retained through this transfer.
-                                recovery_handoff_target_pressure_[arm] =
-                                    std::min(recovery_handoff_min_pressure_kpa_,
-                                        std::min(maximum_pressure_kpa_,
-                                            std::max(base_pressure_kpa_,
-                                                grasp_pressure_[arm])));
-                            }
-                          action_c_resume_gate_.reset();
-                          action_c_boundary_settle_gate_.reset();
-                          enterState(RECOVER, now);
-                          ROS_WARN("Action C recovery pass ended without convergence: entering the same closed-loop minimum-grasp handoff before an automatic measured-roll retry; goal and trial retained.");
-                          break;
-                        }
-                      // No repeated timed search pulses after a fault/stall.
-                      // Re-arm only on a new operator command or enable cycle.
-                      continuous_recovery_blocked_ = true;
-                      stopInchwormToGrasp(now, "continuous recovery fault/timeout; new operator command required");
+                      const char* fault_reason =
+                          !recovery_inputs_valid
+                              ? "IMU/pressure freshness or roll-rate envelope"
+                              : (!model.valid
+                                  ? "invalid or wrong-sign measured moment arm"
+                                  : (continuous_roll_recovery_.timed_out
+                                      ? "measured response timed out"
+                                      : "rotor recovery interrupted"));
+                      beginPostureSafeTransfer(now,
+                          continuous_roll_recovery_.fault
+                              ? fault_reason
+                              : (continuous_roll_recovery_.finished
+                                  ? "completed outside contact capture"
+                                  : "continuous rotor recovery timeout"));
                       break;
                     }
+                  // All other exits must be a genuinely finished, captured
+                  // rotor correction: interrupted passes have already gone
+                  // to SAFE_TRANSFER above.
                   resetRecoveryHandoffState();
                   enterState(RECOVER, now);
                 }
@@ -4233,11 +4216,138 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
           }
           break;
 
+        case POSTURE_SAFE_TRANSFER:
+          {
+            // Fault-safe *support transfer*, NOT another roll correction.
+            // Keep the non-selected pair as anchor and gradually replenish
+            // the released pair.  No angle PI or stalled-error integrator is
+            // active in this state, even for an arbitrarily large roll error.
+            publishBottomTarget(0.0);
+            const bool transfer_sensor_valid = body_imu_fresh &&
+                pressure_valid && neurons_fresh && recovery_pressure_fresh &&
+                std::isfinite(recovery_roll_rate) &&
+                std::abs(recovery_roll_rate) <
+                    recovery_measurement_rate_limit_rad_s_;
+            if (!transfer_sensor_valid)
+              {
+                prepare_shape_thrust_.fill(0.0);
+                publishCorrectionThrust(prepare_shape_thrust_);
+                // Retain the last known commanded pressure; sensor loss is
+                // never a reason to extrapolate a pneumatic transition.
+                publishPressureTarget(prepare_pressure_,
+                    std::numeric_limits<double>::infinity());
+                if (!recovery_safe_transfer_failed_)
+                  ROS_ERROR("Posture SAFE_TRANSFER lost valid IMU/pressure or exceeded roll-rate envelope; rotor force removed, operator intervention required");
+                recovery_safe_transfer_failed_ = true;
+                recovery_safe_transfer_retry_allowed_ = false;
+                continuous_recovery_blocked_ = true;
+                recovery_candidate_reselect_pending_ = false;
+                continuous_recovery_retry_opposite_pending_ = false;
+                posture_recovery_phase_ = hugmy::PostureRecoveryPhase::ABORT;
+                break;
+              }
+
+            const double transfer_dt = std::max(0.0, dt);
+            bool measured_support_ready = true;
+            bool commanded_support_ready = true;
+            for (size_t arm = 0; arm < ARM_COUNT; ++arm)
+              {
+                const double target = recovery_safe_transfer_target_pressure_[arm];
+                prepare_pressure_[arm] = hugmy::recoveryBoundedPressureStep(
+                    prepare_pressure_[arm], target,
+                    recovery_handoff_pressure_rate_kpa_s_, transfer_dt);
+                commanded_support_ready = commanded_support_ready &&
+                    std::abs(prepare_pressure_[arm] - target) <= 0.05;
+                measured_support_ready = measured_support_ready &&
+                    std::isfinite(measured_pressure_[arm]) &&
+                    std::abs(measured_pressure_[arm] - target) <=
+                        recovery_safe_transfer_pressure_tolerance_kpa_;
+              }
+            // All four pressure measurements, not the partially accumulated
+            // prefix inside the loop, determine the rotor force rundown.
+            const double safe_fall_rate = measured_support_ready
+                ? recovery_safe_transfer_rate_n_s_
+                : recovery_handoff_thrust_fall_n_s_;
+            for (double& thrust : prepare_shape_thrust_)
+              thrust = hugmy::recoverySafeThrustRundown(
+                  thrust, safe_fall_rate, transfer_dt);
+            publishPressureTarget(prepare_pressure_,
+                std::numeric_limits<double>::infinity());
+            publishCorrectionThrust(prepare_shape_thrust_);
+            const bool thrust_off = std::all_of(
+                prepare_shape_thrust_.begin(), prepare_shape_thrust_.end(),
+                [](double value) { return value <= 0.01; });
+            const bool stable = commanded_support_ready &&
+                measured_support_ready && thrust_off &&
+                std::abs(recovery_roll_rate) <=
+                    roll_recovery_config_.settle_rate;
+            if (stable)
+              {
+                if (recovery_safe_transfer_settled_since_.isZero())
+                  recovery_safe_transfer_settled_since_ = now;
+                if ((now - recovery_safe_transfer_settled_since_).toSec() >=
+                    recovery_handoff_settle_sec_)
+                  {
+                    grasp_pressure_ = recovery_safe_transfer_target_pressure_;
+                    recovery_contact_grasp_active_ = true;
+                    continuous_recovery_started_ = false;
+                    // The old resume gate deliberately accepts a settled
+                    // handoff even if continuous_recovery_blocked_ is true.
+                    // That exception is valid only for a verified retry,
+                    // never for a failed high-angle recovery.
+                    continuous_recovery_waiting_for_settle_ =
+                        recovery_safe_transfer_retry_allowed_;
+                    // No automatic retry after an unverified large-angle
+                    // fault. Resume requires a fresh operator command.
+                    continuous_recovery_blocked_ =
+                        !recovery_safe_transfer_retry_allowed_;
+                    if (hybridLocomotionActive() && action_c_resume_pending_)
+                      {
+                        hybrid_grasp_pressure_ = grasp_pressure_;
+                        hybrid_hold_pressure_ = true;
+                      }
+                    enterState(GRASP, now);
+                    ROS_WARN("Posture support transfer settled at roll %.1f deg; rotor off, measured grasp [%.1f %.1f %.1f %.1f] kPa, automatic correction %s",
+                        roll_error * 180.0 / M_PI,
+                        measured_pressure_[0], measured_pressure_[1],
+                        measured_pressure_[2], measured_pressure_[3],
+                        continuous_recovery_blocked_ ? "blocked" : "enabled");
+                    break;
+                  }
+              }
+            else
+              recovery_safe_transfer_settled_since_ = ros::Time(0);
+            if (!recovery_safe_transfer_failed_ &&
+                (now - state_start_).toSec() >=
+                    recovery_safe_transfer_timeout_sec_)
+              {
+                recovery_safe_transfer_failed_ = true;
+                posture_recovery_phase_ = hugmy::PostureRecoveryPhase::ABORT;
+                continuous_recovery_blocked_ = true;
+                recovery_safe_transfer_retry_allowed_ = false;
+                recovery_candidate_reselect_pending_ = false;
+                continuous_recovery_retry_opposite_pending_ = false;
+                ROS_ERROR("Posture SAFE_TRANSFER timed out after %.1f s; holding pneumatic support, rotor command continues to zero; automatic retry disabled",
+                    recovery_safe_transfer_timeout_sec_);
+              }
+            ROS_WARN_THROTTLE(1.0,
+                "Posture SAFE_TRANSFER: roll %.1f deg, target pressure [%.1f %.1f %.1f %.1f] kPa, measured_ready=%d command_ready=%d, rotor %.2f/%.2f N",
+                roll_error * 180.0 / M_PI,
+                recovery_safe_transfer_target_pressure_[0],
+                recovery_safe_transfer_target_pressure_[1],
+                recovery_safe_transfer_target_pressure_[2],
+                recovery_safe_transfer_target_pressure_[3],
+                measured_support_ready, commanded_support_ready,
+                prepare_shape_thrust_[0], prepare_shape_thrust_[2]);
+          }
+          break;
+
         case RECOVER:
         default:
           if (continuous_c_recovery && continuous_recovery_started_ &&
               continuous_roll_recovery_.finished)
             {
+              posture_recovery_phase_ = hugmy::PostureRecoveryPhase::CONTACT_RESTORE;
               // Repressurizing an extended arm changes both its moment arm and
               // its contact reaction.  Treat that as a measured disturbance:
               // advance pressure only inside the roll capture region, retain
@@ -4276,6 +4386,20 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
               const double signed_error = roll_error * correction_axis_[0];
               const double signed_rate = recovery_roll_rate * correction_axis_[0];
               const double abs_error = std::abs(roll_error);
+              // CONTACT_RESTORE is a near-target pressure/contact operation,
+              // not a fallback full-angle recovery PI.  If re-bending loses
+              // capture, transfer physical support and request an explicit
+              // new recovery rather than accumulating thrust for 20 seconds.
+              const double restore_capture_limit = std::max(
+                  15.0 * M_PI / 180.0,
+                  2.0 * (recovery_stop_angle +
+                         1.5 * roll_recovery_config_.stop_margin));
+              if (abs_error > restore_capture_limit)
+                {
+                  beginPostureSafeTransfer(now,
+                      "contact restoration lost near-target capture");
+                  break;
+                }
               // grasp_pressure_ may contain the contact-conditioned pressure
               // left by an earlier handoff.  It is useful as the present
               // command, but it must not become a ratchet which lowers the
@@ -4695,18 +4819,29 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                 feedforward = hugmy::recoveryClamp(
                     model.moment / model.lever, 0.0,
                     roll_recovery_config_.limit);
+              // The handoff controller must be weaker than the actual
+              // RECOVERY loop and can only integrate in settled contact.
+              const double contact_restore_limit = std::min(
+                  roll_recovery_config_.limit,
+                  recovery_contact_restore_thrust_limit_n_);
+              bool pressure_geometry_settled = true;
+              for (size_t arm = 0; arm < ARM_COUNT; ++arm)
+                pressure_geometry_settled = pressure_geometry_settled &&
+                    std::isfinite(measured_pressure_[arm]) &&
+                    std::abs(measured_pressure_[arm] - prepare_pressure_[arm]) <=
+                        recovery_safe_transfer_pressure_tolerance_kpa_;
               double integral_delta = hugmy::recoveryClamp(
                   roll_recovery_config_.rate_ki * rate_error,
                   -roll_recovery_config_.integral_rate,
                   roll_recovery_config_.integral_rate) * std::max(0.0, dt);
-              // At a quiet full-grasp plateau, gyro jitter can repeatedly
-              // cancel the small positive rate error and leave the command
-              // below contact breakaway indefinitely.  Preserve a slow,
-              // bounded rise until the half-margin brake entry is reached.
-              // Measured wrong-way motion and all amplitude/slew limits
-              // remain independent and take priority.
+              // A quiet full-grasp plateau must not *force* a positive I
+              // increment: that was the 20-second, 5.5-N pressure-restoration
+              // runaway on the human forearm. Ordinary PI is still used
+              // when measured motion is responsive, but it may not wind up
+              // solely because the error has stalled at fixed contact.
               const bool terminal_contact_plateau =
                   support_transfer_equalized &&
+                  pressure_geometry_settled &&
                   !recovery_handoff_braking_ &&
                   !recovery_handoff_thrust_wrong_way_ &&
                   signed_error > handoff_brake_entry &&
@@ -4716,22 +4851,25 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   std::abs(recovery_roll_rate) <
                       roll_recovery_config_.start_rate;
               if (terminal_contact_plateau)
-                integral_delta = std::max(integral_delta,
-                    roll_recovery_config_.integral_rate *
-                        std::max(0.0, dt));
+                integral_delta = std::min(0.0, integral_delta);
+              if (!pressure_geometry_settled || !support_transfer_equalized)
+                {
+                  integral_delta = 0.0;
+                  recovery_handoff_integral_n_ = 0.0;
+                }
               const double raw_target = feedforward +
                   roll_recovery_config_.rate_kp * rate_error +
                   recovery_handoff_integral_n_;
-              if ((integral_delta > 0.0 && raw_target >= roll_recovery_config_.limit) ||
+              if ((integral_delta > 0.0 && raw_target >= contact_restore_limit) ||
                   (integral_delta < 0.0 && raw_target <= 0.0))
                 integral_delta = 0.0;
               recovery_handoff_integral_n_ = hugmy::recoveryClamp(
                   recovery_handoff_integral_n_ + integral_delta,
-                  0.0, roll_recovery_config_.limit);
+                  0.0, contact_restore_limit);
               double handoff_target = hugmy::recoveryClamp(feedforward +
                   roll_recovery_config_.rate_kp * rate_error +
                   recovery_handoff_integral_n_, 0.0,
-                  roll_recovery_config_.limit);
+                  contact_restore_limit);
               // Keep measured roll feedback active below the nominal contact
               // floor as well.  The same released geometry has just produced
               // the successful correction; disabling it until 15 kPa leaves
@@ -4806,6 +4944,8 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   recovery_handoff_integral_n_ = 0.0;
                 }
               bool command_at_grasp = true;
+              handoff_target = std::min(handoff_target,
+                  contact_restore_limit);
               for (size_t arm = 0; arm < ARM_COUNT; ++arm)
                 command_at_grasp = command_at_grasp &&
                     std::abs(prepare_pressure_[arm] -
@@ -5019,10 +5159,11 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   // the same bounded high-authority gate used by the rotor
                   // phase.  A measured wrong-sign response remains an
                   // immediate independent rejection path above.
-                  const double handoff_retry_thrust = std::max(
-                      roll_recovery_config_.detect_thrust,
-                      roll_recovery_config_.limit *
-                          roll_recovery_config_.pair_retry_thrust_fraction);
+                  const double handoff_retry_thrust = std::min(
+                      contact_restore_limit,
+                      std::max(roll_recovery_config_.detect_thrust,
+                          contact_restore_limit *
+                              roll_recovery_config_.pair_retry_thrust_fraction));
                   const double handoff_retry_dwell =
                       recovery_selected_pair_release_
                       ? 2.0 * roll_recovery_config_.pair_retry_sec
@@ -5313,6 +5454,7 @@ void AttitudePressureController::update(const ros::TimerEvent& event)
                   abs_error <= active_handoff_settle_error;
               if (handoff_settled)
                 {
+                  posture_recovery_phase_ = hugmy::PostureRecoveryPhase::VERIFY;
                   if (ready_start_.isZero()) ready_start_ = now;
                   if ((now - ready_start_).toSec() >=
                       recovery_handoff_settle_sec_)
@@ -6086,18 +6228,19 @@ void AttitudePressureController::selectContinuousRecoveryPair(
           if (extended.valid && extended.score < best_extended.score)
             best_extended = extended;
         }
-      // A currently load-bearing rotor pair is based entirely on measured
-      // three-joint geometry and preserves support.  Prefer it during normal
-      // recovery even when an ideal alpha=0 endpoint predicts a slightly
-      // smaller thrust.  The straight-arm candidate is used only when no
-      // measured grasped state can restore roll, or when the emergency
-      // extension latch explicitly requests the larger moment arm.
-      const bool grasped_has_authority = best_grasped.valid &&
-          (best_grasped.required_thrust <= roll_recovery_config_.limit ||
-           !best_extended.valid);
+      // Compare every pair/contact topology with the *same* objective:
+      // model-required rotor force plus the estimated cost of removing
+      // contact support. The previous unconditional flexed preference could
+      // choose a 30-kPa arm despite a much better released candidate. For a
+      // fast-growing large angle, straight-arm geometry is a feasibility
+      // constraint rather than a soft preference: never silently return to
+      // the deep-grasped mode at large roll when release has been requested.
       selected = emergency_extension_requested
           ? best_extended
-          : (grasped_has_authority ? best_grasped : best_extended);
+          : (best_extended.valid &&
+             (!best_grasped.valid ||
+              best_extended.score + 1.0e-6 < best_grasped.score)
+                 ? best_extended : best_grasped);
     }
   else if (recovery_circle_selection_enabled_)
     {
@@ -6119,12 +6262,12 @@ void AttitudePressureController::selectContinuousRecoveryPair(
           if (extended.valid && extended.score < best_extended.score)
             best_extended = extended;
         }
-      const bool grasped_has_authority = best_grasped.valid &&
-          (best_grasped.required_thrust <= roll_recovery_config_.limit ||
-           !best_extended.valid);
       selected = emergency_extension_requested
           ? best_extended
-          : (grasped_has_authority ? best_grasped : best_extended);
+          : (best_extended.valid &&
+             (!best_grasped.valid ||
+              best_extended.score + 1.0e-6 < best_grasped.score)
+                 ? best_extended : best_grasped);
     }
 
   if (selected.valid)
@@ -6257,6 +6400,36 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   ROS_WARN("Circle recovery estimate unavailable; latched topology lower-side pair %zu+%zu in fully extended mode for roll error %.1f deg",
            pairs[lower_pair][0], pairs[lower_pair][1],
            roll_error * 180.0 / M_PI);
+}
+
+void AttitudePressureController::beginPostureSafeTransfer(
+    const ros::Time& now, const char* reason, bool retry_after_settle)
+{
+  // This branch does not mean that the attitude has been corrected.  It
+  // establishes a measured, load-bearing contact boundary after a failed
+  // rotor pass; another posture attempt needs explicit new authorization.
+  recovery_safe_transfer_target_pressure_ = recoveryReselectionPressure();
+  recovery_safe_transfer_retry_allowed_ = retry_after_settle;
+  recovery_safe_transfer_failed_ = false;
+  recovery_safe_transfer_settled_since_ = ros::Time(0);
+  continuous_recovery_blocked_ = !retry_after_settle;
+  continuous_recovery_started_ = false;
+  continuous_recovery_waiting_for_settle_ = false;
+  recovery_candidate_reselect_pending_ = retry_after_settle &&
+      recovery_rejected_candidate_mask_ != 0;
+  recovery_handoff_integral_n_ = 0.0;
+  recovery_handoff_braking_ = false;
+  action_c_resume_gate_.reset();
+  action_c_boundary_settle_gate_.reset();
+  enterState(POSTURE_SAFE_TRANSFER, now);
+  ROS_ERROR("Posture recovery interrupted (%s): SAFE_TRANSFER without roll PI, roll %.1f deg, measured pressure [%.1f %.1f %.1f %.1f] kPa -> safe target [%.1f %.1f %.1f %.1f] kPa; retaining existing rotor thrust only for bounded rundown",
+      reason, wrapAngle(roll_ - target_roll_) * 180.0 / M_PI,
+      measured_pressure_[0], measured_pressure_[1],
+      measured_pressure_[2], measured_pressure_[3],
+      recovery_safe_transfer_target_pressure_[0],
+      recovery_safe_transfer_target_pressure_[1],
+      recovery_safe_transfer_target_pressure_[2],
+      recovery_safe_transfer_target_pressure_[3]);
 }
 
 AttitudePressureController::PressureArray
@@ -6905,10 +7078,20 @@ void AttitudePressureController::enterState(uint8_t state, const ros::Time& now)
     "ACTION_C_REGRIP", "ROCK_BOTTOM_PRELOAD", "ROCK_FRONT_WINDUP",
     "ROCK_FRONT_LAND", "ROCK_REAR_UNLOAD", "ROCK_REAR_RECOVER",
     "ROCK_REAR_LAND", "ACTION_A_FRONT_PLACE", "ACTION_D_PREPARE",
-    "ACTION_D_RAMP", "ACTION_D_REGRIP"
+    "ACTION_D_RAMP", "ACTION_D_REGRIP", "POSTURE_SAFE_TRANSFER"
   };
   action_c_rear_release_gate_.reset();
   state_ = state;
+  if (state == POSTURE_SAFE_TRANSFER)
+    posture_recovery_phase_ = hugmy::PostureRecoveryPhase::SAFE_TRANSFER;
+  else if (state == PREPARE && continuous_recovery_started_)
+    posture_recovery_phase_ = hugmy::PostureRecoveryPhase::PREPARE;
+  else if (state == RECOVER && continuous_recovery_started_)
+    posture_recovery_phase_ = hugmy::PostureRecoveryPhase::CONTACT_RESTORE;
+  else if (state == GRASP)
+    posture_recovery_phase_ = continuous_recovery_blocked_
+        ? hugmy::PostureRecoveryPhase::ABORT
+        : hugmy::PostureRecoveryPhase::HOLD;
   correction_entry_gate_.reset();
   action_c_resume_gate_.reset();
   action_c_recovery_gate_.reset();
