@@ -166,6 +166,7 @@ assert 'action_c_requested_recovery_trigger_rad_ =\n                          st
 code=r'''
 #include <hugmy/control/continuous_roll_recovery.h>
 #include <hugmy/control/circular_grasp_geometry.h>
+#include <hugmy/control/roll_recovery_planner.h>
 #include <hugmy/model/pressure_thrust_bend_model.h>
 #include <array>
 #include <cassert>
@@ -200,6 +201,11 @@ public:
  hugmy::CircularGraspEstimate recovery_circle_event_estimate_;
  bool recovery_event_contact_pivot_locked_=false;
  Vector3 recovery_event_contact_pivot_{{0.,0.,-.07}};
+ bool recovery_unified_shadow_enabled_=false;
+ bool recovery_mocap_pose_valid_=false;
+ hugmy::recovery::Pose recovery_mocap_pose_;
+ hugmy::recovery::Vec3 recovery_circle_center_world_{{0.,0.,0.}};
+ bool recovery_circle_center_world_locked_=false;
  bool recovery_preferred_pair_locked_=false;
  size_t recovery_preferred_pair_index_=0;
  bool recovery_preferred_pair_used_fallback_=false;
@@ -294,6 +300,7 @@ public:
    const double age=(now-mocap_stamp_).toSec();return mocap_received_&&age>=0.&&age<=inchworm_mocap_timeout_sec_;
  }
  void selectContinuousRecoveryPair(double);
+ void logUnifiedRecoveryCandidates(double,double,const hugmy::recovery::Vec3&) {}
  double measuredArmBendAngle(size_t arm)const{return angles[arm];}
  Vector3 armContactPointFromAngle(size_t arm,double bend)const{
    return {{0.,arm<2?.04:-.04,-.07-.01*std::sin(bend)}};
