@@ -242,6 +242,7 @@ catkin_install_python(PROGRAMS
 
 add_library(hugmy_attitude_pressure_controller
   src/control/attitude_pressure_controller.cpp
+  src/control/roll_recovery_planner_adapter.cpp
   src/control/hybrid_locomotion.cpp)
 add_dependencies(hugmy_attitude_pressure_controller ${catkin_EXPORTED_TARGETS})
 target_link_libraries(hugmy_attitude_pressure_controller ${catkin_LIBRARIES})
@@ -251,6 +252,7 @@ target_link_libraries(hugmy_attitude_pressure_controller ${catkin_LIBRARIES})
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   set_source_files_properties(src/control/hybrid_locomotion.cpp
     src/control/attitude_pressure_controller.cpp
+    src/control/roll_recovery_planner_adapter.cpp
     PROPERTIES COMPILE_FLAGS "-O2")
 endif()
 

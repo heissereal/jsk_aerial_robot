@@ -240,6 +240,12 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
                  0.05236, 0.174533);
   pnh_.param("recovery_circle_selection_enabled",
              recovery_circle_selection_enabled_, true);
+  pnh_.param("recovery_unified_shadow_enabled",
+             recovery_unified_shadow_enabled_, false);
+  recovery_param("recovery_unsafe_roll_rad",
+                 recovery_unsafe_roll_rad_, 0.2, 1.5);
+  recovery_param("recovery_extension_response_sec",
+                 recovery_extension_response_sec_, 0.05, 2.0);
   recovery_param("recovery_circle_min_radius_m",
                  recovery_circle_min_radius_m_, 0.015, 0.10);
   recovery_param("recovery_circle_max_radius_m",
@@ -1803,6 +1809,22 @@ void AttitudePressureController::updateMocap(
 {
   mocap_position_ = {{msg->pose.position.x, msg->pose.position.y,
                       msg->pose.position.z}};
+  // Keep the mocap pose as a separate geometry observation; the navigation
+  // option below must not silently replace the Spinal-controlled attitude.
+  // The pose is needed to express a *fixed world* cylinder centre in the
+  // changing body frame when comparing roll recovery models.
+  hugmy::recovery::Quaternion recovery_q;
+  recovery_q.w = msg->pose.orientation.w;
+  recovery_q.x = msg->pose.orientation.x;
+  recovery_q.y = msg->pose.orientation.y;
+  recovery_q.z = msg->pose.orientation.z;
+  recovery_mocap_pose_valid_ = hugmy::recovery::valid(recovery_q) &&
+      hugmy::recovery::finite(mocap_position_);
+  if (recovery_mocap_pose_valid_)
+    {
+      recovery_mocap_pose_.position = mocap_position_;
+      recovery_mocap_pose_.rotation = recovery_q;
+    }
   if (use_mocap_attitude_for_inchworm_)
     {
       tf::Quaternion quaternion;
@@ -5585,6 +5607,11 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   recovery_wrong_geometry_response_observed_ = false;
   recovery_wrong_geometry_probe_target_valid_ = false;
 
+  // A new event is the only time a world-fixed cylinder centre can be
+  // latched.  Never reuse the previous event's absolute centre.
+  if (!recovery_event_contact_pivot_locked_)
+    recovery_circle_center_world_locked_ = false;
+
   const bool circle_model_available = recovery_circle_estimate_.valid &&
       recovery_circle_estimate_.confidence >= recovery_circle_min_confidence_ &&
       !recovery_circle_stamp_.isZero();
@@ -5994,6 +6021,33 @@ void AttitudePressureController::selectContinuousRecoveryPair(
         std::isfinite(candidate.score);
     return candidate;
   };
+
+  // Shadow-only planner: log four contact-conditioned candidate costs while
+  // the proven legacy controller still owns the motors.  Compare against
+  // real roll acceleration before enabling any new physical selection.
+  if (recovery_unified_shadow_enabled_ && circle_fresh)
+    {
+      Vector3 body_center = recovery_event_contact_pivot_;
+      const bool mocap_fresh = recovery_mocap_pose_valid_ &&
+          !mocap_stamp_.isZero() &&
+          (ros::Time::now() - mocap_stamp_).toSec() <= 0.25;
+      if (mocap_fresh)
+        {
+          if (!recovery_circle_center_world_locked_)
+            {
+              recovery_circle_center_world_ =
+                  hugmy::recovery::objectCenterWorld(body_center,
+                      recovery_mocap_pose_);
+              recovery_circle_center_world_locked_ = true;
+            }
+          body_center = hugmy::recovery::objectCenterBody(
+              recovery_circle_center_world_, recovery_mocap_pose_);
+        }
+      else
+        ROS_WARN("Unified recovery shadow: fresh mocap pose unavailable; cylinder centre remains frozen in body coordinates (frame-uncertain)");
+      logUnifiedRecoveryCandidates(roll_error,
+          required_moment * correction_sign, body_center);
+    }
 
   recovery_pair_selection_available_ = false;
   Candidate selected;

@@ -28,6 +28,7 @@
 #include <hugmy/control/rear_release_gate.h>
 #include <hugmy/control/roll_trend_gate.h>
 #include <hugmy/control/continuous_roll_recovery.h>
+#include <hugmy/control/roll_recovery_planner.h>
 #include <hugmy/control/recovery_predictive_control.h>
 #include <hugmy/control/pulse_bend_observer.h>
 #include <hugmy/control/circular_grasp_geometry.h>
@@ -62,6 +63,9 @@ private:
   void handMocapCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
   void rootHandMocapCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
   void updateHandMocap(const geometry_msgs::PoseStamped::ConstPtr& msg);
+  void logUnifiedRecoveryCandidates(double roll_error,
+                                    double required_moment,
+                                    const hugmy::recovery::Vec3& circle_center_body);
   bool enableCallback(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res);
   void update(const ros::TimerEvent& event);
 
@@ -378,6 +382,15 @@ private:
   // The estimate selects both the rotor pair and whether that pair should
   // remain flexed/grasping or be released to obtain a useful moment arm.
   bool recovery_circle_selection_enabled_ = true;
+  // Non-actuating comparison of the standalone four-candidate planner against
+  // the legacy controller.  Intentionally opt-in until real bag validation.
+  bool recovery_unified_shadow_enabled_ = false;
+  double recovery_unsafe_roll_rad_ = 45.0 * M_PI / 180.0;
+  double recovery_extension_response_sec_ = 0.5;
+  hugmy::recovery::Pose recovery_mocap_pose_;
+  bool recovery_mocap_pose_valid_ = false;
+  hugmy::recovery::Vec3 recovery_circle_center_world_{{0.0, 0.0, 0.0}};
+  bool recovery_circle_center_world_locked_ = false;
   double recovery_circle_min_radius_m_ = 0.025;
   double recovery_circle_max_radius_m_ = 0.15;
   double recovery_circle_max_rms_m_ = 0.015;
