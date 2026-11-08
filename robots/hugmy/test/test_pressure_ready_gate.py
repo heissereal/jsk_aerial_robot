@@ -11,7 +11,8 @@ import tempfile
 
 def main():
     root = pathlib.Path(__file__).resolve().parents[1]
-    source = (root / 'src/control/attitude_pressure_controller.cpp').read_text()
+    source = (root / 'src/control/attitude_pressure_controller.cpp').read_text() + '\n' + \
+        (root / 'src/control/posture_recovery_controller.cpp').read_text()
     hybrid_source = (root / 'src/control/hybrid_locomotion.cpp').read_text()
     assert 'pressure_valid && actionCPressureReady(' in source
     assert 'recovered = pressure_valid && actionCPressureReady(grasp_pressure_, now)' in source

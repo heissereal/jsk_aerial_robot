@@ -116,7 +116,7 @@ hybrid_pull_golden_roll_limit_rad: 0.20943951023931953 # 12 deg
 # by setting this true, but is not the production default on compliant skin.
 hybrid_identification_hold_rear_grasp: false
 hybrid_lift_rear_release_start_ratio: 0.10 # begin relaxing rear support after 10% of paired Motion-2 extension
-hybrid_lift_rear_pressure_floor_kpa: 7.5
+hybrid_lift_rear_pressure_floor_kpa: 0.0
 # Experimental short-pulse Motion 2. Explicit opt-in: keep 30-kPa rear grasp,
 # step down only on measured front-pair extension stalls, and enter Motion 3
 # after both front arms reach their relative extension target (15 deg above).
@@ -124,6 +124,15 @@ hybrid_lift_rear_pressure_floor_kpa: 7.5
 hybrid_motion2_rear_anchor_search_enabled: false
 hybrid_motion2_rear_min_pressure_kpa: 20.0 # primary per-object tuning knob
 hybrid_motion2_release_start_ratio: 0.10 # primary per-object tuning knob
+# Independent optional handoff for large/rigid contacts with little body
+# pitch/height response. First Motion-2 still identifies powered extension;
+# later strokes reuse measured travel. Enable only after simulation/dry-run.
+hybrid_motion2_paired_extension_handoff_enabled: false
+hybrid_motion2_handoff_max_extension_rad: 0.7853981633974483 # 45 deg
+hybrid_motion2_handoff_stall_seconds: 0.25
+hybrid_motion2_handoff_stall_rate_rad_s: 0.08726646259971647 # 5 deg/s
+hybrid_motion2_handoff_learned_margin_rad: 0.03490658503988659 # 2 deg
+hybrid_motion2_handoff_rear_pressure_tolerance_kpa: 3.0
 # The slip probe and first unloading stroke initialize one signed rear-support
 # coordinate. -1 is release plus positive assist, +1 is pressure support plus
 # reverse assist when pressure is late. Subsequent changes are candidates in
@@ -143,15 +152,16 @@ hybrid_rear_pressure_adaptation_progress_m: 0.002
 # Set true only when a pure front-force sliding classification is required.
 hybrid_slip_preserve_rear_grasp: false
 hybrid_rear_support_probe_sliding: -1.0
-hybrid_rear_support_probe_stable: -0.5 # no sustained slip: start at 7.5 kPa and close the rear-bend loop
+hybrid_rear_support_probe_stable: -0.75 # no sustained slip: start near 3.75 kPa and close the rear-bend loop
 hybrid_rear_support_probe_unstable: 0.25
 # A worsening roll can only increase support. At 4 deg it starts cancelling
 # release; by 10 deg it requests the full pressure/reverse-support end.
 hybrid_rear_support_roll_start_rad: 0.06981317007977318 # 4 deg
 hybrid_rear_support_roll_full_rad: 0.17453292519943295 # 10 deg
-# From the first Motion 2, the slip-derived prior and rear-bend feedback may
-# use the complete 0--30-kPa range without clipping the optimizer's request.
-hybrid_rear_motion_pressure_cap_kpa: 30.0
+# Pre-release the rear pair from the measured pneumatic delay and keep it
+# compliant throughout Motion 2/3. Small roll changes may reshape thrust but
+# cannot refill the rear chambers; full pressure belongs to recovery/regrip.
+hybrid_rear_motion_pressure_cap_kpa: 7.5
 hybrid_rear_release_angle_min_rad: 0.05235987755982989 # 3 deg
 hybrid_rear_release_angle_max_rad: 0.08726646259971647 # 5 deg
 hybrid_rear_release_angle_filter_tau_sec: 0.06

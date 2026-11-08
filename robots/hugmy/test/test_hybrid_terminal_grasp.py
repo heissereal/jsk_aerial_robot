@@ -5,7 +5,8 @@ import subprocess
 import tempfile
 
 root=Path(__file__).resolve().parents[1]
-src=(root/'src/control/attitude_pressure_controller.cpp').read_text()
+src=(root/'src/control/attitude_pressure_controller.cpp').read_text() + '\n' + \
+    (root/'src/control/posture_recovery_controller.cpp').read_text()
 hybrid=(root/'src/control/hybrid_locomotion.cpp').read_text()
 mpc=(root/'include/hugmy/control/hybrid_locomotion_mpc.h').read_text()
 config=(root/'config/attitude_pressure_controller.yaml').read_text()
@@ -64,7 +65,7 @@ for text in (src,hybrid,mpc,config):
     assert 'hybrid_locomotion_task_timeout_sec' not in text
 assert 'task_timeout=' not in mpc
 begin=src.index('void AttitudePressureController::stopInchwormToGrasp(')
-stop=src[begin:src.index('void AttitudePressureController::requestActionCPostureRecovery(',begin)]
+stop=src[begin:src.index('bool AttitudePressureController::resumeActionCAfterRecovery(',begin)]
 code=r'''
 #include <array>
 #include <limits>

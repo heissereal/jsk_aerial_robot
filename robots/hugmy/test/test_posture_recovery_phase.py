@@ -9,7 +9,8 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
-source = (root / "src/control/attitude_pressure_controller.cpp").read_text()
+source = (root / "src/control/attitude_pressure_controller.cpp").read_text() + "\n" + \
+    (root / "src/control/posture_recovery_controller.cpp").read_text()
 header = (root / "include/hugmy/control/attitude_pressure_controller.h").read_text()
 
 assert "POSTURE_SAFE_TRANSFER = 29" in header  # keep recorded ROS IDs stable
@@ -34,7 +35,10 @@ safe_state = source[source.index("case POSTURE_SAFE_TRANSFER:"):
 assert "recoveryBoundedPressureStep(" in safe_state
 assert "recoverySafeThrustRundown(" in safe_state
 assert "measured_support_ready" in safe_state
-assert "recovery_safe_transfer_settled_since_" in safe_state
+assert "RecoverySupportObservation" in safe_state
+assert "RecoverySafeTransferPhase::SUPPORT_VERIFY" in safe_state
+assert "RecoverySafeTransferPhase::THRUST_RELEASE" in safe_state
+assert "recovery_support_monitor_.update(" in safe_state
 assert "continuous_recovery_blocked_" in safe_state
 assert "continuous_roll_recovery_.update(" not in safe_state
 assert "recovery_handoff_integral_n_ +" not in safe_state
@@ -44,6 +48,7 @@ code = r"""
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <string>
 int main() {
   using namespace hugmy;
   const double d=M_PI/180.;
@@ -80,6 +85,33 @@ int main() {
   assert(std::abs(p-25.)<1.e-8 && t<.18);
   assert(recoverySafeThrustRundown(5.5,3.,.02)<5.5);
   assert(recoverySafeThrustRundown(NAN,3.,.02)==0.);
+  // Pressure alone is not physical support. Bend and body attitude must stay
+  // stable through the verification dwell, and thrust-off stability is a
+  // separate final condition.
+  RecoverySupportConfig support_cfg;
+  RecoverySupportObservation support;
+  support.sensors_valid=true;
+  support.pressure={{30.,30.,30.,30.}};
+  support.target_pressure={{30.,30.,30.,30.}};
+  support.bend={{1.,1.,1.,1.}};
+  support.roll=.2;support.pitch=.1;
+  support.roll_rate=0.;support.pitch_rate=0.;support.maximum_thrust=1.;
+  RecoverySupportMonitor monitor;
+  assert(!monitor.update(support,0.,support_cfg,false));
+  assert(!monitor.update(support,.2,support_cfg,false));
+  assert(monitor.update(support,.31,support_cfg,false));
+  monitor.reset();
+  support.maximum_thrust=0.;
+  assert(!monitor.update(support,1.,support_cfg,true));
+  support.bend[0]+=.1;
+  assert(!monitor.update(support,1.2,support_cfg,true));
+  support.bend[0]-=.1;
+  assert(!monitor.update(support,1.4,support_cfg,true));
+  assert(monitor.update(support,1.71,support_cfg,true));
+  monitor.reset();support.pressure[0]=0.;support.pressure[1]=0.;
+  assert(!monitor.update(support,2.,support_cfg,true));
+  assert(std::string(recoveryFaultReasonName(
+      RecoveryFaultReason::ABSOLUTE_WATCHDOG))=="absolute_watchdog");
   std::puts("PASS: phase exits, pressure-settled probe, monotone safe thrust and bounded support transfer");
 }
 """

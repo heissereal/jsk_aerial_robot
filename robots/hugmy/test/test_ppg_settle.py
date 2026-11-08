@@ -4,7 +4,8 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 root = Path(__file__).resolve().parents[1]
-controller = (root / 'src/control/attitude_pressure_controller.cpp').read_text()
+controller = (root / 'src/control/attitude_pressure_controller.cpp').read_text() + '\n' + \
+    (root / 'src/control/posture_recovery_controller.cpp').read_text()
 hybrid = (root / 'src/control/hybrid_locomotion.cpp').read_text()
 config = (root / 'config/attitude_pressure_controller.yaml').read_text()
 

@@ -5,7 +5,8 @@ import subprocess
 import tempfile
 
 root = pathlib.Path(__file__).resolve().parents[1]
-source = (root / 'src/control/attitude_pressure_controller.cpp').read_text()
+source = (root / 'src/control/attitude_pressure_controller.cpp').read_text() + '\n' + \
+    (root / 'src/control/posture_recovery_controller.cpp').read_text()
 
 def function(name, result):
     start = source.index('AttitudePressureController::' + name + '(')

@@ -4,7 +4,8 @@ import pathlib
 import subprocess
 import tempfile
 root=pathlib.Path(__file__).resolve().parents[1]
-source=(root/'src/control/attitude_pressure_controller.cpp').read_text()
+source=(root/'src/control/posture_recovery_controller.cpp').read_text() + '\n' + \
+    (root/'src/control/attitude_pressure_controller.cpp').read_text()
 start=source.index('bool AttitudePressureController::resumeActionCAfterRecovery(')
 resume=source[start:source.index('bool AttitudePressureController::actionCRearReleased(',start)]
 start=source.index('const bool retry_opposite_pair =')
@@ -151,7 +152,8 @@ assert 'continuous_recovery_retry_opposite_pending_ ||' in source
 assert 'const double retained_equilibrium_limit =\n              action_c_posture_resume_rad_;' in source
 assert 'abs_error <= handoff_drive_stop))' in source
 assert 'abs_error > active_handoff_settle_error' in source
-assert 'abs_error <= active_handoff_settle_error;' in source
+assert 'abs_error <= active_handoff_settle_error &&\n                  physical_support_verified;' in source
+assert 'RecoverySupportObservation handoff_support;' in source
 assert 'monitoring final nominal regrasp' in source
 hybrid_source=(root/'src/control/hybrid_locomotion.cpp').read_text()
 assert 'pre_stroke_budget_exhausted=settled && hybrid_phase_==0' in hybrid_source
@@ -220,6 +222,10 @@ public:
  bool recovery_extension_mode_latched_=false;
  int recovery_extension_direction_sign_=0;
  bool recovery_rate_arrest_active_=false;
+ bool recovery_event_active_=false;
+ ros::Time recovery_event_start_;
+ hugmy::RecoveryFaultReason recovery_fault_reason_=
+     hugmy::RecoveryFaultReason::NONE;
  ros::Time recovery_rate_arrest_nonoutward_since_;
  double recovery_rate_arrest_reference_error_rad_=NAN;
  double recovery_extension_prediction_sec_=.30;
@@ -249,7 +255,8 @@ public:
  }
  void enterState(int s,ros::Time){state=s;}
  double recovery_stop_angle=3.*M_PI/180.;double roll_error=.5;
- void beginPostureSafeTransfer(ros::Time,const char*,bool=false){
+ void beginPostureSafeTransfer(ros::Time,const char*,bool=false,
+     hugmy::RecoveryFaultReason=hugmy::RecoveryFaultReason::UNCLASSIFIED){
    ++safe_transfers;continuous_recovery_blocked_=true;
    continuous_recovery_started_=false;
    continuous_recovery_waiting_for_settle_=false;
@@ -257,6 +264,11 @@ public:
  }
  void timeoutTransition(ros::Time now){
    const double contact_capture_limit=recovery_stop_angle+1.5*roll_recovery_config_.stop_margin;
+   // The extracted production fault branch is evaluated only after these
+   // sensor/model prerequisites have been computed by PREPARE.
+   const bool recovery_inputs_valid=true;
+   hugmy::RollRecoveryModel model;
+   model.valid=true;
    do {TIMEOUT} while(false);
  }
  ros::Time mocap_stamp_{10};double inchworm_mocap_timeout_sec_=1.;

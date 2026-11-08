@@ -18,7 +18,8 @@ hard=source[start:source.index('  // Below the hard boundary',start)]
 assert 'Hybrid guarded support catch' in source
 start=source.index('  const double boundary_bottom_tolerance=')
 conditions=source[start:source.index('  const bool quiet=',start)]
-controller=(root/'src/control/attitude_pressure_controller.cpp').read_text()
+controller=(root/'src/control/posture_recovery_controller.cpp').read_text() + '\n' + \
+    (root/'src/control/attitude_pressure_controller.cpp').read_text()
 recovery=controller.split('void AttitudePressureController::requestActionCPostureRecovery(')[1].split('bool AttitudePressureController::resumeActionCAfterRecovery(')[0]
 assert 'publishBottomTarget(0.0)' in recovery
 # A completed/interrupted hybrid action must be scored only after bottom

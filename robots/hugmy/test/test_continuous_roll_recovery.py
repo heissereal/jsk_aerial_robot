@@ -5,7 +5,8 @@ import subprocess
 import tempfile
 
 root = pathlib.Path(__file__).resolve().parents[1]
-source = (root / 'src/control/attitude_pressure_controller.cpp').read_text()
+source = (root / 'src/control/attitude_pressure_controller.cpp').read_text() + '\n' + \
+    (root / 'src/control/posture_recovery_controller.cpp').read_text()
 output_start = source.index('void AttitudePressureController::publishCorrectionThrust(')
 output_end = source.index('double AttitudePressureController::pwmModelForce(',
                           output_start)
@@ -307,18 +308,28 @@ int main() {
   ContinuousRollRecovery invalid;invalid.reset(.5,0.);invalid.thrust=2.;
   invalid.update(.5,.15,.02,.02,m,no_brake,response);assert(invalid.fault && invalid.thrust==0.);
   m.moment=.2;
-  // Predictive stop, target crossing, bad input, high angular rate, clock gap.
+  // Predictive stop, target crossing, bad input, worsening angular rate,
+  // clock gap. A fast *restorative* rate is handled by predictive braking,
+  // not classified as the same fault.
   for(int kind=0;kind<5;++kind) {
     ContinuousRollRecovery a;a.reset(.5,0.);
     double e=.5,w=0,t=.02;
     if(kind==0)e=-.01;
     if(kind==1)e=std::numeric_limits<double>::quiet_NaN();
-    if(kind==2)w=.8;
+    if(kind==2)w=-.8;
     if(kind==3)t=.30;
     if(kind==4)t=-.01;
     a.update(e,w,t,.02,m,cfg,response);
     assert(a.thrust==0. && (kind==0 ? !a.finished && !a.fault : a.fault));
   }
+  ContinuousRollRecovery restorative_rate;restorative_rate.reset(.5,0.);
+  restorative_rate.thrust=2.;
+  restorative_rate.update(.5,2.4,.02,.02,m,cfg,response);
+  assert(!restorative_rate.fault && restorative_rate.thrust<2.);
+  ContinuousRollRecovery worsening_rate;worsening_rate.reset(.5,0.);
+  worsening_rate.thrust=2.;
+  worsening_rate.update(.5,-.81,.02,.02,m,cfg,response);
+  assert(worsening_rate.fault && worsening_rate.thrust==0.);
   // Crossing beyond the target hysteresis cannot be corrected by the same
   // one-direction rotor pair.  Request an immediate zero-thrust pair retry
   // instead of waiting through the generic no-progress timeout.
@@ -432,6 +443,25 @@ int main() {
     }
     assert(no_progress.timed_out && no_progress.last_progress==0.);
   }
+  // A changing pneumatic target disables candidate attribution, but it must
+  // not renew the global no-progress timer. This reproduces the former 45-s
+  // 4-N stall in which allow_response_faults stayed false indefinitely.
+  ContinuousRollRecovery pressure_transient;
+  pressure_transient.reset(25*deg,0.);
+  RollRecoveryConfig short_abort=cfg;
+  short_abort.abort_sec=2.;short_abort.pair_retry_sec=8.;
+  for(int i=1;i<=180 && !pressure_transient.timed_out;++i)
+    pressure_transient.update(25*deg,0.,i*.02,.02,m,short_abort,response,
+                              std::numeric_limits<double>::quiet_NaN(),false);
+  assert(pressure_transient.timed_out && pressure_transient.last_progress==0.);
+  // Explicit response-window resets likewise may not renew that watchdog.
+  ContinuousRollRecovery repeated_resets;
+  repeated_resets.reset(25*deg,0.);
+  for(int i=1;i<=180 && !repeated_resets.timed_out;++i) {
+    if(i%10==0) repeated_resets.resetResponseWindow(25*deg,i*.02);
+    repeated_resets.update(25*deg,0.,i*.02,.02,m,short_abort,response);
+  }
+  assert(repeated_resets.timed_out && repeated_resets.last_progress==0.);
   returning.reset(30*deg,26.);
   assert(returning.progress_history.size()==1 && returning.recent_progress==0.);
   returning.update(30*deg,0.,26.02,.02,m,cfg,response);

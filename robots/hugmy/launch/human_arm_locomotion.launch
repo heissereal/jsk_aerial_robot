@@ -24,17 +24,24 @@
   <arg name="hybrid_trajectory_min_extension_rad" default="0.2617993877991494" />
   <arg name="hybrid_trajectory_extension_rate_rad_s" default="0.70" />
   <arg name="hybrid_lift_rear_release_start_ratio" default="0.10" />
-  <arg name="hybrid_lift_rear_pressure_floor_kpa" default="15.0" />
+  <arg name="hybrid_lift_rear_pressure_floor_kpa" default="0.0" />
   <!-- Opt-in: short Motion-2 paired extension with stall-triggered rear
        pressure steps. Keep disabled until a fixture-supported dry run. -->
   <arg name="hybrid_motion2_rear_anchor_search_enabled" default="false" />
   <arg name="hybrid_motion2_rear_min_pressure_kpa" default="20.0" />
   <arg name="hybrid_motion2_release_start_ratio" default="0.10" />
+  <arg name="hybrid_motion2_paired_extension_handoff_enabled" default="false" />
+  <arg name="hybrid_motion2_handoff_max_extension_rad" default="0.7853981633974483" />
+  <arg name="hybrid_motion2_handoff_stall_seconds" default="0.25" />
+  <arg name="hybrid_motion2_handoff_stall_rate_rad_s" default="0.08726646259971647" />
+  <arg name="hybrid_motion2_handoff_learned_margin_rad" default="0.03490658503988659" />
+  <arg name="hybrid_motion2_handoff_rear_pressure_tolerance_kpa" default="3.0" />
   <arg name="hybrid_slip_preserve_rear_grasp" default="false" />
-  <!-- The measured optimizer, rather than the launch profile, chooses any
-       additional rear release around this probe-derived baseline. -->
-  <arg name="hybrid_rear_support_probe_stable" default="0.0" />
-  <arg name="hybrid_rear_motion_pressure_cap_kpa" default="30.0" />
+  <!-- Start from the release-side prior measured by the slip probe. Motion
+       2/3 retain a compliant rear contact; recovery/regrip alone restores the
+       30-kPa grasp. -->
+  <arg name="hybrid_rear_support_probe_stable" default="-0.75" />
+  <arg name="hybrid_rear_motion_pressure_cap_kpa" default="7.5" />
   <arg name="hybrid_rear_release_angle_min_rad" default="0.05235987755982989" />
   <arg name="hybrid_rear_release_angle_max_rad" default="0.08726646259971647" />
   <arg name="hybrid_rear_release_assist_deadband_rad" default="0.008726646259971648" />
@@ -89,6 +96,18 @@
          value="$(arg hybrid_motion2_rear_min_pressure_kpa)" />
     <arg name="hybrid_motion2_release_start_ratio"
          value="$(arg hybrid_motion2_release_start_ratio)" />
+    <arg name="hybrid_motion2_paired_extension_handoff_enabled"
+         value="$(arg hybrid_motion2_paired_extension_handoff_enabled)" />
+    <arg name="hybrid_motion2_handoff_max_extension_rad"
+         value="$(arg hybrid_motion2_handoff_max_extension_rad)" />
+    <arg name="hybrid_motion2_handoff_stall_seconds"
+         value="$(arg hybrid_motion2_handoff_stall_seconds)" />
+    <arg name="hybrid_motion2_handoff_stall_rate_rad_s"
+         value="$(arg hybrid_motion2_handoff_stall_rate_rad_s)" />
+    <arg name="hybrid_motion2_handoff_learned_margin_rad"
+         value="$(arg hybrid_motion2_handoff_learned_margin_rad)" />
+    <arg name="hybrid_motion2_handoff_rear_pressure_tolerance_kpa"
+         value="$(arg hybrid_motion2_handoff_rear_pressure_tolerance_kpa)" />
     <arg name="hybrid_slip_preserve_rear_grasp"
          value="$(arg hybrid_slip_preserve_rear_grasp)" />
     <arg name="hybrid_rear_support_probe_stable"

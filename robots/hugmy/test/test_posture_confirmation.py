@@ -9,7 +9,8 @@ import tempfile
 
 def main():
     root = pathlib.Path(__file__).resolve().parents[1]
-    source = (root / 'src/control/attitude_pressure_controller.cpp').read_text()
+    source = (root / 'src/control/attitude_pressure_controller.cpp').read_text() + '\n' + \
+        (root / 'src/control/posture_recovery_controller.cpp').read_text()
     config = (root / 'config/attitude_pressure_controller.yaml').read_text()
     for key, value in [('correction_trigger_angle_rad', math.radians(8)),
                        ('action_c_posture_recovery_trigger_rad', math.radians(10)),

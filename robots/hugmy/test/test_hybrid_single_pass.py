@@ -779,16 +779,20 @@ int main(){
  }
  in.s.roll=0.;
  in.s.roll_rate=0.;
+ double vent_rear_command=in.base_pressure;
  for(int i=0;i<50;++i){
    auto o=p.update(in,c,k,model,geom);
-   assert(o.thrust[0]==0. && o.rear_pressure==in.base_pressure);
+   assert(o.thrust[0]==0. &&
+          o.rear_pressure<=vent_rear_command+1e-9);
+   vent_rear_command=o.rear_pressure;
    in.s.command=o.pressure;
  }
  assert(p.phase==SinglePass::VentFront && p.powered_time==0.);
  const auto led_rear=p.update(in,c,k,model,geom);
- // Front vent changes only the front support. The first extension test enters
- // Motion 2 with the rear pair still at the measured grasp pressure.
- assert(led_rear.rear_pressure==in.base_pressure);
+ // Rear exhaust is led from the measured valve response so ordinary Motion 2
+ // starts inside the compliant corridor instead of opening the valve after
+ // onset. The explicit short Motion-2 anchor search remains a separate mode.
+ assert(led_rear.rear_pressure<=k.rear_motion_pressure_cap);
  assert(in.s.command[0]>=0.); // command may already be zero; measured pressure still gates Lift
  // VentFront is a zero-thrust preparation boundary with one common pressure
  // target; relative extension is owned by the following powered phase.
@@ -802,7 +806,7 @@ int main(){
         vent_sync.pressure_target[0]<30. &&
         vent_sync_out.thrust[0]==0. && vent_sync_out.thrust[1]==0. &&
         vent_sync_out.pressure[0]<30. && vent_sync_out.pressure[1]<30. &&
-        vent_sync_out.rear_pressure==vent_sync_in.base_pressure);
+        vent_sync_out.rear_pressure<=vent_sync_in.base_pressure);
  assert(vent_sync.phase==SinglePass::VentFront);
  // An asymmetric event-completion pair is not a valid breakaway pair.  It
  // cannot leak into VentFront, and without two measured onsets the next Lift
@@ -837,11 +841,11 @@ int main(){
  in.s.pressure={{0.,0.}};in.rear_pressure=30.;
  for(int i=0;i<11;++i){auto o=p.update(in,c,k,model,geom);in.s.command=o.pressure;in.s.thrust=o.thrust;}
  assert(p.phase==SinglePass::Lift && p.lift_probe_entries==1);
- // The first Motion-2 reach identifies only the front extension/unloading
- // response. Its rear pair remains a 30-kPa pivot; rear angle feedback and
- // positive assist are reserved for calibrated locomotion strokes.
+ // The first ordinary Motion-2 reach keeps the predictively established rear
+ // release. Pressure alone does not enable positive assist without valid
+ // rear-angle kinematics and a sustained measured release deficit.
  const auto preserved_rear=p.update(in,c,k,model,geom);
- assert(std::abs(preserved_rear.rear_pressure-in.base_pressure)<1e-9 &&
+ assert(preserved_rear.rear_pressure<=k.rear_motion_pressure_cap &&
         !p.rear_angle_feedback_active &&
         preserved_rear.rear_positive_thrust==0.);
  // Above 45 deg a physically extreme outward-rate spike is considered by
@@ -1680,19 +1684,20 @@ int main(){
  assert(predicted_vent.rear_pressure>=k.lift_rear_pressure_floor &&
         predicted_vent.rear_pressure<30.);
  assert(reused.phase==SinglePass::Lift);
- // Mild outward roll raises rear support continuously instead of jumping to
- // 30 kPa. Only the confirmed soft-roll brake restores the full rear pivot.
+ // Small roll changes and an internal soft brake cannot refill the rear pair
+ // during ordinary Motion 2. The outer all-phase safety guard owns the
+ // transfer to shared posture recovery.
  SinglePass roll_guarded=reused;auto roll_guarded_input=reused_input;
  roll_guarded_input.s.roll=.08;roll_guarded_input.s.roll_rate=.05;
  auto restored_rear=roll_guarded.update(
      roll_guarded_input,c,k,model,geom);
- assert(restored_rear.rear_pressure+1e-9>=predicted_vent.rear_pressure &&
-        restored_rear.rear_pressure<in.base_pressure);
+ assert(restored_rear.rear_pressure<=predicted_vent.rear_pressure+1e-9 &&
+        restored_rear.rear_pressure<=k.rear_motion_pressure_cap);
  roll_guarded_input.s.roll=.20;roll_guarded_input.s.roll_rate=.10;
  for(int i=0;i<10;++i)
    restored_rear=roll_guarded.update(
        roll_guarded_input,c,k,model,geom);
- assert(std::abs(restored_rear.rear_pressure-in.base_pressure)<1e-9 &&
+ assert(restored_rear.rear_pressure<=k.rear_motion_pressure_cap &&
         restored_rear.rear_positive_thrust==0.);
  reused_input.s.thrust={{2.,2.}};
  reused_input.height=k.unload_height;
@@ -1701,23 +1706,23 @@ int main(){
    reused.update(reused_input,c,k,model,geom);
  assert(reused.phase==SinglePass::Pull && reused.unload_event_detected);
  assert(reused.front_target_latched);
- // The same continuous support blend remains active after the Motion-2/3
- // handoff. A mild outward trend increases pressure without destroying the
- // low-pressure interval; a confirmed brake still restores full grasp.
+ // The same one-way pressure schedule remains active after the ordinary
+ // Motion-2/3 handoff. Neither a mild roll trend nor an internal brake
+ // restores grasp; the outer safety/recovery state owns that transition.
  SinglePass pull_roll_guarded=reused;auto pull_roll_input=reused_input;
  auto pull_nominal_rear=pull_roll_guarded.update(
      pull_roll_input,c,k,model,geom);
  pull_roll_input.s.roll=.08;pull_roll_input.s.roll_rate=.05;
  auto pull_restored_rear=pull_roll_guarded.update(
      pull_roll_input,c,k,model,geom);
- assert(pull_restored_rear.rear_pressure+1e-9>=
-            pull_nominal_rear.rear_pressure &&
-        pull_restored_rear.rear_pressure<in.base_pressure);
+ assert(pull_restored_rear.rear_pressure<=
+            pull_nominal_rear.rear_pressure+1e-9 &&
+        pull_restored_rear.rear_pressure<=k.rear_motion_pressure_cap);
  pull_roll_input.s.roll=.20;pull_roll_input.s.roll_rate=.10;
  for(int i=0;i<10;++i)
    pull_restored_rear=pull_roll_guarded.update(
        pull_roll_input,c,k,model,geom);
- assert(std::abs(pull_restored_rear.rear_pressure-in.base_pressure)<1e-9 &&
+ assert(pull_restored_rear.rear_pressure<=k.rear_motion_pressure_cap &&
         pull_restored_rear.rear_positive_thrust==0.);
  // With explicit simulation contacts, a weak pitch/height transient and less
  // than the requested pair travel are not an unloading event.  A sustained

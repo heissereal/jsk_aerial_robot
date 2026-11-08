@@ -7,9 +7,9 @@ import tempfile
 
 def main():
     root = pathlib.Path(__file__).resolve().parents[1]
-    src = (root / 'src/control/attitude_pressure_controller.cpp').read_text()
+    src = (root / 'src/control/posture_recovery_controller.cpp').read_text()
     start = src.index('void AttitudePressureController::requestActionCPostureRecovery(')
-    request = src[start:src.index('bool AttitudePressureController::resumeActionCAfterRecovery(', start)]
+    request = src[start:src.index('\n}\n', start) + 3]
     adapter = (root / 'src/control/hybrid_locomotion.cpp').read_text()
     assert 'requestActionCPostureRecovery(now,' in adapter
     assert 'pauseHybridLocomotion(now)' in request
@@ -19,6 +19,7 @@ def main():
 #include <vector>
 #include <cassert>
 #include <limits>
+#include <hugmy/control/posture_recovery_phase.h>
 #define ROS_WARN(...) ((void)0)
 namespace ros {struct Time {explicit Time(double=0.){}};}
 struct AttitudePressureController {
@@ -48,6 +49,10 @@ struct AttitudePressureController {
  bool recovery_extension_mode_latched_=false;
  int recovery_extension_direction_sign_=0;
  bool recovery_rate_arrest_active_=false;
+ ros::Time recovery_event_start_;
+ bool recovery_event_active_=false;
+ hugmy::RecoveryFaultReason recovery_fault_reason_=
+     hugmy::RecoveryFaultReason::NONE;
  ros::Time recovery_rate_arrest_nonoutward_since_;
  double recovery_rate_arrest_reference_error_rad_=std::numeric_limits<double>::quiet_NaN();
  double action_c_absolute_target_x_m_=0.1;

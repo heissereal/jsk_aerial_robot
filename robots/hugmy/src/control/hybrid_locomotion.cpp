@@ -160,6 +160,7 @@ void AttitudePressureController::startHybridLocomotion(const ros::Time& now)
 
 void AttitudePressureController::resetRecoveryHandoffState()
 {
+  recovery_support_monitor_.reset();
   recovery_handoff_integral_n_ = 0.0;
   recovery_handoff_brake_error_rad_ = 0.0;
   recovery_handoff_best_error_rad_ = std::numeric_limits<double>::infinity();
@@ -1342,6 +1343,15 @@ void AttitudePressureController::updateHybridLocomotion(const ros::Time& now,dou
           hybrid_single_.rear_support_prior,
           hybrid_single_.rearPressureFloor(hybrid_single_config_),
           hybrid_single_.pull_forward);
+    if(previous_phase==SinglePass::Lift &&
+       hybrid_single_.phase==SinglePass::Pull &&
+       hybrid_single_.motion2_direct_extension_handoff)
+      ROS_INFO("Hybrid Motion-2 paired-extension handoff (not a measured body-unload event): selected extension %.1f deg, rear measured/commanded %.1f/%.1f kPa, stall %.2f s; learned first-stroke extension [%.1f %.1f] deg",
+          hybrid_single_.motion2_handoff_target_extension*180./M_PI,
+          input.rear_pressure,hybrid_single_.rear_pressure_command,
+          hybrid_single_.motion2_handoff_stall_time,
+          hybrid_single_.observed_extension_by_arm[0]*180./M_PI,
+          hybrid_single_.observed_extension_by_arm[1]*180./M_PI);
     if(previous_phase!=hybrid_single_.phase)
       ROS_INFO("Hybrid single-pass trajectory phase %d -> %d; slip probes %u lift probes %u; bend [%.1f %.1f] deg, Lift reference [%.1f %.1f] deg, current extension [%.1f %.1f] deg, extension target [%.1f %.1f] deg, bend target [%.1f %.1f] deg, straight identification %d (measured absolute target only), learned absolute bend [%.1f %.1f] deg, learned target thrust [%.2f %.2f] N, recorded extension min/per-arm %.1f/[%.1f %.1f] deg, lift %.2f N, pull %.2f N",
           int(previous_phase),int(hybrid_single_.phase),hybrid_single_.slip_entries,hybrid_single_.lift_probe_entries,

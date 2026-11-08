@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 
 root = pathlib.Path(__file__).resolve().parents[1]
-source = (root / 'src/control/attitude_pressure_controller.cpp').read_text()
+source = (root / 'src/control/posture_recovery_controller.cpp').read_text()
 branch = source[source.index('case PREPARE:'):source.index('case THRUST_CORRECTION:')]
 assert 'if(!config.shadow)' in branch
 assert 'continuous_roll_recovery_.fault=true;' in branch
@@ -91,8 +91,11 @@ int main() {
   actual.thrust=2.;actual.boost=1.;
   const double output=actual.update(.4,.3,.02,.02,model,bounds,response,4.);
   assert(output<2. && actual.speed_braking && actual.boost==1.);
-  actual.update(.4,.81,.04,.02,model,bounds,response,4.);
+  actual.update(.4,-.81,.04,.02,model,bounds,response,4.);
   assert(actual.fault && actual.thrust==0.);
+  actual.reset(.4,0.);actual.thrust=2.;
+  assert(actual.update(.4,.81,.02,.02,model,bounds,response,4.)<2.);
+  assert(!actual.fault && actual.predicted_braking);
   actual.reset(.4,0.);assert(actual.update(.4,0.,.02,.02,model,bounds,response,100.)<=.030001);
   // Emergency outward-rate arrest uses a bounded 2-N floor and a faster
   // slew.  It must not remain at the ordinary invalid-geometry 0.5-N FF or

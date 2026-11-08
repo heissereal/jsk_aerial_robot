@@ -261,7 +261,12 @@ struct ContinuousRollRecovery {
     progress_history.clear();
     progress_history.push_back({now, std::abs(error), thrust});
     recent_progress = recent_thrust_change = 0.0;
-    last_progress = now;
+    // This reset belongs to contact-response identification only.  It must
+    // never renew the independent no-progress watchdog: pressure and bend
+    // targets can change repeatedly while the retained body roll remains
+    // completely stationary.  Renewing last_progress here allowed a stalled
+    // 4-N recovery to run forever as long as the pneumatic state was still
+    // transitioning.
     candidate_start = -1.0;
     unresponsive_since = -1.0;
     retained_reversal_since = -1.0;
@@ -319,7 +324,13 @@ struct ContinuousRollRecovery {
     }
     if (!std::isfinite(error) || !std::isfinite(omega) || !std::isfinite(now) ||
         !std::isfinite(dt) || dt < 0.0 || now < last_update || now - last_update > 0.25 ||
-        std::abs(omega) >= c.max_rate || !std::isfinite(c.fall) || c.fall <= 0.0 ||
+        // `omega` is projected into the restorative direction.  A fast
+        // positive rate is therefore a predictive-braking condition, not a
+        // sensor fault.  Only a rate that is both fast and worsening fails
+        // this directional envelope.  Sensor freshness/non-finiteness is
+        // checked independently above and by the parent controller.
+        omega <= -c.max_rate ||
+        !std::isfinite(c.fall) || c.fall <= 0.0 ||
         !std::isfinite(c.max_target_rate) || c.max_target_rate <= 0.0 ||
         !std::isfinite(c.max_prediction_acceleration) ||
         c.max_prediction_acceleration <= 0.0 ||
@@ -522,8 +533,16 @@ struct ContinuousRollRecovery {
     }
     capture_active = false;
     stop_band_since = -1.0;
-    if (allow_response_faults) updateProgress(error, now, c);
-    else resetResponseWindow(error, now);
+    // Retained roll progress is a global safety observation and is valid
+    // even while pressure is in transit.  Only candidate attribution and
+    // response learning are gated by pressure/bend settling.  Keeping these
+    // clocks separate prevents a pneumatic lag from hiding a true stall.
+    updateProgress(error, now, c);
+    if (!allow_response_faults) {
+      candidate_start = -1.0;
+      unresponsive_since = -1.0;
+      retained_reversal_since = -1.0;
+    }
     if (!moving) {
       // Once thrust has started a plausible body response, allow the
       // confirmation window to finish while predictive braking ramps thrust

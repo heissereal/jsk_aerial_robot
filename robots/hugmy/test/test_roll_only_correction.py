@@ -11,7 +11,8 @@ import tempfile
 
 def main():
     root = pathlib.Path(__file__).resolve().parents[1]
-    source = (root / 'src/control/attitude_pressure_controller.cpp').read_text()
+    source = (root / 'src/control/attitude_pressure_controller.cpp').read_text() + '\n' + \
+        (root / 'src/control/posture_recovery_controller.cpp').read_text()
     config = (root / 'config/attitude_pressure_controller.yaml').read_text()
     assert 'correction_roll_only: true' in config
     assert 'pnh_.param("correction_roll_only", correction_roll_only_, true)' in source

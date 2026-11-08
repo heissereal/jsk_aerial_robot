@@ -70,6 +70,15 @@ private:
   bool enableCallback(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res);
   void update(const ros::TimerEvent& event);
 
+  // Shared posture-recovery state machine. Locomotion relinquishes actuator
+  // ownership through requestActionCPostureRecovery(); the ordinary timer
+  // then dispatches here until grasp/contact restoration is verified.
+  // Kept as a member to preserve the existing state and actuator safety gates.
+  void updatePostureRecovery(const ros::Time& now, double dt,
+                             double maximum_pressure_step,
+                             bool body_imu_fresh, bool pressure_valid,
+                             bool neurons_fresh);
+
   Vector3 rotorPosition(size_t arm, double pressure_kpa) const;
   Vector3 rotorDirection(size_t arm, double pressure_kpa) const;
   double bendAngle(size_t arm, double pressure_kpa) const;
@@ -293,6 +302,15 @@ private:
   double recovery_response_min_probe_sec_ = 1.2;
   ros::Time recovery_response_probe_since_;
   ros::Time recovery_safe_transfer_settled_since_;
+  // Event time is independent of state_start_: pair re-selection, pressure
+  // transients and GRASP/RECOVER handoffs must not renew the safety deadline.
+  ros::Time recovery_event_start_;
+  bool recovery_event_active_ = false;
+  hugmy::RecoveryFaultReason recovery_fault_reason_ =
+      hugmy::RecoveryFaultReason::NONE;
+  hugmy::RecoverySafeTransferPhase recovery_safe_transfer_phase_ =
+      hugmy::RecoverySafeTransferPhase::REGRASP;
+  hugmy::RecoverySupportMonitor recovery_support_monitor_;
   bool recovery_safe_transfer_retry_allowed_ = false;
   bool recovery_safe_transfer_failed_ = false;
   // The nominal hardware/MuJoCo pair mapping is the first choice. A released
@@ -546,7 +564,9 @@ private:
   int recovery_rejected_direction_sign_ = 0;
   void resetRecoveryHandoffState();
   void beginPostureSafeTransfer(const ros::Time& now, const char* reason,
-                                bool retry_after_settle = false);
+                                bool retry_after_settle = false,
+                                hugmy::RecoveryFaultReason fault_reason =
+                                    hugmy::RecoveryFaultReason::UNCLASSIFIED);
   void updateCircularGraspGeometry(const ros::Time& now);
   PressureArray recoveryReselectionPressure() const;
   PressureArray recoveryMeasuredContactPressure() const;
