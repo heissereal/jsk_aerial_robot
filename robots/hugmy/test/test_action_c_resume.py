@@ -6,6 +6,22 @@ import tempfile
 root=pathlib.Path(__file__).resolve().parents[1]
 source=(root/'src/control/posture_recovery_controller.cpp').read_text() + '\n' + \
     (root/'src/control/attitude_pressure_controller.cpp').read_text()
+attitude_source=(root/'src/control/attitude_pressure_controller.cpp').read_text()
+enable_start=attitude_source.index(
+    'bool AttitudePressureController::enableCallback(')
+enable_end=attitude_source.index(
+    'bool AttitudePressureController::postureRecoveryCallback(', enable_start)
+enable_callback=attitude_source[enable_start:enable_end]
+manual_end=attitude_source.index(
+    'void AttitudePressureController::update(', enable_end)
+manual_callback=attitude_source[enable_end:manual_end]
+# An absolute watchdog belongs to one recovery event.  It must not retain an
+# old timestamp through disable/re-enable or a new posture-only request.
+for callback in (enable_callback, manual_callback):
+    assert 'recovery_event_start_ = ros::Time(0);' in callback
+    assert 'recovery_event_active_ = false;' in callback
+    assert ('recovery_fault_reason_ = '
+            'hugmy::RecoveryFaultReason::NONE;') in callback
 start=source.index('bool AttitudePressureController::resumeActionCAfterRecovery(')
 resume=source[start:source.index('bool AttitudePressureController::actionCRearReleased(',start)]
 start=source.index('const bool retry_opposite_pair =')

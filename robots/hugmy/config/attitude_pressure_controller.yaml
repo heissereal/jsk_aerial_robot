@@ -480,7 +480,7 @@ recovery_rate_arrest_min_thrust_n: 2.0
 recovery_rate_arrest_max_thrust_n: 4.0
 recovery_thrust_fall_n_s: 3.0   # avoid unloading the extended pair as an impulse
 recovery_terminal_brake_fall_n_s: 8.0 # predicted crossing tapers continuously from the current force; no forced zero dwell
-recovery_terminal_brake_max_error_rad: 0.2617993877991494 # 15 deg: farther predictions only reduce thrust continuously
+recovery_terminal_brake_max_error_rad: 0.08726646259971647 # 5 deg: outside this band prediction may limit speed but never latches a zero-thrust terminal rundown
 recovery_reapproach_max_thrust_n: 1.5 # legacy/default terminal-approach authority; measured current force is retained first
 recovery_reapproach_rate_rad_s: 0.04
 recovery_reapproach_authority_rise_n_s: 0.8 # if the 1.5-N retry remains stuck, recover breakaway authority gradually

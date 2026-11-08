@@ -2136,6 +2136,13 @@ bool AttitudePressureController::enableCallback(std_srvs::SetBool::Request& req,
   recovery_unified_unlock_since_ = ros::Time(0);
   recovery_unified_unlock_ready_ = false;
   manual_posture_recovery_requested_ = false;
+  // Enabling/disabling starts a new operator session.  A failed
+  // SAFE_TRANSFER may deliberately keep the previous event latched while
+  // support is being restored, but that 30-s watchdog must never survive an
+  // explicit disable/re-enable and expire immediately in a new recovery.
+  recovery_event_start_ = ros::Time(0);
+  recovery_event_active_ = false;
+  recovery_fault_reason_ = hugmy::RecoveryFaultReason::NONE;
   recovery_rate_arrest_active_ = false;
   recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   recovery_rate_arrest_reference_error_rad_ =
@@ -2229,6 +2236,12 @@ bool AttitudePressureController::postureRecoveryCallback(
   correction_entry_gate_.reset();
 
   const ros::Time now = ros::Time::now();
+  // This is a new explicit recovery event, not a continuation of a previous
+  // SAFE_TRANSFER or candidate pass.  PREPARE starts the absolute watchdog
+  // from its actual actuation boundary after the measured safety gates pass.
+  recovery_event_start_ = ros::Time(0);
+  recovery_event_active_ = false;
+  recovery_fault_reason_ = hugmy::RecoveryFaultReason::NONE;
   if (hybridLocomotionActive() && !action_c_resume_pending_)
     requestActionCPostureRecovery(now,
         "operator requested posture-only recovery",

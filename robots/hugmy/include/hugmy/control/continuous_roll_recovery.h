@@ -69,7 +69,7 @@ struct RollRecoveryConfig {
   // Far from level, a stopping-distance prediction is only a continuous
   // speed limit.  Reserve the latched rotor rundown for the final envelope;
   // otherwise contact-rate impulses repeatedly unload and reload the arm.
-  double terminal_brake_max_error = 0.26179939; // 15 deg
+  double terminal_brake_max_error = 0.08726646; // 5 deg for a 3-deg stop band
   // Initial authority for a non-terminal, explicitly reset re-approach.
   double reapproach_limit = 1.5, reapproach_rate = 0.04;
   // Start a post-brake retry gently, but do not hold it below static-friction
@@ -457,9 +457,40 @@ struct ContinuousRollRecovery {
         c.stop + 2.0 * c.stop_margin);
     const double stable_contact_limit = c.contact_minimum_limit > c.stop
         ? c.contact_minimum_limit : capture_hysteresis_limit;
-    if (capture_active && std::abs(error) > stable_contact_limit) {
+    // A complete rotor rundown is a terminal action, not a generic speed
+    // controller.  Limit it to +/-5 deg even if an older launch file still
+    // supplies the former 15-deg envelope or a wider compliant-contact
+    // minimum.  Outside this hard neighbourhood prediction may reduce speed,
+    // but it must not command zero and unload a still-useful pair.
+    const double terminal_full_brake_limit = std::min(
+        0.08726646259971647,
+        std::min(c.terminal_brake_max_error,
+                 c.stop + 2.0 * c.stop_margin));
+    if (capture_active && std::abs(error) > terminal_full_brake_limit) {
       capture_active = false;
       stop_band_since = -1.0;
+    }
+    // If terminal rundown stops the body just outside the requested band,
+    // keep the same physical pair and continue from the remaining command.
+    // Do not report the rotor pass as finished and force SAFE_TRANSFER merely
+    // because capture hysteresis is wider than the actual success band.
+    const bool captured_but_outside_target = capture_active &&
+        c.contact_minimum_limit <= c.stop &&
+        std::abs(error) > c.stop &&
+        std::abs(filtered_rate) <= c.settle_rate && thrust <= 0.05;
+    if (captured_but_outside_target) {
+      capture_active = false;
+      stop_band_since = -1.0;
+      terminal_brake_latched = false;
+      low_authority_reapproach = true;
+      reapproach_authority = recoveryClamp(
+          std::max(thrust, c.reapproach_limit), 0.05, c.limit);
+      reapproach_best_error = std::abs(error);
+      reapproach_last_improvement = now;
+      terminal_rearm_since = -1.0;
+      boost = 0.0;
+      integrating = false;
+      resetResponseWindow(error, now);
     }
     // Do not clear capture merely because a compliant contact settles just
     // outside the entry boundary after rotor rundown.  The wider bound above
@@ -472,7 +503,9 @@ struct ContinuousRollRecovery {
     // changing sign while trying to force the last fraction of a degree.
     // This is only a handoff boundary; the caller still requires the true
     // `stop` angle before declaring posture recovery complete.
-    const bool settled_at_numeric_boundary = progress_observed &&
+    const bool settled_at_numeric_boundary =
+        !(low_authority_reapproach && std::abs(error) > c.stop) &&
+        progress_observed &&
         std::abs(error) <= capture_entry_limit &&
         std::abs(filtered_rate) <= c.settle_rate;
     // A compliant contact can have a local reachable equilibrium before the
@@ -506,9 +539,12 @@ struct ContinuousRollRecovery {
       if (thrust <= 1.0e-6) fault = true;
       return thrust;
     }
-    if (std::abs(error) <= c.stop || settled_at_numeric_boundary ||
-        settled_contact_minimum ||
-        (capture_active && std::abs(error) <= stable_contact_limit)) {
+    const bool terminal_capture_allowed =
+        std::abs(error) <= terminal_full_brake_limit;
+    if (terminal_capture_allowed &&
+        (std::abs(error) <= c.stop || settled_at_numeric_boundary ||
+         settled_contact_minimum ||
+         (capture_active && std::abs(error) <= stable_contact_limit))) {
       capture_active = true;
       updateProgress(std::abs(error), now, c);
       target_rate = target_thrust = 0.0;
@@ -521,18 +557,14 @@ struct ContinuousRollRecovery {
       // means angle, rate *and* actuator rundown have all settled.  If the
       // error leaves the band during rundown, the ordinary controller below
       // resumes without changing the contact pressure.
-      // `finished` ends only the rotor/contact-search phase.  The caller's
-      // monitored pneumatic handoff remains responsible for the true final
-      // +/-stop acceptance.  Once a useful pair has entered capture, run its
-      // thrust fully down and hand over anywhere inside the capture
-      // hysteresis.  Requiring it to remain inside the narrower entry
-      // boundary during rundown caused 70-mm contacts to bounce 4.9 -> 5.3
-      // deg, restart the high-authority rotor PI, and chatter there until the
-      // global timeout.  This keeps the same measured-good candidate and
-      // lets pressure-conditioned feedback close the last few degrees.
+      // `finished` must mean that the requested angular band is still
+      // satisfied after actuator rundown.  The old hysteresis completion
+      // returned finished at 5.2 deg for a 3-deg target; the outer safety
+      // layer correctly rejected that as a success and entered
+      // SAFE_TRANSFER.  A rebound outside the true band now reuses this same
+      // measured-good pair through the bounded re-approach path above.
       const bool final_angle_ready =
-          (capture_active && std::abs(error) <= stable_contact_limit) ||
-          settled_contact_minimum;
+          capture_active && std::abs(error) <= c.stop;
       if (final_angle_ready && std::abs(filtered_rate) <= c.settle_rate &&
           thrust <= 0.05) {
         if (stop_band_since < 0.0) stop_band_since = now;
@@ -729,15 +761,22 @@ struct ContinuousRollRecovery {
           thrust + c.breakaway_thrust_margin, 0.0, c.limit);
       hold = breakaway_authority;
     }
-    braking_horizon = c.horizon + std::max(0.0, thrust) / c.fall;
+    // Predict the same rundown rate that will actually be applied.  The old
+    // code predicted with 3 N/s and then executed the terminal brake at
+    // 8 N/s, overestimating coast distance and braking several degrees too
+    // early on high-friction contact.
+    const bool inside_terminal_brake_envelope =
+        std::abs(error) <= terminal_full_brake_limit;
+    const double predicted_fall_rate = inside_terminal_brake_envelope
+        ? c.terminal_brake_fall : c.fall;
+    braking_horizon = c.horizon +
+        std::max(0.0, thrust) / predicted_fall_rate;
     const double acceleration_horizon = std::min(
         braking_horizon, c.prediction_acceleration_horizon);
     const double predicted = error - helpful_rate * braking_horizon -
         0.5 * helpful_acceleration * acceleration_horizon *
             acceleration_horizon;
     predicted_braking = predicted <= 0.0;
-    const bool inside_terminal_brake_envelope =
-        std::abs(error) <= c.terminal_brake_max_error;
     const bool terminal_brake_request = predicted_braking &&
         inside_terminal_brake_envelope &&
         thrust >= c.detect_thrust && helpful_rate >= c.start_rate;

@@ -154,22 +154,21 @@ int main() {
   for(int i=2;i<30 && !loaded_band.finished;++i)
     loaded_band.update(4*deg,0.,i*.02,.02,m,cfg,response);
   assert(loaded_band.finished && loaded_band.thrust<=.05);
-  // A small rebound across the nominal stop angle during actuator rundown
-  // remains in capture hysteresis; it must not restart PI.
+  // A rebound outside the full-brake envelope must immediately leave capture;
+  // it may be speed-limited, but must not continue a zero-thrust rundown.
   ContinuousRollRecovery capture_hysteresis;
   capture_hysteresis.reset(cfg.stop-.1*deg,0.);
   capture_hysteresis.thrust=1.2;capture_hysteresis.rate_initialized=true;
   capture_hysteresis.filtered_rate=0.;
   capture_hysteresis.update(cfg.stop-.1*deg,0.,.02,.02,m,cfg,response);
-  const double captured_thrust=capture_hysteresis.thrust;
   capture_hysteresis.update(cfg.stop+.1*deg,0.,.04,.02,m,cfg,response);
-  assert(capture_hysteresis.target_thrust==0. &&
-         capture_hysteresis.thrust<captured_thrust &&
+  assert(!capture_hysteresis.capture_active &&
+         capture_hysteresis.target_thrust>0. &&
          !capture_hysteresis.finished);
-  // A flexed contact may enter the rotor handoff at 5 deg and rebound to
-  // 5--6 deg while thrust runs down.  Finish the rotor phase inside that
-  // hysteresis so the caller's pressure-conditioned loop can close to the
-  // strict 3-deg final target without restarting high-authority search.
+  // Regression for the hardware event: a rotor rundown entered at 4.90 deg
+  // and rebounded to 5.21 deg.  This is not success for a +/-3-deg target.
+  // success.  Keep the same physical pair, re-approach with bounded authority,
+  // and finish only after the measured state actually enters +/-3 deg.
   RollRecoveryConfig three_degree=cfg;
   three_degree.stop=3*deg;three_degree.stop_margin=1*deg;
   three_degree.capture_margin_factor=2.;three_degree.settle_sec=.08;
@@ -177,11 +176,14 @@ int main() {
   rotor_handoff.reset(4.9*deg,0.);rotor_handoff.progress_observed=true;
   rotor_handoff.thrust=.30;rotor_handoff.rate_initialized=true;
   rotor_handoff.filtered_rate=0.;
-  for(int i=1;i<=30 && !rotor_handoff.finished;++i)
-    rotor_handoff.update((i<3?4.9:5.4)*deg,0.,i*.02,.02,m,
+  for(int i=1;i<=30 && !rotor_handoff.low_authority_reapproach;++i)
+    rotor_handoff.update((i<3?4.9:5.21)*deg,0.,i*.02,.02,m,
                          three_degree,response);
-  assert(rotor_handoff.capture_active && rotor_handoff.finished &&
-         rotor_handoff.thrust<=.05);
+  assert(!rotor_handoff.finished && !rotor_handoff.capture_active);
+  for(int i=31;i<=100 && !rotor_handoff.finished;++i)
+    rotor_handoff.update(2.9*deg,0.,i*.02,.02,m,
+                         three_degree,response);
+  assert(rotor_handoff.finished && rotor_handoff.thrust<=.05);
   // Once a captured one-direction correction crosses the target with
   // retained velocity, request re-selection immediately.  Waiting for the
   // outer capture margin lets slow pneumatic dynamics consume the remaining
@@ -267,12 +269,13 @@ int main() {
   }
   // Include command rundown: at 15 deg and 0.384 rad/s, a fixed 0.2-s
   // prediction would not brake, whereas 3.17 N takes another 0.53 s to remove.
+  // This is outside the terminal envelope, so prediction may reduce thrust
+  // continuously but cannot latch a complete zero-thrust rundown.
   ContinuousRollRecovery early;early.reset(15*deg,0.);early.thrust=3.17;
   early.update(15*deg,.384,.02,.02,m,cfg,response);
   assert(15*deg-.384*cfg.horizon>cfg.stop);
   assert(early.predicted_braking && early.thrust<3.17 &&
-         early.low_authority_reapproach && early.boost==0.);
-  assert(early.terminal_brake_latched); // no retained-progress latch required
+         !early.low_authority_reapproach && !early.terminal_brake_latched);
   assert(std::abs(early.braking_horizon-(.2+3.17/6.))<1e-9);
   // The same stopping-distance prediction outside 15 deg reduces thrust
   // continuously, but cannot latch a zero-thrust/re-approach cycle.
@@ -301,8 +304,18 @@ int main() {
   accelerating.update(8*deg,.65,.02,.02,m,cfg,response);
   assert(accelerating.filtered_acceleration>0. &&
          accelerating.predicted_braking &&
-         accelerating.terminal_brake_latched && !accelerating.moving &&
+         !accelerating.terminal_brake_latched && !accelerating.moving &&
          !accelerating.progress_observed);
+  // Inside 5 deg the same prediction is allowed to latch the final rundown.
+  RollRecoveryConfig terminal_cfg=cfg;
+  terminal_cfg.stop=3*deg;terminal_cfg.stop_margin=1*deg;
+  terminal_cfg.capture_margin_factor=0.;
+  ContinuousRollRecovery terminal;terminal.reset(4.8*deg,0.);
+  terminal.thrust=2.;terminal.filtered_rate=.08;
+  terminal.rate_initialized=true;
+  terminal.update(4.8*deg,.65,.02,.02,m,terminal_cfg,response);
+  assert(terminal.predicted_braking && terminal.terminal_brake_latched &&
+         terminal.low_authority_reapproach);
   // An invalid down-rate cannot disable braking and leave the motors running.
   RollRecoveryConfig no_brake=cfg;no_brake.fall=0.;
   ContinuousRollRecovery invalid;invalid.reset(.5,0.);invalid.thrust=2.;
@@ -386,21 +399,21 @@ int main() {
     }
   }
   assert(noisy_plateau.boost>1.0 && !noisy_plateau.wrong_way);
-  // After genuine correction, a soft-contact local minimum inside the
-  // configured envelope is a valid capture; do not re-accelerate through the
-  // useful lever and then classify the resulting reversal as a new action.
+  // Even an explicitly configured soft-contact minimum cannot authorize a
+  // complete rotor rundown outside the hard 5-deg terminal neighbourhood.
   ContinuousRollRecovery contact_minimum;contact_minimum.reset(20*deg,0.);
   RollRecoveryConfig soft_contact=cfg;
   soft_contact.stop=8*deg;
   soft_contact.contact_minimum_limit=12*deg;
+  soft_contact.terminal_brake_max_error=12*deg;
   contact_minimum.moving=true;contact_minimum.progress_observed=true;
   contact_minimum.thrust=.8;contact_minimum.rate_initialized=true;
   contact_minimum.filtered_rate=.02;contact_minimum.recent_progress=1*deg;
   contact_minimum.last_progress=.02;
   contact_minimum.update(11.5*deg,.02,.04,.02,m,soft_contact,response);
-  assert(contact_minimum.capture_active &&
-         contact_minimum.target_thrust==0. &&
-         contact_minimum.thrust<.8 && !contact_minimum.wrong_way);
+  assert(!contact_minimum.capture_active &&
+         contact_minimum.target_thrust>0. &&
+         contact_minimum.thrust>0. && !contact_minimum.wrong_way);
   // Released contact candidates keep their unambiguous moment arm nearly to
   // the true stop boundary (half a measurement margin); flexed candidates
   // may hand off earlier because their loaded lever can reverse.
@@ -521,9 +534,8 @@ int main() {
   retained.thrust=2.1;retained.boost=1.5;retained.moving=true;
   RollRecoveryConfig three=cfg;three.stop=3*deg;
   m.moment=.01;m.lever=.05;
-  // A slow measured state in the approach band may finish the rotor-only
-  // phase.  Final +/-3-deg acceptance belongs to the subsequent closed-loop
-  // pressure handoff, avoiding moment reversal of an over-extended arm.
+  // A slow measured state in the approach band may start rundown, but cannot
+  // finish outside the actual +/-3-deg success band.
   ContinuousRollRecovery margin;margin.reset(4.4*deg,0.);
   margin.thrust=1.5;margin.boost=.8;margin.moving=true;
   margin.progress_observed=true;
@@ -535,18 +547,22 @@ int main() {
     margin.update(4.4*deg,0.,margin_step*.02,.02,m,three,response);
     ++margin_step;
   }
-  for(;margin_step<70 && !margin.finished;++margin_step)
+  for(;margin_step<70 && !margin.low_authority_reapproach;++margin_step)
     margin.update(4.4*deg,0.,margin_step*.02,.02,m,three,response);
-  assert(margin.capture_active && margin.finished);
+  assert(!margin.finished && !margin.capture_active &&
+         margin.low_authority_reapproach);
+  for(;margin_step<120 && !margin.finished;++margin_step)
+    margin.update(2.9*deg,0.,margin_step*.02,.02,m,three,response);
+  assert(margin.finished);
   retained.update(9*deg,.25,.02,.02,m,three,response);
   assert(retained.speed_braking && !retained.predicted_braking && retained.boost>1.49);
   assert(retained.thrust>1.9 && retained.thrust<2.1);
   for(int i=2;i<=8 && !retained.predicted_braking;++i)
     retained.update(8*deg,.4,i*.02,.02,m,three,response);
-  assert(retained.predicted_braking && retained.boost==0. &&
-         retained.low_authority_reapproach);
+  assert(retained.predicted_braking && !retained.terminal_brake_latched &&
+         !retained.low_authority_reapproach && retained.boost>0.);
   retained.update(8*deg,0.,.18,.02,m,three,response);
-  assert(retained.low_authority_reapproach);
+  assert(!retained.low_authority_reapproach);
   for(int i=0;i<30;++i)retained.update(2.9*deg,0.,.20+i*.02,.02,m,three,response);
   assert(retained.finished && retained.boost==0.);
   // The measured moment model remains active after breakaway.  Changes in
@@ -644,35 +660,39 @@ int main() {
   // correcting coast has remained stopped for the confirmation dwell, the
   // same measured contact is allowed to re-approach with bounded authority;
   // otherwise a residual error can remain at zero thrust until timeout.
-  ContinuousRollRecovery latched_brake;latched_brake.reset(20*deg,0.);
+  RollRecoveryConfig near_target=cfg;
+  near_target.stop=3*deg;near_target.stop_margin=1*deg;
+  near_target.capture_margin_factor=0.;
+  ContinuousRollRecovery latched_brake;latched_brake.reset(4.8*deg,0.);
   latched_brake.progress_observed=true;latched_brake.moving=true;
   latched_brake.thrust=3.;latched_brake.boost=2.5;
   latched_brake.filtered_rate=.30;latched_brake.rate_initialized=true;
-  latched_brake.update(12*deg,.30,.02,.02,m,cfg,response);
+  latched_brake.update(4.8*deg,.30,.02,.02,m,near_target,response);
   assert(latched_brake.terminal_brake_latched &&
          latched_brake.thrust<3. && latched_brake.boost==0. &&
          latched_brake.low_authority_reapproach);
   const double first_brake_thrust=latched_brake.thrust;
   for(int i=2;i<=120 && latched_brake.terminal_brake_latched;++i)
-    latched_brake.update(11*deg,-.02,i*.02,.02,m,cfg,response);
+    latched_brake.update(4.4*deg,-.02,i*.02,.02,m,near_target,response);
   assert(!latched_brake.terminal_brake_latched);
-  // Eleven degrees is outside the terminal contact neighbourhood.  Once the
-  // coast stops, resume the ordinary continuous controller instead of
-  // remaining behind the gentle retry ceiling.
-  assert(!latched_brake.low_authority_reapproach);
+  // The quiet residual is still inside the terminal neighbourhood, so the
+  // same pair re-approaches with bounded authority instead of finishing.
+  assert(latched_brake.low_authority_reapproach && !latched_brake.finished);
   assert(latched_brake.thrust<first_brake_thrust);
   assert(latched_brake.target_thrust<=
          latched_brake.reapproach_authority+1e-9);
   assert(latched_brake.boost<1e-9);
-  assert(std::abs(latched_brake.reapproach_authority-cfg.limit)<1e-9);
-  // A stationary far residual restores ordinary bounded authority directly.
+  assert(latched_brake.reapproach_authority<=near_target.limit+1e-9);
+  // A stationary residual grows retry authority if static friction prevents
+  // progress, but still does not report success outside +/-3 deg.
   const double retry_start=latched_brake.last_update;
   for(int i=1;i<=100;++i)
-    latched_brake.update(11*deg,0.,retry_start+i*.02,.02,m,cfg,response,
+    latched_brake.update(4.4*deg,0.,retry_start+i*.02,.02,m,near_target,response,
                          std::numeric_limits<double>::quiet_NaN(),false);
   assert(!latched_brake.terminal_brake_latched &&
-         latched_brake.thrust>cfg.reapproach_limit &&
-         latched_brake.target_thrust<=cfg.limit+1e-9);
+         !latched_brake.finished &&
+         latched_brake.thrust>near_target.reapproach_limit &&
+         latched_brake.target_thrust<=near_target.limit+1e-9);
   // Capture hysteresis is wider than the requested stop angle.  A quiet
   // residual inside that hysteresis (the real bag plateaued near 5 deg for a
   // 3-deg target) must still recover authority instead of remaining at the
