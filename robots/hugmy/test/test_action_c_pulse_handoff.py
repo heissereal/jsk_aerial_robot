@@ -48,6 +48,9 @@ struct AttitudePressureController {
  bool action_c_recovery_urgent_thrust_rise_=false;
  bool recovery_extension_mode_latched_=false;
  int recovery_extension_direction_sign_=0;
+ int recovery_unified_selected_candidate_index_=-1;
+ ros::Time recovery_unified_unlock_since_;
+ bool recovery_unified_unlock_ready_=false;
  bool recovery_rate_arrest_active_=false;
  ros::Time recovery_event_start_;
  bool recovery_event_active_=false;

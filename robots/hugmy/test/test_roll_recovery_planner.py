@@ -92,6 +92,16 @@ int main() {
                                              geometry_at_thrust, 0.1);
   assert(coupled_eval.feasible && near(coupled_eval.command_thrust, 1.0));
 
+  // A released topology must not be accepted below the thrust at which the
+  // calibrated pressure/thrust/bend lookup predicts the target extension.
+  // The very same 1.4-N command then creates roll moment; it is not added to
+  // the lower moment-only requirement.
+  coupled.extension_min_thrust = 1.4;
+  const auto extension_bounded = evaluateCoupled(
+      coupled, 0.2, cfg, geometry_at_thrust, 0.1);
+  assert(extension_bounded.feasible &&
+         near(extension_bounded.command_thrust, 1.4));
+
   // A finite switching margin prevents toggling between close candidates.
   auto close = small;
   close[1] = candidate(0, true, 0.125, 0.0);

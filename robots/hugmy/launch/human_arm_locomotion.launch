@@ -21,7 +21,7 @@
   <!-- Start collecting the first measured baseline immediately and enable
        bounded trajectory exploration from the following comparable stroke. -->
   <arg name="hybrid_locomotion_outer_enabled" default="true" />
-  <arg name="recovery_unified_active_enabled" default="false" />
+  <arg name="recovery_unified_active_enabled" default="true" />
   <arg name="hybrid_trajectory_min_extension_rad" default="0.2617993877991494" />
   <arg name="hybrid_trajectory_extension_rate_rad_s" default="0.70" />
   <arg name="hybrid_lift_rear_release_start_ratio" default="0.10" />

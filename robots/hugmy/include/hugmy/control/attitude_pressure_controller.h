@@ -67,7 +67,7 @@ private:
   hugmy::recovery::Selection evaluateUnifiedRecoveryCandidates(
       double roll_error, double required_moment,
       const hugmy::recovery::Vec3& circle_center_body,
-      bool actuating);
+      bool actuating, int previous_candidate_index);
   bool enableCallback(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res);
   void update(const ros::TimerEvent& event);
 
@@ -421,10 +421,27 @@ private:
   // Non-actuating comparison of the standalone four-candidate planner against
   // the legacy controller.  Intentionally opt-in until real bag validation.
   bool recovery_unified_shadow_enabled_ = false;
-  // Explicit opt-in which connects the same four-candidate planner to the
-  // existing pressure/thrust state machine.  SAFE_TRANSFER and all measured
-  // response guards remain owned by the parent recovery controller.
-  bool recovery_unified_active_enabled_ = false;
+  // Connect the four-candidate planner to the existing pressure/thrust state
+  // machine by default. SAFE_TRANSFER and all measured response guards remain
+  // owned by the parent recovery controller; false selects the legacy planner.
+  bool recovery_unified_active_enabled_ = true;
+  // Discrete four-mode selection uses steady target geometry.  A released
+  // pair is feasible only if the calibrated lookup reaches this bend at the
+  // selected thrust; execution still supervises the measured transition.
+  double recovery_unified_extension_target_bend_rad_ = 0.0;
+  double recovery_unified_thrust_step_n_ = 0.1;
+  // Changing the physical pair moves the support topology.  Charge a modest
+  // score margin so close candidates do not alternate across re-selections.
+  double recovery_unified_pair_switch_penalty_n_ = 0.20;
+  // A selected pair/mode may be reconsidered only after a quiet, fully
+  // supported small-angle dwell in GRASP, regardless of whether the previous
+  // mode was grasped or extended.
+  double recovery_unified_unlock_angle_rad_ = 7.0 * M_PI / 180.0;
+  double recovery_unified_unlock_rate_rad_s_ = 5.0 * M_PI / 180.0;
+  double recovery_unified_unlock_hold_sec_ = 0.25;
+  ros::Time recovery_unified_unlock_since_;
+  bool recovery_unified_unlock_ready_ = false;
+  int recovery_unified_selected_candidate_index_ = -1;
   double recovery_unsafe_roll_rad_ = 45.0 * M_PI / 180.0;
   double recovery_extension_response_sec_ = 0.5;
   hugmy::recovery::Pose recovery_mocap_pose_;

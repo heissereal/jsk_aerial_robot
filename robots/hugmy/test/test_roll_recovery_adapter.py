@@ -36,6 +36,9 @@ public:
   double bend_model_thrust_offset_n_=1.8;
   double recovery_unsafe_roll_rad_=45.*M_PI/180.;
   double recovery_extension_response_sec_=.5;
+  double recovery_unified_extension_target_bend_rad_=0.;
+  double recovery_unified_thrust_step_n_=.1;
+  double recovery_unified_pair_switch_penalty_n_=.2;
   double roll_=-.2,pitch_=0.;
   Vector3 body_angular_velocity_{{0.,0.,0.}};
   double measuredArmBendAngle(size_t)const{return 1.8;}
@@ -54,21 +57,27 @@ public:
              std::sin(theta)*a[0]+std::cos(theta)*a[1],a[2]}};
   }
   hugmy::recovery::Selection evaluateUnifiedRecoveryCandidates(
-      double,double,const hugmy::recovery::Vec3&,bool);
+      double,double,const hugmy::recovery::Vec3&,bool,int);
 };
 METHOD
 int main() {
   AttitudePressureController c;
+  c.roll_recovery_config_.limit = 5.5;
   c.recovery_circle_event_estimate_.valid = true;
   c.recovery_circle_event_estimate_.radius = 0.04;
   const auto shadow = c.evaluateUnifiedRecoveryCandidates(
-      .2,.02,{{0.,0.,-.07}},false);
+      .2,.02,{{0.,0.,-.07}},false,-1);
   assert(shadow.valid);
   assert(shadow.candidates[shadow.index].contact_feasible);
+  assert(std::isfinite(shadow.candidates[1].extension_min_thrust));
+  assert(shadow.candidates[1].extension_min_thrust > 0.0);
+  assert(shadow.candidates[1].extension_min_thrust ==
+         shadow.candidates[3].extension_min_thrust);
   c.measured_pressure_[0] = 0.;
-  c.evaluateUnifiedRecoveryCandidates(.2,.02,{{0.,0.,-.07}},true);
+  c.evaluateUnifiedRecoveryCandidates(.2,.02,{{0.,0.,-.07}},true,
+                                       shadow.index);
   const auto invalid = c.evaluateUnifiedRecoveryCandidates(
-      .2,.02,{{0.,NAN,-.07}},false);
+      .2,.02,{{0.,NAN,-.07}},false,-1);
   assert(!invalid.valid);
   std::puts("PASS: ROS-independent compile/smoke of actual recovery planner adapter");
 }

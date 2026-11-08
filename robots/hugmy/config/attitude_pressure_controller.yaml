@@ -506,10 +506,25 @@ recovery_circle_selection_enabled: true
 # change actuator commands.  Start with logged model/measurement comparison
 # on both forearm-diameter and large-diameter cylinders.
 recovery_unified_shadow_enabled: false
-# Explicit hardware opt-in. When true, the unified four-candidate planner
-# selects the physical pair/contact mode; existing slew limits, response
-# supervision and SAFE_TRANSFER still own actuation safety.
-recovery_unified_active_enabled: false
+# The unified four-candidate planner selects the physical pair/contact mode by
+# default; set false explicitly to return to the legacy selector. Existing slew
+# limits, response supervision and SAFE_TRANSFER still own actuation safety.
+recovery_unified_active_enabled: true
+# Four discrete modes are compared at their steady target geometry.  A
+# released pair is not admitted until the measured pressure/thrust/bend table
+# predicts both arms at or below this absolute bend.  The same rotor thrust
+# supplies extension and roll moment, so this is a lower bound, not an added
+# force penalty.
+recovery_unified_extension_target_bend_rad: 0.0 # straight-arm endpoint
+recovery_unified_thrust_step_n: 0.10
+# Preserve the selected physical pair across close scores. Mode changes within
+# the same pair are charged by release cost instead of this pair-switch cost.
+recovery_unified_pair_switch_penalty_n: 0.20
+# Reconsider the selected pair/mode only after zero-thrust, supported GRASP
+# has remained quiet inside this small-angle window.
+recovery_unified_unlock_angle_rad: 0.12217304763960307 # 7 deg
+recovery_unified_unlock_rate_rad_s: 0.08726646259971647 # 5 deg/s
+recovery_unified_unlock_hold_sec: 0.25
 # Emergency risk diagnostics: predict whether outward roll reaches the unsafe
 # angle before the pressure/arm extension can take effect (not an angle switch).
 recovery_unsafe_roll_rad: 0.7853981633974483 # 45 deg; calibrate from safe tilt tests

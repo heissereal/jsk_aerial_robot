@@ -40,6 +40,11 @@ void AttitudePressureController::updatePostureRecovery(
       const bool continuous_c_recovery = action_c_continuous_recovery_enabled_ &&
           inchworm_action_c_enabled_ && !inchworm_action_d_enabled_ &&
           !fixed_arm_test_enabled_ && roll_only_recovery;
+      if (state_ != GRASP)
+        {
+          recovery_unified_unlock_since_ = ros::Time(0);
+          recovery_unified_unlock_ready_ = false;
+        }
       if (action_c_resume_pending_ &&
           std::abs(wrapAngle(roll_ - target_roll_)) >=
               action_c_emergency_stop_roll_rad_)
@@ -89,6 +94,45 @@ void AttitudePressureController::updatePostureRecovery(
             ROS_INFO_THROTTLE(1.0,
                 "GRASP waiting for all arm pressures to reach %.1f +/- %.1f kPa",
                 base_pressure_kpa_, pressure_tolerance_kpa_);
+          // Re-selection is a discrete, supported boundary.  Merely crossing
+          // the angle threshold while thrust/pressure are still changing must
+          // not unlock the pair and make actuation chatter.  GRASP publishes
+          // zero rotor thrust above; require fresh, settled support plus a
+          // quiet small-angle dwell before allowing the next PREPARE to
+          // compare all four modes again.
+          const bool unified_unlock_observation =
+              recovery_unified_active_enabled_ &&
+              recovery_preferred_pair_locked_ &&
+              recovery_pressure_fresh && grasp_pressure_ready &&
+              std::abs(roll_error) < recovery_unified_unlock_angle_rad_ &&
+              std::abs(recovery_roll_rate) <
+                  recovery_unified_unlock_rate_rad_s_;
+          if (unified_unlock_observation)
+            {
+              if (recovery_unified_unlock_since_.isZero())
+                recovery_unified_unlock_since_ = now;
+              recovery_unified_unlock_ready_ =
+                  (now - recovery_unified_unlock_since_).toSec() >=
+                      recovery_unified_unlock_hold_sec_;
+            }
+          else
+            {
+              recovery_unified_unlock_since_ = ros::Time(0);
+              recovery_unified_unlock_ready_ = false;
+            }
+          const bool unified_unlock_dwell_pending =
+              unified_unlock_observation &&
+              !recovery_unified_unlock_ready_;
+          if (unified_unlock_dwell_pending)
+            ROS_INFO_THROTTLE(0.5,
+                "Unified recovery holds pair %zu+%zu during small-angle support dwell: error %.2f deg, rate %.2f deg/s, %.2f/%.2f s",
+                recovery_preferred_pair_index_ == 0 ? 0ul : 2ul,
+                recovery_preferred_pair_index_ == 0 ? 1ul : 3ul,
+                roll_error * 180.0 / M_PI,
+                recovery_roll_rate * 180.0 / M_PI,
+                recovery_unified_unlock_since_.isZero() ? 0.0 :
+                    (now - recovery_unified_unlock_since_).toSec(),
+                recovery_unified_unlock_hold_sec_);
           // Completion and restart use different boundaries.  Recovery is
           // complete only inside +/-3 deg, but a 3.1-deg contact rebound must
           // not immediately start another pair.  After a completed/handoff
@@ -243,7 +287,8 @@ void AttitudePressureController::updatePostureRecovery(
                (!action_c_resume_pending_ || recovery_settled))) &&
               attitude_error > active_correction_trigger && c_recovery_requested,
               now.toSec(), correction_trigger_confirm_sec_);
-          if ((correction_confirmed || continuous_recovery_requested) &&
+          if (!unified_unlock_dwell_pending &&
+              (correction_confirmed || continuous_recovery_requested) &&
               (continuous_recovery_requested || last_correction_end_.isZero() ||
                (now - last_correction_end_).toSec() >= cooldown_duration_))
             {
@@ -3316,6 +3361,9 @@ void AttitudePressureController::updatePostureRecovery(
                       recovery_preferred_pair_locked_ = false;
                       recovery_extension_mode_latched_ = false;
                       recovery_extension_direction_sign_ = 0;
+                      recovery_unified_selected_candidate_index_ = -1;
+                      recovery_unified_unlock_since_ = ros::Time(0);
+                      recovery_unified_unlock_ready_ = false;
                       recovery_rate_arrest_active_ = false;
                       recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
                       recovery_rate_arrest_reference_error_rad_ =
@@ -3589,30 +3637,44 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   const bool predicted_emergency = outward_roll_rate &&
       std::abs(predicted_roll_error) >=
           recovery_circle_flexed_max_error_rad_;
-  // A released/straight-arm topology is an emergency choice for one
-  // measured correction pass, not a permanent mapping for later residuals.
-  // Once a new PREPARE decision sees a small error whose unforced outward
-  // rate and short-horizon prediction both remain inside the flexed envelope,
-  // discard the old extension and pair locks.  Re-evaluate all pairs at the
-  // measured current bend first; vent an arm again only if no grasped state
-  // has a restorative signed lever.  Do not perform this reset while the
-  // small residual is still rolling outward quickly: that case retains the
-  // extended topology needed to arrest its momentum.
+  // Pair/mode selection is discrete: retain it throughout one measured
+  // correction pass rather than recomputing from every transient bend sample.
+  // At a new PREPARE boundary, the unified selector may clear both locks only
+  // after GRASP has held fresh pressure, zero command and a quiet small roll
+  // for the configured dwell.  It then compares all four target modes again.
+  // The legacy selector retains its original extension-only unlock rule.
   const bool stable_small_angle_reselection =
-      recovery_extension_mode_latched_ &&
       std::isfinite(measured_roll_rate) &&
-      std::abs(roll_error) < recovery_circle_flexed_max_error_rad_ &&
-      std::abs(predicted_roll_error) <
-          recovery_circle_flexed_max_error_rad_ &&
-      (!outward_roll_rate ||
-       std::abs(measured_roll_rate) < correction_motion_start_rate_);
+      (recovery_unified_active_enabled_
+          ? (recovery_preferred_pair_locked_ &&
+             recovery_unified_unlock_ready_ &&
+             std::abs(roll_error) < recovery_unified_unlock_angle_rad_ &&
+             std::abs(predicted_roll_error) <
+                 recovery_unified_unlock_angle_rad_ &&
+             std::abs(measured_roll_rate) <
+                 recovery_unified_unlock_rate_rad_s_)
+          : (recovery_extension_mode_latched_ &&
+             std::abs(roll_error) <
+                 recovery_circle_flexed_max_error_rad_ &&
+             std::abs(predicted_roll_error) <
+                 recovery_circle_flexed_max_error_rad_ &&
+             (!outward_roll_rate ||
+              std::abs(measured_roll_rate) <
+                  correction_motion_start_rate_)));
   if (stable_small_angle_reselection)
     {
-      ROS_INFO("Stable small-angle roll recovery: clearing the old extended-arm direction-%+d latch and physical-pair lock; re-evaluating all current-bend candidates",
-               recovery_extension_direction_sign_);
+      if (recovery_unified_active_enabled_)
+        ROS_INFO("Stable small-angle roll recovery: clearing mode direction-%+d and physical-pair locks after %.2f-s supported dwell; re-evaluating all four target modes",
+                 recovery_extension_direction_sign_,
+                 recovery_unified_unlock_hold_sec_);
+      else
+        ROS_INFO("Stable small-angle roll recovery: clearing the old extended-arm direction-%+d latch and physical-pair lock; re-evaluating legacy current-bend candidates",
+                 recovery_extension_direction_sign_);
       recovery_extension_mode_latched_ = false;
       recovery_extension_direction_sign_ = 0;
       recovery_preferred_pair_locked_ = false;
+      recovery_unified_unlock_since_ = ros::Time(0);
+      recovery_unified_unlock_ready_ = false;
       action_c_recovery_urgent_thrust_rise_ = false;
       recovery_rate_arrest_active_ = false;
       recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
@@ -3912,7 +3974,8 @@ void AttitudePressureController::selectContinuousRecoveryPair(
         ROS_WARN("Unified recovery planner: fresh mocap pose unavailable; cylinder centre remains frozen in body coordinates (frame-uncertain)");
       unified_plan = evaluateUnifiedRecoveryCandidates(roll_error,
           required_moment * correction_sign, body_center,
-          recovery_unified_active_enabled_);
+          recovery_unified_active_enabled_,
+          recovery_unified_selected_candidate_index_);
     }
 
   recovery_pair_selection_available_ = false;
@@ -3986,6 +4049,8 @@ void AttitudePressureController::selectContinuousRecoveryPair(
           selected.required_thrust =
               unified_plan.alternatives[chosen].command_thrust;
           selected.score = unified_plan.alternatives[chosen].score;
+          recovery_unified_selected_candidate_index_ =
+              static_cast<int>(chosen);
           ROS_WARN("Unified recovery ACTIVE selected candidate %zu: pair %zu+%zu, mode=%s, support pivot yz=[%.1f %.1f] mm, signed lever %.4f m, required %.2f N/rotor",
                    chosen, pairs[pair][0], pairs[pair][1],
                    release ? "straight-arm" : "grasped-current-bend",
@@ -4574,6 +4639,9 @@ void AttitudePressureController::requestActionCPostureRecovery(
   // pair for small roll errors after the outward motion had already stopped.
   recovery_extension_mode_latched_ = false;
   recovery_extension_direction_sign_ = 0;
+  recovery_unified_selected_candidate_index_ = -1;
+  recovery_unified_unlock_since_ = ros::Time(0);
+  recovery_unified_unlock_ready_ = false;
   recovery_rate_arrest_active_ = false;
   recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   recovery_rate_arrest_reference_error_rad_ =

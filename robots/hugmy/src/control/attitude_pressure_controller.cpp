@@ -255,7 +255,19 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   pnh_.param("recovery_unified_shadow_enabled",
              recovery_unified_shadow_enabled_, false);
   pnh_.param("recovery_unified_active_enabled",
-             recovery_unified_active_enabled_, false);
+             recovery_unified_active_enabled_, true);
+  recovery_param("recovery_unified_extension_target_bend_rad",
+                 recovery_unified_extension_target_bend_rad_, 0.0, 1.570796);
+  recovery_param("recovery_unified_thrust_step_n",
+                 recovery_unified_thrust_step_n_, 0.02, 0.5);
+  recovery_param("recovery_unified_pair_switch_penalty_n",
+                 recovery_unified_pair_switch_penalty_n_, 0.0, 2.0);
+  recovery_param("recovery_unified_unlock_angle_rad",
+                 recovery_unified_unlock_angle_rad_, 0.05236, 0.261799);
+  recovery_param("recovery_unified_unlock_rate_rad_s",
+                 recovery_unified_unlock_rate_rad_s_, 0.01, 0.3);
+  recovery_param("recovery_unified_unlock_hold_sec",
+                 recovery_unified_unlock_hold_sec_, 0.05, 1.0);
   recovery_param("recovery_unsafe_roll_rad",
                  recovery_unsafe_roll_rad_, 0.2, 1.5);
   recovery_param("recovery_extension_response_sec",
@@ -1786,6 +1798,9 @@ void AttitudePressureController::targetCallback(const geometry_msgs::Vector3Stam
       recovery_preferred_pair_locked_ = false;
       recovery_extension_mode_latched_ = false;
       recovery_extension_direction_sign_ = 0;
+      recovery_unified_selected_candidate_index_ = -1;
+      recovery_unified_unlock_since_ = ros::Time(0);
+      recovery_unified_unlock_ready_ = false;
       recovery_rate_arrest_active_ = false;
       recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
       recovery_rate_arrest_reference_error_rad_ =
@@ -1806,6 +1821,9 @@ void AttitudePressureController::targetCallback(const geometry_msgs::Vector3Stam
   recovery_preferred_pair_locked_ = false;
   recovery_extension_mode_latched_ = false;
   recovery_extension_direction_sign_ = 0;
+  recovery_unified_selected_candidate_index_ = -1;
+  recovery_unified_unlock_since_ = ros::Time(0);
+  recovery_unified_unlock_ready_ = false;
   recovery_rate_arrest_active_ = false;
   recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   recovery_rate_arrest_reference_error_rad_ =
@@ -2051,6 +2069,9 @@ void AttitudePressureController::inchwormCommandCallback(
   recovery_preferred_pair_locked_ = false;
   recovery_extension_mode_latched_ = false;
   recovery_extension_direction_sign_ = 0;
+  recovery_unified_selected_candidate_index_ = -1;
+  recovery_unified_unlock_since_ = ros::Time(0);
+  recovery_unified_unlock_ready_ = false;
   recovery_rate_arrest_active_ = false;
   recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   recovery_rate_arrest_reference_error_rad_ =
@@ -2109,6 +2130,9 @@ bool AttitudePressureController::enableCallback(std_srvs::SetBool::Request& req,
   recovery_preferred_pair_locked_ = false;
   recovery_extension_mode_latched_ = false;
   recovery_extension_direction_sign_ = 0;
+  recovery_unified_selected_candidate_index_ = -1;
+  recovery_unified_unlock_since_ = ros::Time(0);
+  recovery_unified_unlock_ready_ = false;
   recovery_rate_arrest_active_ = false;
   recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   recovery_rate_arrest_reference_error_rad_ =
@@ -3509,6 +3533,9 @@ void AttitudePressureController::stopInchwormToGrasp(
   recovery_preferred_pair_locked_ = false;
   recovery_extension_mode_latched_ = false;
   recovery_extension_direction_sign_ = 0;
+  recovery_unified_selected_candidate_index_ = -1;
+  recovery_unified_unlock_since_ = ros::Time(0);
+  recovery_unified_unlock_ready_ = false;
   recovery_rate_arrest_active_ = false;
   recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   recovery_rate_arrest_reference_error_rad_ =

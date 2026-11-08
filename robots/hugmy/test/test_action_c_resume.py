@@ -42,8 +42,9 @@ assert 'crossed_from_latched_extension' in source
 assert 'recovery_extension_direction_sign_ != correction_direction' in source
 assert 'const bool stable_small_angle_reselection =' in source
 assert 'std::isfinite(measured_roll_rate)' in source
-assert 'std::abs(measured_roll_rate) < correction_motion_start_rate_' in source
-assert 're-evaluating all current-bend candidates' in source
+assert 'recovery_unified_unlock_rate_rad_s_' in source
+assert 're-evaluating all four target modes' in source
+assert 're-evaluating legacy current-bend candidates' in source
 assert 'recovery_preferred_pair_locked_ = false;' in source
 assert 'requiring the opposite physical pair' in source
 assert 'recovery_preferred_pair_index_ = 1 - previous_pair;' in source
@@ -208,6 +209,12 @@ public:
  Vector3 recovery_event_contact_pivot_{{0.,0.,-.07}};
  bool recovery_unified_shadow_enabled_=false;
  bool recovery_unified_active_enabled_=false;
+ double recovery_unified_unlock_angle_rad_=7.*M_PI/180.;
+ double recovery_unified_unlock_rate_rad_s_=5.*M_PI/180.;
+ double recovery_unified_unlock_hold_sec_=.25;
+ ros::Time recovery_unified_unlock_since_;
+ bool recovery_unified_unlock_ready_=false;
+ int recovery_unified_selected_candidate_index_=-1;
  bool recovery_mocap_pose_valid_=false;
  hugmy::recovery::Pose recovery_mocap_pose_;
  hugmy::recovery::Vec3 recovery_circle_center_world_{{0.,0.,0.}};
@@ -327,7 +334,7 @@ public:
  }
  void selectContinuousRecoveryPair(double);
  hugmy::recovery::Selection evaluateUnifiedRecoveryCandidates(
-     double,double,const hugmy::recovery::Vec3&,bool) {return {};}
+     double,double,const hugmy::recovery::Vec3&,bool,int) {return {};}
  double measuredArmBendAngle(size_t arm)const{return angles[arm];}
  Vector3 armContactPointFromAngle(size_t arm,double bend)const{
    return {{0.,arm<2?.04:-.04,-.07-.01*std::sin(bend)}};

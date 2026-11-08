@@ -189,11 +189,22 @@ inline Evaluation evaluateCoupled(const Candidate& c, double required_moment,
       cfg.thrust_limit <= 0.0 || !std::isfinite(thrust_step) ||
       thrust_step <= 0.0 || !std::isfinite(c.release_fraction) ||
       c.release_fraction < 0.0 || c.release_fraction > 1.0 ||
+      !std::isfinite(c.extension_min_thrust) ||
+      c.extension_min_thrust < 0.0 ||
       !std::isfinite(c.transition_seconds) || c.transition_seconds < 0.0)
     return result;
   const double moment_sign = required_moment >= 0.0 ? 1.0 : -1.0;
   const int steps = static_cast<int>(std::ceil(cfg.thrust_limit / thrust_step));
-  for (int j = 0; j <= steps; ++j) {
+  // A released candidate is a distinct physical topology, not merely the
+  // zero-pressure command.  Start the common thrust search only after the
+  // calibrated pressure/thrust/bend lookup predicts that both arms can reach
+  // the configured extension shape.  The same thrust then supplies roll
+  // moment, so this is a lower bound rather than an additive force cost.
+  const double minimum_thrust = c.release ? c.extension_min_thrust : 0.0;
+  if (minimum_thrust > cfg.thrust_limit) return result;
+  const int first_step = std::max(0, static_cast<int>(
+      std::ceil((minimum_thrust - 1.0e-9) / thrust_step)));
+  for (int j = first_step; j <= steps; ++j) {
     const double thrust = std::min(cfg.thrust_limit, j * thrust_step);
     const auto rotors = geometry_at_thrust(thrust);
     double lever = 0.0;

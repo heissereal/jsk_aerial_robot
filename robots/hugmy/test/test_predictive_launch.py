@@ -18,9 +18,9 @@ for name in ('recovery_predictive_enabled', 'recovery_predictive_shadow'):
     include = next(e for e in bringup.findall('include')
                    if e.get('file', '').endswith('/attitude_pressure_controller.launch'))
     assert include.find("arg[@name='{}']".format(name)).get('value') == '$(arg {})'.format(name)
-assert config['recovery_unified_active_enabled'] is False
+assert config['recovery_unified_active_enabled'] is True
 for launch in (controller, bringup):
-    assert launch.find("arg[@name='recovery_unified_active_enabled']").get('default') == 'false'
+    assert launch.find("arg[@name='recovery_unified_active_enabled']").get('default') == 'true'
 node = controller.find(".//node[@name='attitude_pressure_controller']")
 assert node.find("param[@name='recovery_unified_active_enabled']").get('value') == \
     '$(arg recovery_unified_active_enabled)'
@@ -28,10 +28,10 @@ include = next(e for e in bringup.findall('include')
                if e.get('file', '').endswith('/attitude_pressure_controller.launch'))
 assert include.find("arg[@name='recovery_unified_active_enabled']").get('value') == \
     '$(arg recovery_unified_active_enabled)'
-assert human.find("arg[@name='recovery_unified_active_enabled']").get('default') == 'false'
+assert human.find("arg[@name='recovery_unified_active_enabled']").get('default') == 'true'
 human_include = human.find('include')
 assert human_include.find("arg[@name='recovery_unified_active_enabled']").get('value') == \
     '$(arg recovery_unified_active_enabled)'
 assert config['prepare_timeout_sec'] == 60.0
 assert config['recovery_predictive_budget_ms'] <= 10.0
-print('PASS: shadow defaults, explicit activation, launch forwarding, total timeout unchanged')
+print('PASS: unified active default, launch forwarding, explicit override, total timeout unchanged')

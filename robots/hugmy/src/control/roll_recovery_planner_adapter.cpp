@@ -13,7 +13,7 @@ hugmy::recovery::Selection
 AttitudePressureController::evaluateUnifiedRecoveryCandidates(
     double roll_error, double desired_roll_moment,
     const hugmy::recovery::Vec3& circle_center_body,
-    bool actuating)
+    bool actuating, int previous_candidate_index)
 {
   namespace rr = hugmy::recovery;
   rr::Selection result;
@@ -92,10 +92,39 @@ AttitudePressureController::evaluateUnifiedRecoveryCandidates(
           c.transition_seconds = c.release ? recovery_extension_prediction_sec_ : 0.0;
           if (c.release)
             {
-              // The same thrust straightens a compliant rotor-carrying arm
-              // and produces body roll. Re-evaluate its rotor pose for each
-              // sampled thrust instead of assuming instant alpha=0 or adding
-              // a fictitious second extension thrust.
+              // This is a steady target-shape calculation, not a time-domain
+              // prediction of the exhaust transient.  First invert the
+              // measured lookup to find the least common rotor command which
+              // places BOTH arms inside the configured extension shape.
+              c.extension_min_thrust =
+                  std::numeric_limits<double>::infinity();
+              const int thrust_steps = static_cast<int>(std::ceil(
+                  config.thrust_limit / recovery_unified_thrust_step_n_));
+              for (int step = 0; step <= thrust_steps; ++step)
+                {
+                  const double thrust = std::min(config.thrust_limit,
+                      step * recovery_unified_thrust_step_n_);
+                  bool both_extended = true;
+                  for (size_t i = 0; i < 2; ++i)
+                    {
+                      const double bend = bend_model_.angleRad(
+                          recovery_release_pressure_kpa_,
+                          thrust + bend_model_thrust_offset_n_,
+                          hugmy::PressureThrustBendModel::Trend::DECREASING,
+                          hugmy::PressureThrustBendModel::Trend::INCREASING);
+                      both_extended = both_extended && std::isfinite(bend) &&
+                          bend <= recovery_unified_extension_target_bend_rad_;
+                    }
+                  if (both_extended)
+                    {
+                      c.extension_min_thrust = thrust;
+                      break;
+                    }
+                }
+              // The same thrust straightens the compliant rotor-carrying arm
+              // and produces body roll. Search above the lookup-derived lower
+              // bound and recompute the equilibrium rotor pose for each force;
+              // do not add a fictitious second copy of extension thrust.
               values[index] = rr::evaluateCoupled(c, desired_roll_moment,
                   config, [&](double thrust) {
                     std::array<rr::Rotor, 2> rotors;
@@ -110,7 +139,7 @@ AttitudePressureController::evaluateUnifiedRecoveryCandidates(
                         rotors[i] = rotor_at_bend(arm, bend);
                       }
                     return rotors;
-                  });
+                  }, recovery_unified_thrust_step_n_);
             }
           else
             {
@@ -123,6 +152,18 @@ AttitudePressureController::evaluateUnifiedRecoveryCandidates(
               values[index] = rr::evaluate(c, desired_roll_moment, config);
             }
         }
+    }
+
+  // Preserve the physical support side across near-tied re-selections.  The
+  // release penalty already prices a mode change inside one pair; this term
+  // applies only when the selected 0+1 / 2+3 pair itself changes.
+  if (previous_candidate_index >= 0 && previous_candidate_index < 4)
+    {
+      const size_t previous_pair =
+          static_cast<size_t>(previous_candidate_index) / 2;
+      for (size_t i = 0; i < values.size(); ++i)
+        if (values[i].feasible && i / 2 != previous_pair)
+          values[i].score += recovery_unified_pair_switch_penalty_n_;
     }
 
   int best = -1;
@@ -145,14 +186,18 @@ AttitudePressureController::evaluateUnifiedRecoveryCandidates(
       roll_error, error_rate, recovery_unsafe_roll_rad_,
       recovery_extension_response_sec_, 0.15);
 
-  ROS_INFO("Unified recovery %s: err %.1f deg, danger=%d, radius %.1f mm, best %d [0=01 grasp 1=01 extend 2=23 grasp 3=23 extend]; lever [%.3f %.3f %.3f %.3f] m; required N [%.2f %.2f %.2f %.2f]; feasible [%d %d %d %d]",
+  ROS_INFO("Unified recovery %s: err %.1f deg, danger=%d, radius %.1f mm, best %d previous %d [0=01 grasp 1=01 extend 2=23 grasp 3=23 extend]; lever [%.3f %.3f %.3f %.3f] m; required N [%.2f %.2f %.2f %.2f], extension minimum [%.2f %.2f] N; score [%.2f %.2f %.2f %.2f]; feasible [%d %d %d %d]",
       actuating ? "ACTIVE (guarded actuation)" : "SHADOW (not actuating)",
       roll_error * 180.0 / M_PI, imminent_fall ? 1 : 0,
-      radius * 1000.0, best,
+      radius * 1000.0, best, previous_candidate_index,
       values[0].signed_lever, values[1].signed_lever,
       values[2].signed_lever, values[3].signed_lever,
       values[0].command_thrust, values[1].command_thrust,
       values[2].command_thrust, values[3].command_thrust,
+      candidates[1].extension_min_thrust,
+      candidates[3].extension_min_thrust,
+      values[0].score, values[1].score,
+      values[2].score, values[3].score,
       values[0].feasible ? 1 : 0, values[1].feasible ? 1 : 0,
       values[2].feasible ? 1 : 0, values[3].feasible ? 1 : 0);
   return result;

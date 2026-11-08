@@ -109,9 +109,9 @@
   <arg name="rocking_gait" default="false" />
   <arg name="recovery_predictive_enabled" default="true" />
   <arg name="recovery_predictive_shadow" default="true" />
-  <!-- Opt-in: connect the four-candidate support-point planner to the guarded
-       recovery actuator path. False preserves the current production selector. -->
-  <arg name="recovery_unified_active_enabled" default="false" />
+  <!-- Use the four-candidate support-point planner with the guarded recovery
+       actuator path by default. False explicitly selects the legacy selector. -->
+  <arg name="recovery_unified_active_enabled" default="true" />
   <arg name="bottom_control_enabled" default="true" />
   <arg name="use_mocap_attitude_for_inchworm" default="false" />
   <arg name="hand_relative_mocap_enabled" default="false" />

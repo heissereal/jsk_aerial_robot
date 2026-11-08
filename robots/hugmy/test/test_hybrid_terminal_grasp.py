@@ -88,6 +88,9 @@ struct AttitudePressureController {
  bool recovery_preferred_pair_locked_=false;
  bool recovery_extension_mode_latched_=false;
  int recovery_extension_direction_sign_=0;
+ int recovery_unified_selected_candidate_index_=-1;
+ ros::Time recovery_unified_unlock_since_;
+ bool recovery_unified_unlock_ready_=false;
  bool recovery_rate_arrest_active_=false;
  ros::Time recovery_rate_arrest_nonoutward_since_;
  double recovery_rate_arrest_reference_error_rad_=std::numeric_limits<double>::quiet_NaN();
