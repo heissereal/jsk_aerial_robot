@@ -48,6 +48,12 @@ AttitudePressureController::evaluateUnifiedRecoveryCandidates(
         std::max(0.0, std::min(2.966, bend))), arm_yaw_[arm]);
     return rotor;
   };
+  const auto pressure_transitioning = [&](size_t arm) {
+    return !std::isfinite(measured_pressure_[arm]) ||
+        !std::isfinite(last_pressure_[arm]) ||
+        std::abs(measured_pressure_[arm] - last_pressure_[arm]) >
+            pressure_tolerance_kpa_;
+  };
 
   for (size_t pair_index = 0; pair_index < pairs.size(); ++pair_index)
     {
@@ -57,8 +63,11 @@ AttitudePressureController::evaluateUnifiedRecoveryCandidates(
       const size_t support_index = 1 - pair_index;
       rr::Vec3 support{{0.0, 0.0, 0.0}};
       bool support_valid = true;
+      bool support_pressure_transitioning = false;
       for (const size_t arm : pairs[support_index])
         {
+          support_pressure_transitioning = support_pressure_transitioning ||
+              pressure_transitioning(arm);
           const double bend = measuredArmBendAngle(arm);
           const rr::Vec3 contact = armContactPointFromAngle(arm, bend);
           if (!rr::finite(contact) || !std::isfinite(measured_pressure_[arm]) ||
@@ -87,6 +96,12 @@ AttitudePressureController::evaluateUnifiedRecoveryCandidates(
           c.pair = pair_index;
           c.release = (mode == 1);
           c.contact_feasible = support_valid;
+          c.support_pressure_transitioning = support_pressure_transitioning;
+          c.actuated_pressure_transitioning = false;
+          for (const size_t arm : pairs[pair_index])
+            c.actuated_pressure_transitioning =
+                c.actuated_pressure_transitioning ||
+                pressure_transitioning(arm);
           c.support_body = support;
           c.release_fraction = c.release ? 1.0 : 0.0;
           c.transition_seconds = c.release ? recovery_extension_prediction_sec_ : 0.0;
@@ -200,5 +215,22 @@ AttitudePressureController::evaluateUnifiedRecoveryCandidates(
       values[2].score, values[3].score,
       values[0].feasible ? 1 : 0, values[1].feasible ? 1 : 0,
       values[2].feasible ? 1 : 0, values[3].feasible ? 1 : 0);
+  ROS_INFO("Unified recovery candidate reasons [C0=%s C1=%s C2=%s C3=%s]; pressure transient support/actuated [C0=%d/%d C1=%d/%d C2=%d/%d C3=%d/%d]; measured [%.1f %.1f %.1f %.1f] kPa, commanded [%.1f %.1f %.1f %.1f] kPa",
+      rr::evaluationFailureReasonName(values[0].failure_reason),
+      rr::evaluationFailureReasonName(values[1].failure_reason),
+      rr::evaluationFailureReasonName(values[2].failure_reason),
+      rr::evaluationFailureReasonName(values[3].failure_reason),
+      candidates[0].support_pressure_transitioning ? 1 : 0,
+      candidates[0].actuated_pressure_transitioning ? 1 : 0,
+      candidates[1].support_pressure_transitioning ? 1 : 0,
+      candidates[1].actuated_pressure_transitioning ? 1 : 0,
+      candidates[2].support_pressure_transitioning ? 1 : 0,
+      candidates[2].actuated_pressure_transitioning ? 1 : 0,
+      candidates[3].support_pressure_transitioning ? 1 : 0,
+      candidates[3].actuated_pressure_transitioning ? 1 : 0,
+      measured_pressure_[0], measured_pressure_[1],
+      measured_pressure_[2], measured_pressure_[3],
+      last_pressure_[0], last_pressure_[1],
+      last_pressure_[2], last_pressure_[3]);
   return result;
 }

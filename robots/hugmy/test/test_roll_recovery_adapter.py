@@ -23,6 +23,7 @@ public:
   using Vector3 = std::array<double, 3>;
   using PressureArray = std::array<double, 4>;
   std::array<double,4> measured_pressure_{{30.,30.,30.,30.}};
+  std::array<double,4> last_pressure_{{30.,30.,30.,30.}};
   std::array<double,4> arm_yaw_{{-3*M_PI/4,-M_PI/4,M_PI/4,3*M_PI/4}};
   hugmy::CircularGraspEstimate recovery_circle_event_estimate_;
   hugmy::PressureThrustBendModel bend_model_;
@@ -30,6 +31,7 @@ public:
   double recovery_circle_min_signed_lever_m_=.005;
   double recovery_circle_release_penalty_n_=.1;
   double recovery_circle_contact_pressure_kpa_=10.;
+  double pressure_tolerance_kpa_=1.;
   double recovery_extension_prediction_sec_=.3;
   double recovery_rotor_cant_rad_=6.5*M_PI/180.;
   double recovery_release_pressure_kpa_=0.;

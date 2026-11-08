@@ -69,7 +69,7 @@ struct RollRecoveryConfig {
   // Far from level, a stopping-distance prediction is only a continuous
   // speed limit.  Reserve the latched rotor rundown for the final envelope;
   // otherwise contact-rate impulses repeatedly unload and reload the arm.
-  double terminal_brake_max_error = 0.08726646; // 5 deg for a 3-deg stop band
+  double terminal_brake_max_error = 0.12217305; // 7 deg for a 3-deg stop band
   // Initial authority for a non-terminal, explicitly reset re-approach.
   double reapproach_limit = 1.5, reapproach_rate = 0.04;
   // Start a post-brake retry gently, but do not hold it below static-friction
@@ -458,14 +458,15 @@ struct ContinuousRollRecovery {
     const double stable_contact_limit = c.contact_minimum_limit > c.stop
         ? c.contact_minimum_limit : capture_hysteresis_limit;
     // A complete rotor rundown is a terminal action, not a generic speed
-    // controller.  Limit it to +/-5 deg even if an older launch file still
-    // supplies the former 15-deg envelope or a wider compliant-contact
-    // minimum.  Outside this hard neighbourhood prediction may reduce speed,
-    // but it must not command zero and unload a still-useful pair.
-    const double terminal_full_brake_limit = std::min(
-        0.08726646259971647,
-        std::min(c.terminal_brake_max_error,
-                 c.stop + 2.0 * c.stop_margin));
+    // controller.  The 160-mm-cylinder trial still crossed the target when
+    // the former +/-5-deg envelope delayed the monotonic rundown.  Admit the
+    // configured brake two degrees earlier, while retaining a +/-7-deg hard
+    // ceiling so an older 15-deg launch value cannot unload a useful pair far
+    // from level.  Outside this neighbourhood prediction remains a continuous
+    // speed limit and cannot latch a zero-thrust rundown.
+    const double terminal_full_brake_limit = std::max(
+        c.stop, std::min(0.12217304763960307,
+                         c.terminal_brake_max_error));
     if (capture_active && std::abs(error) > terminal_full_brake_limit) {
       capture_active = false;
       stop_band_since = -1.0;

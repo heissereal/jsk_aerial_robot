@@ -268,6 +268,8 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
                  recovery_unified_unlock_rate_rad_s_, 0.01, 0.3);
   recovery_param("recovery_unified_unlock_hold_sec",
                  recovery_unified_unlock_hold_sec_, 0.05, 1.0);
+  recovery_param("recovery_candidate_selection_settle_sec",
+                 recovery_candidate_selection_settle_sec_, 0.0, 1.0);
   recovery_param("recovery_unsafe_roll_rad",
                  recovery_unsafe_roll_rad_, 0.2, 1.5);
   recovery_param("recovery_extension_response_sec",

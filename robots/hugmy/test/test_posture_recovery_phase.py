@@ -17,6 +17,10 @@ assert "POSTURE_SAFE_TRANSFER = 29" in header  # keep recorded ROS IDs stable
 assert '"POSTURE_SAFE_TRANSFER"' in source
 assert '"posture_recovery_phase"' in source
 assert "recovery_response_evaluation_ready &&" in source
+assert "recovery_candidate_selection_settled_since_" in source
+assert "recovery_candidate_selection_ready" in source
+assert "maximum_candidate_pressure_error" in source
+assert "maximum_candidate_gyro" in source
 assert "recovery_preinflate_thrust_rise_n_s_" in source
 assert "active_roll_recovery_config.rise = std::max(" in source
 assert "recovery_contact_restore_thrust_limit_n_" in source
@@ -71,6 +75,14 @@ int main() {
   assert(!recoveryResponseCanBeJudged(true,true,3.17,1.,.6,1.2));
   assert(!recoveryResponseCanBeJudged(true,false,3.17,1.,2.,1.2));
   assert(recoveryResponseCanBeJudged(true,true,3.17,1.,1.21,1.2));
+
+  // Ordinary candidate comparison waits for a physically settled support
+  // boundary. Each emergency source independently bypasses that dwell.
+  assert(!recoveryCandidateSelectionAllowed(false,false,false,false));
+  assert(recoveryCandidateSelectionAllowed(true,false,false,false));
+  assert(recoveryCandidateSelectionAllowed(false,true,false,false));
+  assert(recoveryCandidateSelectionAllowed(false,false,true,false));
+  assert(recoveryCandidateSelectionAllowed(false,false,false,true));
 
   // Safe pneumatic support builds without a pressure step; no rotor command
   // can grow while the contact state is being restored.

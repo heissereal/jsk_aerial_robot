@@ -44,6 +44,7 @@ void AttitudePressureController::updatePostureRecovery(
         {
           recovery_unified_unlock_since_ = ros::Time(0);
           recovery_unified_unlock_ready_ = false;
+          recovery_candidate_selection_settled_since_ = ros::Time(0);
         }
       if (action_c_resume_pending_ &&
           std::abs(wrapAngle(roll_ - target_roll_)) >=
@@ -187,6 +188,77 @@ void AttitudePressureController::updatePostureRecovery(
           const bool c_preload_roll = continuous_c_recovery &&
               !grasp_pressure_ready &&
               attitude_error >= action_c_preload_recovery_trigger_rad_;
+          // Candidate selection has two timing classes.  Ordinary recovery
+          // waits for the pneumatic support target and arm motion to settle,
+          // so the four steady-state geometries are not evaluated from a
+          // transient bend.  A hard/preload roll or a rate prediction which
+          // reaches the 15-deg extension boundary bypasses this dwell and
+          // preserves the existing fast emergency response.
+          const bool c_roll_worsening = std::isfinite(recovery_roll_rate) &&
+              roll_error * recovery_roll_rate < 0.0;
+          const double c_predicted_roll_error =
+              std::isfinite(recovery_roll_rate)
+              ? roll_error - recovery_extension_prediction_sec_ *
+                    recovery_roll_rate
+              : roll_error;
+          const bool c_extension_emergency = continuous_c_recovery &&
+              (std::abs(roll_error) >=
+                   recovery_circle_flexed_max_error_rad_ ||
+               (c_roll_worsening &&
+                std::abs(c_predicted_roll_error) >=
+                    recovery_circle_flexed_max_error_rad_));
+
+          bool recovery_candidate_state_quiet = continuous_c_recovery &&
+              recovery_pressure_fresh && neurons_fresh;
+          double maximum_candidate_pressure_error = 0.0;
+          double maximum_candidate_gyro = 0.0;
+          for (size_t arm = 0; arm < ARM_COUNT; ++arm)
+            {
+              const double measured_error =
+                  std::abs(measured_pressure_[arm] - steady_grasp[arm]);
+              const double command_error =
+                  std::abs(last_pressure_[arm] - steady_grasp[arm]);
+              const double gyro_norm = std::sqrt(
+                  neuron_gyro_[arm][0] * neuron_gyro_[arm][0] +
+                  neuron_gyro_[arm][1] * neuron_gyro_[arm][1] +
+                  neuron_gyro_[arm][2] * neuron_gyro_[arm][2]);
+              maximum_candidate_pressure_error =
+                  std::isfinite(measured_error) &&
+                  std::isfinite(command_error)
+                  ? std::max(maximum_candidate_pressure_error,
+                        std::max(measured_error, command_error))
+                  : std::numeric_limits<double>::infinity();
+              maximum_candidate_gyro = std::isfinite(gyro_norm)
+                  ? std::max(maximum_candidate_gyro, gyro_norm)
+                  : std::numeric_limits<double>::infinity();
+              recovery_candidate_state_quiet =
+                  recovery_candidate_state_quiet &&
+                  std::isfinite(measured_error) &&
+                  std::isfinite(command_error) &&
+                  std::isfinite(gyro_norm) &&
+                  measured_error <= pressure_tolerance_kpa_ &&
+                  command_error <= pressure_tolerance_kpa_ &&
+                  gyro_norm <= arm_gyro_tolerance_;
+            }
+          if (recovery_candidate_state_quiet)
+            {
+              if (recovery_candidate_selection_settled_since_.isZero())
+                recovery_candidate_selection_settled_since_ = now;
+            }
+          else
+            recovery_candidate_selection_settled_since_ = ros::Time(0);
+          const double recovery_candidate_settle_elapsed =
+              recovery_candidate_selection_settled_since_.isZero() ? 0.0 :
+              (now - recovery_candidate_selection_settled_since_).toSec();
+          const bool recovery_candidate_state_settled =
+              recovery_candidate_state_quiet &&
+              recovery_candidate_settle_elapsed >=
+                  recovery_candidate_selection_settle_sec_;
+          const bool recovery_candidate_selection_ready =
+              !recovery_unified_active_enabled_ ||
+              hugmy::recoveryCandidateSelectionAllowed(
+                  recovery_candidate_state_settled, c_hard_roll,
+                  c_preload_roll, c_extension_emergency);
           const bool stable_c_roll = c_trend_mode && !c_hard_roll &&
               action_c_roll_trend_.ready && !action_c_roll_trend_.worsening;
           const bool c_recovery_requested = !c_trend_mode || c_hard_roll ||
@@ -234,6 +306,7 @@ void AttitudePressureController::updatePostureRecovery(
           const bool continuous_recovery_requested = continuous_c_recovery &&
               target_received_ && body_imu_fresh && pressure_valid && neurons_fresh &&
               recovery_pressure_fresh && !continuous_recovery_blocked_ &&
+              recovery_candidate_selection_ready &&
               geometry_reestimate_ready && recovery_restart_support_ready &&
               angular_rate < correction_max_angular_rate_ &&
               attitude_error > active_correction_trigger &&
@@ -295,11 +368,23 @@ void AttitudePressureController::updatePostureRecovery(
               (!manual_posture_recovery_requested_ || grasp_pressure_ready) &&
               (!continuous_c_recovery || (!continuous_recovery_blocked_ &&
                recovery_pressure_fresh && geometry_reestimate_ready &&
+               recovery_candidate_selection_ready &&
                angular_rate < correction_max_angular_rate_)) &&
               (continuous_c_recovery || (grasp_pressure_ready && recovery_bottom_ready &&
                (!action_c_resume_pending_ || recovery_settled))) &&
               attitude_error > active_correction_trigger && c_recovery_requested,
               now.toSec(), correction_trigger_confirm_sec_);
+          if (continuous_c_recovery && recovery_unified_active_enabled_ &&
+              c_recovery_requested &&
+              attitude_error > active_correction_trigger &&
+              !recovery_candidate_selection_ready)
+            ROS_INFO_THROTTLE(0.5,
+                "Normal recovery waits for candidate boundary: pressure error %.2f/%.2f kPa, arm gyro %.3f/%.3f rad/s, quiet dwell %.2f/%.2f s; emergency bypass hard=%d preload=%d extension=%d",
+                maximum_candidate_pressure_error, pressure_tolerance_kpa_,
+                maximum_candidate_gyro, arm_gyro_tolerance_,
+                recovery_candidate_settle_elapsed,
+                recovery_candidate_selection_settle_sec_,
+                c_hard_roll, c_preload_roll, c_extension_emergency);
           if (!unified_unlock_dwell_pending &&
               (correction_confirmed || continuous_recovery_requested) &&
               (continuous_recovery_requested || last_correction_end_.isZero() ||

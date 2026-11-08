@@ -215,6 +215,17 @@ inline bool recoveryResponseCanBeJudged(bool pressure_settled,
       effective_probe_sec >= required_probe_sec;
 }
 
+// Candidate geometry should normally be sampled only at a quiet pneumatic
+// boundary.  An emergency is different: waiting for a cleaner model sample
+// would allow the roll error to grow faster than the recovery actuator can
+// respond, so any emergency trigger bypasses the settling gate.
+inline bool recoveryCandidateSelectionAllowed(bool state_settled,
+                                               bool hard_roll,
+                                               bool preload_roll,
+                                               bool extension_emergency) {
+  return state_settled || hard_roll || preload_roll || extension_emergency;
+}
+
 // The safety state may *only* restore support and reduce existing rotor
 // force; it must never issue a new rotor thrust increase.
 inline double recoveryBoundedPressureStep(double previous_kpa,

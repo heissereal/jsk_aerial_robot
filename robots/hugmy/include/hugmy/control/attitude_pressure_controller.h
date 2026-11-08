@@ -444,6 +444,12 @@ private:
   double recovery_unified_unlock_hold_sec_ = 0.25;
   ros::Time recovery_unified_unlock_since_;
   bool recovery_unified_unlock_ready_ = false;
+  // Outside an emergency, compare the four recovery candidates only after
+  // the commanded support pressure is physically present and the arm IMUs
+  // have remained quiet for this dwell.  This prevents transient pneumatic
+  // geometry from being reported as an infinite candidate cost.
+  double recovery_candidate_selection_settle_sec_ = 0.20;
+  ros::Time recovery_candidate_selection_settled_since_;
   // Set by the operator-only recovery service.  Unlike an ordinary Action-C
   // trigger this request does not require a worsening trend, but it still
   // passes every sensor, pressure, angular-rate and actuator safety gate.

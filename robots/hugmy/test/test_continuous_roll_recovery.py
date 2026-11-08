@@ -157,11 +157,13 @@ int main() {
   // A rebound outside the full-brake envelope must immediately leave capture;
   // it may be speed-limited, but must not continue a zero-thrust rundown.
   ContinuousRollRecovery capture_hysteresis;
-  capture_hysteresis.reset(cfg.stop-.1*deg,0.);
+  capture_hysteresis.reset(cfg.terminal_brake_max_error-.1*deg,0.);
   capture_hysteresis.thrust=1.2;capture_hysteresis.rate_initialized=true;
   capture_hysteresis.filtered_rate=0.;
-  capture_hysteresis.update(cfg.stop-.1*deg,0.,.02,.02,m,cfg,response);
-  capture_hysteresis.update(cfg.stop+.1*deg,0.,.04,.02,m,cfg,response);
+  capture_hysteresis.update(
+      cfg.terminal_brake_max_error-.1*deg,0.,.02,.02,m,cfg,response);
+  capture_hysteresis.update(
+      cfg.terminal_brake_max_error+.1*deg,0.,.04,.02,m,cfg,response);
   assert(!capture_hysteresis.capture_active &&
          capture_hysteresis.target_thrust>0. &&
          !capture_hysteresis.finished);
@@ -176,7 +178,7 @@ int main() {
   rotor_handoff.reset(4.9*deg,0.);rotor_handoff.progress_observed=true;
   rotor_handoff.thrust=.30;rotor_handoff.rate_initialized=true;
   rotor_handoff.filtered_rate=0.;
-  for(int i=1;i<=30 && !rotor_handoff.low_authority_reapproach;++i)
+  for(int i=1;i<=30;++i)
     rotor_handoff.update((i<3?4.9:5.21)*deg,0.,i*.02,.02,m,
                          three_degree,response);
   assert(!rotor_handoff.finished && !rotor_handoff.capture_active);
@@ -306,16 +308,27 @@ int main() {
          accelerating.predicted_braking &&
          !accelerating.terminal_brake_latched && !accelerating.moving &&
          !accelerating.progress_observed);
-  // Inside 5 deg the same prediction is allowed to latch the final rundown.
+  // Inside the configured 7-deg envelope the same prediction is allowed to
+  // latch the final rundown. This starts braking before the 160-mm-cylinder
+  // contact can coast through zero.
   RollRecoveryConfig terminal_cfg=cfg;
   terminal_cfg.stop=3*deg;terminal_cfg.stop_margin=1*deg;
   terminal_cfg.capture_margin_factor=0.;
-  ContinuousRollRecovery terminal;terminal.reset(4.8*deg,0.);
+  terminal_cfg.terminal_brake_max_error=7*deg;
+  ContinuousRollRecovery terminal;terminal.reset(6.8*deg,0.);
   terminal.thrust=2.;terminal.filtered_rate=.08;
   terminal.rate_initialized=true;
-  terminal.update(4.8*deg,.65,.02,.02,m,terminal_cfg,response);
+  terminal.update(6.8*deg,.65,.02,.02,m,terminal_cfg,response);
   assert(terminal.predicted_braking && terminal.terminal_brake_latched &&
          terminal.low_authority_reapproach);
+  // Just outside the envelope the same prediction remains a continuous speed
+  // brake and must not force a complete zero-thrust dwell.
+  ContinuousRollRecovery preterminal;preterminal.reset(7.2*deg,0.);
+  preterminal.thrust=2.;preterminal.filtered_rate=.08;
+  preterminal.rate_initialized=true;
+  preterminal.update(7.2*deg,.65,.02,.02,m,terminal_cfg,response);
+  assert(preterminal.predicted_braking &&
+         !preterminal.terminal_brake_latched && preterminal.thrust>0.);
   // An invalid down-rate cannot disable braking and leave the motors running.
   RollRecoveryConfig no_brake=cfg;no_brake.fall=0.;
   ContinuousRollRecovery invalid;invalid.reset(.5,0.);invalid.thrust=2.;
@@ -400,7 +413,7 @@ int main() {
   }
   assert(noisy_plateau.boost>1.0 && !noisy_plateau.wrong_way);
   // Even an explicitly configured soft-contact minimum cannot authorize a
-  // complete rotor rundown outside the hard 5-deg terminal neighbourhood.
+  // complete rotor rundown outside the hard 7-deg terminal neighbourhood.
   ContinuousRollRecovery contact_minimum;contact_minimum.reset(20*deg,0.);
   RollRecoveryConfig soft_contact=cfg;
   soft_contact.stop=8*deg;

@@ -65,6 +65,13 @@ int main() {
   assert(!small_choice.candidates[small_choice.index].release);
   assert(near(small_choice.evaluation.roll_thrust, 0.2 / 0.24));
   assert(!small_choice.alternatives[2].feasible); // Wrong-sign moment.
+  assert(small_choice.alternatives[2].failure_reason ==
+         EvaluationFailureReason::WRONG_MOMENT_SIGN);
+
+  auto unsupported = small[0];
+  unsupported.contact_feasible = false;
+  assert(evaluate(unsupported, 0.2, cfg).failure_reason ==
+         EvaluationFailureReason::SUPPORT_UNAVAILABLE);
 
   // Geometry change (a different radius/contact configuration) can make the
   // released 2+3 pair superior WITHOUT an object-specific if statement.
@@ -101,6 +108,10 @@ int main() {
       coupled, 0.2, cfg, geometry_at_thrust, 0.1);
   assert(extension_bounded.feasible &&
          near(extension_bounded.command_thrust, 1.4));
+
+  coupled.extension_min_thrust = INFINITY;
+  assert(evaluateCoupled(coupled, 0.2, cfg, geometry_at_thrust, 0.1)
+             .failure_reason == EvaluationFailureReason::EXTENSION_UNREACHABLE);
 
   // A finite switching margin prevents toggling between close candidates.
   auto close = small;

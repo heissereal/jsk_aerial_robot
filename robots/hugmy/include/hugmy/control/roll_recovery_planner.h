@@ -113,12 +113,48 @@ struct Candidate {
   std::size_t pair = 0;
   bool release = false;
   bool contact_feasible = false;
+  // Diagnostic context only.  Candidate selection still uses the same
+  // steady-state geometry and limits; these flags reveal when that geometry
+  // was evaluated while pneumatic state was still moving toward its command.
+  bool support_pressure_transitioning = false;
+  bool actuated_pressure_transitioning = false;
   Vec3 support_body{{0.0, 0.0, 0.0}};
   std::array<Rotor, 2> rotors;
   double extension_min_thrust = 0.0;  // Per rotor, N; 0 for grasped candidates.
   double transition_seconds = 0.0;
   double release_fraction = 0.0;
 };
+
+enum class EvaluationFailureReason {
+  NONE = 0,
+  SUPPORT_UNAVAILABLE,
+  INVALID_INPUT,
+  INVALID_ROTOR_GEOMETRY,
+  EXTENSION_UNREACHABLE,
+  WRONG_MOMENT_SIGN,
+  LEVER_TOO_SMALL,
+  THRUST_LIMIT
+};
+
+inline const char* evaluationFailureReasonName(
+    EvaluationFailureReason reason) {
+  switch (reason) {
+    case EvaluationFailureReason::NONE: return "feasible";
+    case EvaluationFailureReason::SUPPORT_UNAVAILABLE:
+      return "support_unavailable";
+    case EvaluationFailureReason::INVALID_INPUT: return "invalid_input";
+    case EvaluationFailureReason::INVALID_ROTOR_GEOMETRY:
+      return "invalid_rotor_geometry";
+    case EvaluationFailureReason::EXTENSION_UNREACHABLE:
+      return "extension_unreachable";
+    case EvaluationFailureReason::WRONG_MOMENT_SIGN:
+      return "wrong_moment_sign";
+    case EvaluationFailureReason::LEVER_TOO_SMALL:
+      return "lever_too_small";
+    case EvaluationFailureReason::THRUST_LIMIT: return "thrust_limit";
+  }
+  return "unknown";
+}
 
 struct Config {
   double min_signed_lever = 0.005;       // m per 1 N commanded to each rotor
@@ -130,6 +166,8 @@ struct Config {
 
 struct Evaluation {
   bool feasible = false;
+  EvaluationFailureReason failure_reason =
+      EvaluationFailureReason::INVALID_INPUT;
   double signed_lever = NAN;
   double roll_thrust = INFINITY;
   double command_thrust = INFINITY;
@@ -139,35 +177,58 @@ struct Evaluation {
 inline Evaluation evaluate(const Candidate& c, double required_moment,
                            const Config& cfg) {
   Evaluation e;
-  if (!c.contact_feasible || !finite(c.support_body) ||
-      !std::isfinite(required_moment) || !std::isfinite(cfg.thrust_limit) ||
-      cfg.thrust_limit <= 0.0 || !std::isfinite(c.extension_min_thrust) ||
-      c.extension_min_thrust < 0.0 || !std::isfinite(c.transition_seconds) ||
-      c.transition_seconds < 0.0 || !std::isfinite(c.release_fraction) ||
-      c.release_fraction < 0.0 || c.release_fraction > 1.0)
+  if (!c.contact_feasible || !finite(c.support_body)) {
+    e.failure_reason = EvaluationFailureReason::SUPPORT_UNAVAILABLE;
     return e;
+  }
+  if (!std::isfinite(required_moment) || !std::isfinite(cfg.thrust_limit) ||
+      cfg.thrust_limit <= 0.0 || !std::isfinite(c.transition_seconds) ||
+      c.transition_seconds < 0.0 || !std::isfinite(c.release_fraction) ||
+      c.release_fraction < 0.0 || c.release_fraction > 1.0) return e;
+  if (!std::isfinite(c.extension_min_thrust) ||
+      c.extension_min_thrust < 0.0) {
+    e.failure_reason = c.release
+        ? EvaluationFailureReason::EXTENSION_UNREACHABLE
+        : EvaluationFailureReason::INVALID_INPUT;
+    return e;
+  }
   double lever = 0.0;
   for (const auto& rotor : c.rotors) {
     if (!finite(rotor.position) || !finite(rotor.unit_force) ||
-        std::abs(dot(rotor.unit_force, rotor.unit_force) - 1.0) > 0.02)
+        std::abs(dot(rotor.unit_force, rotor.unit_force) - 1.0) > 0.02) {
+      e.failure_reason = EvaluationFailureReason::INVALID_ROTOR_GEOMETRY;
       return e;
+    }
     lever += rollLever(rotor.position, rotor.unit_force, c.support_body);
   }
   e.signed_lever = (required_moment >= 0.0 ? 1.0 : -1.0) * lever;
-  if (!std::isfinite(e.signed_lever) ||
-      e.signed_lever < std::max(1.0e-9, cfg.min_signed_lever))
+  if (!std::isfinite(e.signed_lever)) {
+    e.failure_reason = EvaluationFailureReason::INVALID_ROTOR_GEOMETRY;
     return e;
+  }
+  if (e.signed_lever <= 0.0) {
+    e.failure_reason = EvaluationFailureReason::WRONG_MOMENT_SIGN;
+    return e;
+  }
+  if (e.signed_lever < std::max(1.0e-9, cfg.min_signed_lever)) {
+    e.failure_reason = EvaluationFailureReason::LEVER_TOO_SMALL;
+    return e;
+  }
   e.roll_thrust = std::abs(required_moment) / e.signed_lever;
   // If ONE thrust input both straightens the arm and produces roll moment,
   // its two lower bounds are combined by max(), not blindly added.
   e.command_thrust = std::max(e.roll_thrust,
                               c.release ? c.extension_min_thrust : 0.0);
-  if (!std::isfinite(e.command_thrust) || e.command_thrust > cfg.thrust_limit)
+  if (!std::isfinite(e.command_thrust) || e.command_thrust > cfg.thrust_limit) {
+    e.failure_reason = EvaluationFailureReason::THRUST_LIMIT;
     return e;
+  }
   e.score = e.command_thrust +
       cfg.release_penalty * c.release_fraction +
       cfg.transition_penalty * c.transition_seconds;
   e.feasible = std::isfinite(e.score);
+  e.failure_reason = e.feasible ? EvaluationFailureReason::NONE
+                                : EvaluationFailureReason::INVALID_INPUT;
   return e;
 }
 
@@ -184,15 +245,21 @@ inline Evaluation evaluateCoupled(const Candidate& c, double required_moment,
                                   GeometryAtThrust geometry_at_thrust,
                                   double thrust_step = 0.1) {
   Evaluation result;
-  if (!c.contact_feasible || !finite(c.support_body) ||
-      !std::isfinite(required_moment) || !std::isfinite(cfg.thrust_limit) ||
+  if (!c.contact_feasible || !finite(c.support_body)) {
+    result.failure_reason = EvaluationFailureReason::SUPPORT_UNAVAILABLE;
+    return result;
+  }
+  if (!std::isfinite(required_moment) || !std::isfinite(cfg.thrust_limit) ||
       cfg.thrust_limit <= 0.0 || !std::isfinite(thrust_step) ||
       thrust_step <= 0.0 || !std::isfinite(c.release_fraction) ||
       c.release_fraction < 0.0 || c.release_fraction > 1.0 ||
-      !std::isfinite(c.extension_min_thrust) ||
-      c.extension_min_thrust < 0.0 ||
       !std::isfinite(c.transition_seconds) || c.transition_seconds < 0.0)
     return result;
+  if (!std::isfinite(c.extension_min_thrust) ||
+      c.extension_min_thrust < 0.0) {
+    result.failure_reason = EvaluationFailureReason::EXTENSION_UNREACHABLE;
+    return result;
+  }
   const double moment_sign = required_moment >= 0.0 ? 1.0 : -1.0;
   const int steps = static_cast<int>(std::ceil(cfg.thrust_limit / thrust_step));
   // A released candidate is a distinct physical topology, not merely the
@@ -201,9 +268,15 @@ inline Evaluation evaluateCoupled(const Candidate& c, double required_moment,
   // the configured extension shape.  The same thrust then supplies roll
   // moment, so this is a lower bound rather than an additive force cost.
   const double minimum_thrust = c.release ? c.extension_min_thrust : 0.0;
-  if (minimum_thrust > cfg.thrust_limit) return result;
+  if (minimum_thrust > cfg.thrust_limit) {
+    result.failure_reason = EvaluationFailureReason::EXTENSION_UNREACHABLE;
+    return result;
+  }
   const int first_step = std::max(0, static_cast<int>(
       std::ceil((minimum_thrust - 1.0e-9) / thrust_step)));
+  bool saw_valid_geometry = false;
+  bool saw_restoring_sign = false;
+  bool saw_usable_lever = false;
   for (int j = first_step; j <= steps; ++j) {
     const double thrust = std::min(cfg.thrust_limit, j * thrust_step);
     const auto rotors = geometry_at_thrust(thrust);
@@ -217,16 +290,31 @@ inline Evaluation evaluateCoupled(const Candidate& c, double required_moment,
       lever += rollLever(rotor.position, rotor.unit_force, c.support_body);
     }
     if (!geometry_valid) continue;
+    saw_valid_geometry = true;
     const double signed_lever = moment_sign * lever;
-    if (signed_lever < std::max(1.0e-9, cfg.min_signed_lever) ||
-        thrust * signed_lever < std::abs(required_moment)) continue;
+    if (signed_lever > 0.0) saw_restoring_sign = true;
+    if (signed_lever < std::max(1.0e-9, cfg.min_signed_lever)) continue;
+    saw_usable_lever = true;
+    if (thrust * signed_lever < std::abs(required_moment)) continue;
     result.feasible = true;
+    result.failure_reason = EvaluationFailureReason::NONE;
     result.signed_lever = signed_lever;
     result.roll_thrust = thrust;
     result.command_thrust = thrust;
     result.score = thrust + cfg.release_penalty * c.release_fraction +
         cfg.transition_penalty * c.transition_seconds;
     break;  // Ascending thrust search: first feasible is least thrust.
+  }
+  if (!result.feasible) {
+    if (!saw_valid_geometry)
+      result.failure_reason =
+          EvaluationFailureReason::INVALID_ROTOR_GEOMETRY;
+    else if (!saw_restoring_sign)
+      result.failure_reason = EvaluationFailureReason::WRONG_MOMENT_SIGN;
+    else if (!saw_usable_lever)
+      result.failure_reason = EvaluationFailureReason::LEVER_TOO_SMALL;
+    else
+      result.failure_reason = EvaluationFailureReason::THRUST_LIMIT;
   }
   return result;
 }
