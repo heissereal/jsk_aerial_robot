@@ -1,10 +1,10 @@
 # Hugmy roll recovery: staged model refactor
 
 This change introduces an independently testable **roll-recovery planner**
-(`include/hugmy/control/roll_recovery_planner.h`) and a diagnostic ROS adapter
-(`src/control/roll_recovery_planner_adapter.cpp`).  It **does not replace** the
-existing action-C recovery actuator/state machine.  No motor or valve behavior
-is changed by default.
+(`include/hugmy/control/roll_recovery_planner.h`) and a ROS adapter
+(`src/control/roll_recovery_planner_adapter.cpp`).  Motor and valve behavior is
+unchanged by default.  One explicit launch argument can connect its selected
+pair/contact mode to the existing guarded action-C recovery state machine.
 
 ## Why the old candidate signs are hard to trust
 
@@ -79,6 +79,29 @@ and transforms it into the changing body frame when a fresh mocap pose is
 available.  The pose and FK frames must be calibrated consistently.  If pose
 is missing, a diagnostic warning identifies the body-frozen fallback.
 This approximation does not track a moving human forearm.
+
+## Guarded active use
+
+The active path is deliberately opt-in:
+
+```bash
+roslaunch hugmy attitude_pressure_controller.launch \
+  recovery_unified_active_enabled:=true
+```
+
+The same argument is forwarded by `bringup.launch` and
+`human_arm_locomotion.launch`.  It changes only the pair/contact-mode selector.
+The existing thrust limit and slew rate, measured pressure/roll response
+supervision, candidate rejection, support restoration and `SAFE_TRANSFER`
+remain active.  If no unused feasible unified candidate exists, the controller
+does not fall back to a sign-only pair: it commands zero recovery thrust and
+returns to the existing support equalisation/re-estimation path.
+
+Look for `Unified recovery ACTIVE` and
+`Unified recovery ACTIVE selected candidate` before interpreting a trial as an
+active-planner experiment.  `recovery_predictive_shadow:=false` is a separate
+setting for within-pair predictive thrust/pressure control and does not enable
+this pair selector.
 
 ## Tests (no ROS installation required)
 

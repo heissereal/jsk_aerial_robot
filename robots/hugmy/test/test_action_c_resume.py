@@ -207,6 +207,7 @@ public:
  bool recovery_event_contact_pivot_locked_=false;
  Vector3 recovery_event_contact_pivot_{{0.,0.,-.07}};
  bool recovery_unified_shadow_enabled_=false;
+ bool recovery_unified_active_enabled_=false;
  bool recovery_mocap_pose_valid_=false;
  hugmy::recovery::Pose recovery_mocap_pose_;
  hugmy::recovery::Vec3 recovery_circle_center_world_{{0.,0.,0.}};
@@ -325,7 +326,8 @@ public:
    const double age=(now-mocap_stamp_).toSec();return mocap_received_&&age>=0.&&age<=inchworm_mocap_timeout_sec_;
  }
  void selectContinuousRecoveryPair(double);
- void logUnifiedRecoveryCandidates(double,double,const hugmy::recovery::Vec3&) {}
+ hugmy::recovery::Selection evaluateUnifiedRecoveryCandidates(
+     double,double,const hugmy::recovery::Vec3&,bool) {return {};}
  double measuredArmBendAngle(size_t arm)const{return angles[arm];}
  Vector3 armContactPointFromAngle(size_t arm,double bend)const{
    return {{0.,arm<2?.04:-.04,-.07-.01*std::sin(bend)}};

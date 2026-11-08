@@ -506,6 +506,10 @@ recovery_circle_selection_enabled: true
 # change actuator commands.  Start with logged model/measurement comparison
 # on both forearm-diameter and large-diameter cylinders.
 recovery_unified_shadow_enabled: false
+# Explicit hardware opt-in. When true, the unified four-candidate planner
+# selects the physical pair/contact mode; existing slew limits, response
+# supervision and SAFE_TRANSFER still own actuation safety.
+recovery_unified_active_enabled: false
 # Emergency risk diagnostics: predict whether outward roll reaches the unsafe
 # angle before the pressure/arm extension can take effect (not an angle switch).
 recovery_unsafe_roll_rad: 0.7853981633974483 # 45 deg; calibrate from safe tilt tests

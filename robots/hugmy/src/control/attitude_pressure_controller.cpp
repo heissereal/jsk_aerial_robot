@@ -254,6 +254,8 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
              recovery_circle_selection_enabled_, true);
   pnh_.param("recovery_unified_shadow_enabled",
              recovery_unified_shadow_enabled_, false);
+  pnh_.param("recovery_unified_active_enabled",
+             recovery_unified_active_enabled_, false);
   recovery_param("recovery_unsafe_roll_rad",
                  recovery_unsafe_roll_rad_, 0.2, 1.5);
   recovery_param("recovery_extension_response_sec",

@@ -6,7 +6,7 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 source = (root / 'src/control/roll_recovery_planner_adapter.cpp').read_text()
-method = source[source.index('void AttitudePressureController::logUnifiedRecoveryCandidates('):]
+method = source[source.index('hugmy::recovery::Selection\nAttitudePressureController::evaluateUnifiedRecoveryCandidates('):]
 
 code = r'''
 #include <hugmy/control/roll_recovery_planner.h>
@@ -53,17 +53,23 @@ public:
     return {{std::cos(theta)*a[0]-std::sin(theta)*a[1],
              std::sin(theta)*a[0]+std::cos(theta)*a[1],a[2]}};
   }
-  void logUnifiedRecoveryCandidates(double,double,const hugmy::recovery::Vec3&);
+  hugmy::recovery::Selection evaluateUnifiedRecoveryCandidates(
+      double,double,const hugmy::recovery::Vec3&,bool);
 };
 METHOD
 int main() {
   AttitudePressureController c;
   c.recovery_circle_event_estimate_.valid = true;
   c.recovery_circle_event_estimate_.radius = 0.04;
-  c.logUnifiedRecoveryCandidates(.2,.02,{{0.,0.,-.07}});
+  const auto shadow = c.evaluateUnifiedRecoveryCandidates(
+      .2,.02,{{0.,0.,-.07}},false);
+  assert(shadow.valid);
+  assert(shadow.candidates[shadow.index].contact_feasible);
   c.measured_pressure_[0] = 0.;
-  c.logUnifiedRecoveryCandidates(.2,.02,{{0.,0.,-.07}});
-  c.logUnifiedRecoveryCandidates(.2,.02,{{0.,NAN,-.07}});
+  c.evaluateUnifiedRecoveryCandidates(.2,.02,{{0.,0.,-.07}},true);
+  const auto invalid = c.evaluateUnifiedRecoveryCandidates(
+      .2,.02,{{0.,NAN,-.07}},false);
+  assert(!invalid.valid);
   std::puts("PASS: ROS-independent compile/smoke of actual recovery planner adapter");
 }
 '''.replace('METHOD', method)

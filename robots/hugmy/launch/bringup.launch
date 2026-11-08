@@ -90,6 +90,7 @@
   <arg name="maximum_pressure_kpa" default="40.0"/>
   <arg name="recovery_predictive_enabled" default="true"/>
   <arg name="recovery_predictive_shadow" default="true"/>
+  <arg name="recovery_unified_active_enabled" default="false"/>
   <!-- Hardware follows the Spinal sign convention.  Keep the independently
        verified MuJoCo force/contact convention simulation-only; recovery must
        be triggered before large roll momentum makes either pair appear
@@ -374,6 +375,7 @@
          value="$(arg hybrid_reverse_geometry_roll_moment)"/>
     <arg name="recovery_predictive_enabled" value="$(arg recovery_predictive_enabled)"/>
     <arg name="recovery_predictive_shadow" value="$(arg recovery_predictive_shadow)"/>
+    <arg name="recovery_unified_active_enabled" value="$(arg recovery_unified_active_enabled)"/>
     <arg name="inchworm_action_d" value="$(arg inchworm_action_d)"/>
   </include>
 

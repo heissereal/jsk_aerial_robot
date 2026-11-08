@@ -61,6 +61,8 @@ int main() {
   cfg.transition_penalty = 0.2;
   const auto small_choice = select(small, 0.2, cfg);
   assert(small_choice.valid && small_choice.index == 0);
+  assert(small_choice.candidates[small_choice.index].pair == 0);
+  assert(!small_choice.candidates[small_choice.index].release);
   assert(near(small_choice.evaluation.roll_thrust, 0.2 / 0.24));
   assert(!small_choice.alternatives[2].feasible); // Wrong-sign moment.
 

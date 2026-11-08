@@ -21,6 +21,7 @@
   <!-- Start collecting the first measured baseline immediately and enable
        bounded trajectory exploration from the following comparable stroke. -->
   <arg name="hybrid_locomotion_outer_enabled" default="true" />
+  <arg name="recovery_unified_active_enabled" default="false" />
   <arg name="hybrid_trajectory_min_extension_rad" default="0.2617993877991494" />
   <arg name="hybrid_trajectory_extension_rate_rad_s" default="0.70" />
   <arg name="hybrid_lift_rear_release_start_ratio" default="0.10" />
@@ -78,6 +79,8 @@
   <include file="$(find hugmy)/launch/attitude_pressure_controller.launch">
     <arg name="robot_ns" value="$(arg robot_ns)" />
     <arg name="inchworm_action_c" value="true" />
+    <arg name="recovery_unified_active_enabled"
+         value="$(arg recovery_unified_active_enabled)" />
     <arg name="hybrid_locomotion_outer_enabled"
          value="$(arg hybrid_locomotion_outer_enabled)" />
     <arg name="hybrid_locomotion_initial_bottom_kpa"

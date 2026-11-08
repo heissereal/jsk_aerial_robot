@@ -224,6 +224,7 @@ struct Selection {
   bool valid = false;
   std::size_t index = 0;
   Evaluation evaluation;
+  std::array<Candidate, 4> candidates;
   std::array<Evaluation, 4> alternatives;
 };
 
@@ -231,6 +232,7 @@ inline Selection select(const std::array<Candidate, 4>& candidates,
                         double required_moment, const Config& cfg,
                         int previous_index = -1) {
   Selection result;
+  result.candidates = candidates;
   for (std::size_t i = 0; i < candidates.size(); ++i) {
     result.alternatives[i] = evaluate(candidates[i], required_moment, cfg);
     if (result.alternatives[i].feasible &&

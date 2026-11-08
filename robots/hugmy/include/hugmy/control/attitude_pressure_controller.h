@@ -64,9 +64,10 @@ private:
   void handMocapCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
   void rootHandMocapCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
   void updateHandMocap(const geometry_msgs::PoseStamped::ConstPtr& msg);
-  void logUnifiedRecoveryCandidates(double roll_error,
-                                    double required_moment,
-                                    const hugmy::recovery::Vec3& circle_center_body);
+  hugmy::recovery::Selection evaluateUnifiedRecoveryCandidates(
+      double roll_error, double required_moment,
+      const hugmy::recovery::Vec3& circle_center_body,
+      bool actuating);
   bool enableCallback(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res);
   void update(const ros::TimerEvent& event);
 
@@ -420,6 +421,10 @@ private:
   // Non-actuating comparison of the standalone four-candidate planner against
   // the legacy controller.  Intentionally opt-in until real bag validation.
   bool recovery_unified_shadow_enabled_ = false;
+  // Explicit opt-in which connects the same four-candidate planner to the
+  // existing pressure/thrust state machine.  SAFE_TRANSFER and all measured
+  // response guards remain owned by the parent recovery controller.
+  bool recovery_unified_active_enabled_ = false;
   double recovery_unsafe_roll_rad_ = 45.0 * M_PI / 180.0;
   double recovery_extension_response_sec_ = 0.5;
   hugmy::recovery::Pose recovery_mocap_pose_;

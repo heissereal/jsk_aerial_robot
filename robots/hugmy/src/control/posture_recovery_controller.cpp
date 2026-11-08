@@ -3884,10 +3884,13 @@ void AttitudePressureController::selectContinuousRecoveryPair(
     return candidate;
   };
 
-  // Shadow-only planner: log four contact-conditioned candidate costs while
-  // the proven legacy controller still owns the motors.  Compare against
-  // real roll acceleration before enabling any new physical selection.
-  if (recovery_unified_shadow_enabled_ && circle_fresh)
+  // The standalone planner always evaluates the same four physical modes.
+  // In shadow mode its result is diagnostic only.  The explicit active flag
+  // connects that result to the existing guarded actuator state machine; it
+  // does not bypass pressure settling, response rejection, or SAFE_TRANSFER.
+  hugmy::recovery::Selection unified_plan;
+  if ((recovery_unified_shadow_enabled_ ||
+       recovery_unified_active_enabled_) && circle_fresh)
     {
       Vector3 body_center = recovery_event_contact_pivot_;
       const bool mocap_fresh = recovery_mocap_pose_valid_ &&
@@ -3906,14 +3909,92 @@ void AttitudePressureController::selectContinuousRecoveryPair(
               recovery_circle_center_world_, recovery_mocap_pose_);
         }
       else
-        ROS_WARN("Unified recovery shadow: fresh mocap pose unavailable; cylinder centre remains frozen in body coordinates (frame-uncertain)");
-      logUnifiedRecoveryCandidates(roll_error,
-          required_moment * correction_sign, body_center);
+        ROS_WARN("Unified recovery planner: fresh mocap pose unavailable; cylinder centre remains frozen in body coordinates (frame-uncertain)");
+      unified_plan = evaluateUnifiedRecoveryCandidates(roll_error,
+          required_moment * correction_sign, body_center,
+          recovery_unified_active_enabled_);
     }
 
   recovery_pair_selection_available_ = false;
   Candidate selected;
-  if (recovery_circle_selection_enabled_ && circle_fresh)
+  if (recovery_unified_active_enabled_ && circle_fresh)
+    {
+      const size_t extension_pressure_index = 0;
+      const auto allowed = [&](size_t index, int forced_pair) {
+        const size_t pair = index / 2;
+        const bool release = index % 2 == 1;
+        const size_t pressure_index = release
+            ? extension_pressure_index : grasp_pressure_index;
+        const uint8_t candidate_bit = static_cast<uint8_t>(
+            1u << (4u * pair + pressure_index));
+        return index < unified_plan.alternatives.size() &&
+            unified_plan.alternatives[index].feasible &&
+            (!emergency_extension_requested || release) &&
+            (!recovery_preferred_pair_locked_ ||
+             pair == recovery_preferred_pair_index_) &&
+            (forced_pair < 0 || pair == static_cast<size_t>(forced_pair)) &&
+            (recovery_rejected_candidate_mask_ & candidate_bit) == 0;
+      };
+      const auto best_index = [&](int forced_pair) {
+        size_t best = unified_plan.alternatives.size();
+        for (size_t index = 0; index < unified_plan.alternatives.size(); ++index)
+          if (allowed(index, forced_pair) &&
+              (best == unified_plan.alternatives.size() ||
+               unified_plan.alternatives[index].score <
+                   unified_plan.alternatives[best].score))
+            best = index;
+        return best;
+      };
+
+      size_t chosen = best_index(-1);
+      if (chosen < unified_plan.alternatives.size() &&
+          continuous_recovery_use_opposite_pair_ &&
+          !recovery_preferred_pair_locked_)
+        {
+          const int opposite = 1 - static_cast<int>(chosen / 2);
+          const size_t alternate = best_index(opposite);
+          if (alternate < unified_plan.alternatives.size())
+            {
+              chosen = alternate;
+              ROS_WARN("Unified active recovery uses the opposite physical pair after a measured wrong-way response");
+            }
+        }
+
+      if (chosen < unified_plan.alternatives.size())
+        {
+          const size_t pair = chosen / 2;
+          const bool release = chosen % 2 == 1;
+          const size_t pressure_index = release
+              ? extension_pressure_index : grasp_pressure_index;
+          // Reuse the legacy candidate container so every downstream pressure,
+          // response and SAFE_TRANSFER guard remains unchanged.  Replace only
+          // the quantities owned by the unified support-point/arm-shape model.
+          selected = evaluate(pair, pressure_index);
+          selected.valid = true;
+          selected.rejected = false;
+          selected.pair = pair;
+          selected.pressure_index = pressure_index;
+          selected.release = release;
+          selected.release_fraction = release ? 1.0 : 0.0;
+          selected.pressure = release
+              ? recovery_release_pressure_kpa_
+              : 0.5 * (nominal_pressure(pairs[pair][0]) +
+                       nominal_pressure(pairs[pair][1]));
+          selected.pivot = unified_plan.candidates[chosen].support_body;
+          selected.lever = unified_plan.alternatives[chosen].signed_lever;
+          selected.support_loss_moment = 0.0;
+          selected.required_thrust =
+              unified_plan.alternatives[chosen].command_thrust;
+          selected.score = unified_plan.alternatives[chosen].score;
+          ROS_WARN("Unified recovery ACTIVE selected candidate %zu: pair %zu+%zu, mode=%s, support pivot yz=[%.1f %.1f] mm, signed lever %.4f m, required %.2f N/rotor",
+                   chosen, pairs[pair][0], pairs[pair][1],
+                   release ? "straight-arm" : "grasped-current-bend",
+                   1000.0 * selected.pivot[1],
+                   1000.0 * selected.pivot[2], selected.lever,
+                   selected.required_thrust);
+        }
+    }
+  else if (recovery_circle_selection_enabled_ && circle_fresh)
     {
       const size_t extension_pressure_index = 0;
       Candidate best_grasped;
@@ -3956,7 +4037,8 @@ void AttitudePressureController::selectContinuousRecoveryPair(
               best_extended.score + 1.0e-6 < best_grasped.score)
                  ? best_extended : best_grasped);
     }
-  else if (recovery_circle_selection_enabled_)
+  else if (!recovery_unified_active_enabled_ &&
+           recovery_circle_selection_enabled_)
     {
       // The object-centre estimate is unavailable or stale.  Do not revert
       // immediately to a roll-sign/lower-side lookup: the URDF rotor pose and
@@ -3986,7 +4068,8 @@ void AttitudePressureController::selectContinuousRecoveryPair(
 
   if (selected.valid)
     {
-      if (continuous_recovery_use_opposite_pair_ &&
+      if (!recovery_unified_active_enabled_ &&
+          continuous_recovery_use_opposite_pair_ &&
           !recovery_preferred_pair_locked_)
         {
           const size_t opposite = 1 - selected.pair;
@@ -4085,6 +4168,20 @@ void AttitudePressureController::selectContinuousRecoveryPair(
       recovery_selected_support_loss_moment_nm_ = 0.0;
       ROS_ERROR("No unused circular recovery candidate remains for rejected mask 0x%02x",
                 recovery_rejected_candidate_mask_);
+      return;
+    }
+
+  // Active unified mode is deliberately fail-closed.  The lower-side fallback
+  // below belongs to the legacy selector and would silently defeat the launch
+  // request by actuating a pair which the four-candidate planner did not find
+  // feasible.  Returning unavailable lets the caller restore/equalise support
+  // and re-estimate geometry with zero rotor thrust.
+  if (recovery_unified_active_enabled_)
+    {
+      prepare_arm_active_.fill(false);
+      recovery_selected_contact_pivot_enabled_ = false;
+      recovery_selected_support_loss_moment_nm_ = 0.0;
+      ROS_ERROR("Unified recovery ACTIVE found no unused feasible candidate; refusing legacy lower-side actuation");
       return;
     }
 

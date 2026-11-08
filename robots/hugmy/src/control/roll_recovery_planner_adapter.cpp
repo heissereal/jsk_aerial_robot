@@ -5,21 +5,25 @@
 #include <limits>
 
 // The planner itself has no ROS, actuator, or state-machine dependencies.
-// This adapter only converts Hugmy's measured bends, circle fit and calibrated
-// pressure/thrust table into the four candidate geometries.  It is intentionally
-// diagnostic-only until the contact-pivot hypothesis has been checked on bags.
-void AttitudePressureController::logUnifiedRecoveryCandidates(
+// This adapter converts Hugmy's measured bends, circle fit and calibrated
+// pressure/thrust table into the four candidate geometries.  The caller decides
+// whether the returned selection is diagnostic-only or is connected to the
+// existing guarded pressure/thrust state machine.
+hugmy::recovery::Selection
+AttitudePressureController::evaluateUnifiedRecoveryCandidates(
     double roll_error, double desired_roll_moment,
-    const hugmy::recovery::Vec3& circle_center_body)
+    const hugmy::recovery::Vec3& circle_center_body,
+    bool actuating)
 {
   namespace rr = hugmy::recovery;
+  rr::Selection result;
   if (!recovery_circle_event_estimate_.valid ||
       !rr::finite(circle_center_body) ||
       !std::isfinite(desired_roll_moment))
-    return;
+    return result;
 
   const double radius = recovery_circle_event_estimate_.radius;
-  if (!std::isfinite(radius) || radius < 1.0e-3) return;
+  if (!std::isfinite(radius) || radius < 1.0e-3) return result;
 
   const std::array<std::array<size_t, 2>, 2> pairs{{
       {{0, 1}}, {{2, 3}}}};
@@ -126,6 +130,14 @@ void AttitudePressureController::logUnifiedRecoveryCandidates(
     if (values[i].feasible &&
         (best < 0 || values[i].score < values[static_cast<size_t>(best)].score))
       best = static_cast<int>(i);
+  result.candidates = candidates;
+  result.alternatives = values;
+  if (best >= 0)
+    {
+      result.valid = true;
+      result.index = static_cast<size_t>(best);
+      result.evaluation = values[result.index];
+    }
 
   const double error_rate = -hugmy::recoveryRollRate(
       roll_, pitch_, body_angular_velocity_);
@@ -133,7 +145,8 @@ void AttitudePressureController::logUnifiedRecoveryCandidates(
       roll_error, error_rate, recovery_unsafe_roll_rad_,
       recovery_extension_response_sec_, 0.15);
 
-  ROS_INFO("Unified recovery SHADOW (not actuating): err %.1f deg, danger=%d, radius %.1f mm, best %d [0=01 grasp 1=01 extend 2=23 grasp 3=23 extend]; lever [%.3f %.3f %.3f %.3f] m; required N [%.2f %.2f %.2f %.2f]; feasible [%d %d %d %d]",
+  ROS_INFO("Unified recovery %s: err %.1f deg, danger=%d, radius %.1f mm, best %d [0=01 grasp 1=01 extend 2=23 grasp 3=23 extend]; lever [%.3f %.3f %.3f %.3f] m; required N [%.2f %.2f %.2f %.2f]; feasible [%d %d %d %d]",
+      actuating ? "ACTIVE (guarded actuation)" : "SHADOW (not actuating)",
       roll_error * 180.0 / M_PI, imminent_fall ? 1 : 0,
       radius * 1000.0, best,
       values[0].signed_lever, values[1].signed_lever,
@@ -142,4 +155,5 @@ void AttitudePressureController::logUnifiedRecoveryCandidates(
       values[2].command_thrust, values[3].command_thrust,
       values[0].feasible ? 1 : 0, values[1].feasible ? 1 : 0,
       values[2].feasible ? 1 : 0, values[3].feasible ? 1 : 0);
+  return result;
 }
