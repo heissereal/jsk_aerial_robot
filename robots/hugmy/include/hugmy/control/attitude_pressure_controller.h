@@ -18,6 +18,7 @@
 #include <std_msgs/Float32.h>
 #include <std_msgs/UInt8.h>
 #include <std_srvs/SetBool.h>
+#include <std_srvs/Trigger.h>
 #include <hugmy/model/pressure_thrust_bend_model.h>
 #include <hugmy/control/hybrid_locomotion_search.h>
 #include <hugmy/control/hybrid_measurement.h>
@@ -69,6 +70,8 @@ private:
       const hugmy::recovery::Vec3& circle_center_body,
       bool actuating, int previous_candidate_index);
   bool enableCallback(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res);
+  bool postureRecoveryCallback(std_srvs::Trigger::Request& req,
+                               std_srvs::Trigger::Response& res);
   void update(const ros::TimerEvent& event);
 
   // Shared posture-recovery state machine. Locomotion relinquishes actuator
@@ -174,7 +177,7 @@ private:
   ros::Publisher pwm_test_pub_, root_pwm_test_pub_;
   ros::Publisher flight_config_pub_, root_flight_config_pub_, state_pub_;
   ros::Publisher posture_phase_pub_;
-  ros::ServiceServer enable_server_;
+  ros::ServiceServer enable_server_, posture_recovery_server_;
   ros::ServiceClient pressure_enable_client_;
   ros::Timer timer_;
 
@@ -441,6 +444,10 @@ private:
   double recovery_unified_unlock_hold_sec_ = 0.25;
   ros::Time recovery_unified_unlock_since_;
   bool recovery_unified_unlock_ready_ = false;
+  // Set by the operator-only recovery service.  Unlike an ordinary Action-C
+  // trigger this request does not require a worsening trend, but it still
+  // passes every sensor, pressure, angular-rate and actuator safety gate.
+  bool manual_posture_recovery_requested_ = false;
   int recovery_unified_selected_candidate_index_ = -1;
   double recovery_unsafe_roll_rad_ = 45.0 * M_PI / 180.0;
   double recovery_extension_response_sec_ = 0.5;

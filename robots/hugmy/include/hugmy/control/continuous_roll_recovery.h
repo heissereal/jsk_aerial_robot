@@ -197,6 +197,33 @@ struct ContinuousRollRecovery {
     last_progress = last_update = now;
     progress_history.push_back({now, std::abs(error), thrust});
   }
+  // Re-selecting another contact mode of the same physical rotor pair does
+  // not require removing its already verified correction authority.  Keep
+  // the commanded force and filtered body motion, but start fresh response
+  // and terminal-brake observations for the new pressure/contact state.
+  // The caller must verify that the pair and correction direction are
+  // unchanged and that measured motion is not wrong-way.
+  void retargetKeepingThrust(
+      double error, double now,
+      double measured_command = std::numeric_limits<double>::quiet_NaN()) {
+    const double retained_thrust = std::isfinite(measured_command)
+        ? std::max(0.0, measured_command) : thrust;
+    const double retained_rate = filtered_rate;
+    const double retained_acceleration = filtered_acceleration;
+    const bool retained_rate_initialized = rate_initialized;
+    const bool retained_acceleration_initialized = acceleration_initialized;
+    *this = ContinuousRollRecovery();
+    thrust = hold = retained_thrust;
+    filtered_rate = previous_filtered_rate = retained_rate;
+    filtered_acceleration = retained_acceleration;
+    rate_initialized = retained_rate_initialized;
+    acceleration_initialized = retained_acceleration_initialized;
+    running_feedforward = feedforward = retained_thrust;
+    feedforward_initialized = retained_thrust > 0.0;
+    best_error = std::abs(error);
+    last_progress = last_update = now;
+    progress_history.push_back({now, std::abs(error), retained_thrust});
+  }
   // Transfer from outward-rate arrest to angle return without an artificial
   // drop in rotor force.  The force already required to stop deterioration
   // is the best available local contact estimate.  Make it the new model

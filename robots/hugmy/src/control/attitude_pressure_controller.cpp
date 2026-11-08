@@ -1627,6 +1627,8 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   hybrid_diagnostic_pub_=pnh_.advertise<std_msgs::Float32MultiArray>("hybrid_locomotion", 1);
   enable_server_ = pnh_.advertiseService("enable",
       &AttitudePressureController::enableCallback, this);
+  posture_recovery_server_ = pnh_.advertiseService("recover_posture",
+      &AttitudePressureController::postureRecoveryCallback, this);
   pressure_enable_client_ = nh_.serviceClient<std_srvs::SetBool>(
       "independent_arm_pressure_controller/enable");
   timer_ = nh_.createTimer(ros::Duration(1.0 / std::max(1.0, control_rate_hz_)),
@@ -2133,6 +2135,7 @@ bool AttitudePressureController::enableCallback(std_srvs::SetBool::Request& req,
   recovery_unified_selected_candidate_index_ = -1;
   recovery_unified_unlock_since_ = ros::Time(0);
   recovery_unified_unlock_ready_ = false;
+  manual_posture_recovery_requested_ = false;
   recovery_rate_arrest_active_ = false;
   recovery_rate_arrest_nonoutward_since_ = ros::Time(0);
   recovery_rate_arrest_reference_error_rad_ =
@@ -2183,6 +2186,58 @@ bool AttitudePressureController::enableCallback(std_srvs::SetBool::Request& req,
   res.success = true;
   res.message = enabled_ ? "perching correction state machine enabled"
                          : "perching correction disabled";
+  return true;
+}
+
+bool AttitudePressureController::postureRecoveryCallback(
+    std_srvs::Trigger::Request& req, std_srvs::Trigger::Response& res)
+{
+  static_cast<void>(req);
+  if (!enabled_)
+    {
+      res.success = false;
+      res.message = "enable the perching pressure controller first";
+      return true;
+    }
+  if (!imu_received_)
+    {
+      res.success = false;
+      res.message = "receive a valid body IMU first";
+      return true;
+    }
+  if (state_ == POSTURE_SAFE_TRANSFER)
+    {
+      res.success = false;
+      res.message = "SAFE_TRANSFER is active; restore support before a new request";
+      return true;
+    }
+
+  // A dedicated operator request always means level roll/pitch.  It bypasses
+  // only the automatic worsening-trend trigger; all measured support,
+  // pressure, rate, candidate-response and SAFE_TRANSFER gates remain active.
+  target_roll_ = 0.0;
+  target_pitch_ = 0.0;
+  target_received_ = true;
+  if (state_ == PREPARE || state_ == THRUST_CORRECTION ||
+      state_ == RECOVER)
+    {
+      res.success = true;
+      res.message = "posture recovery is already active; zero target retained";
+      return true;
+    }
+  manual_posture_recovery_requested_ = true;
+  correction_entry_gate_.reset();
+
+  const ros::Time now = ros::Time::now();
+  if (hybridLocomotionActive() && !action_c_resume_pending_)
+    requestActionCPostureRecovery(now,
+        "operator requested posture-only recovery",
+        action_c_posture_resume_rad_, true);
+
+  res.success = true;
+  res.message = "posture recovery requested; waiting for measured safety gates";
+  ROS_WARN("Operator requested posture recovery to zero attitude from roll %.2f deg, pitch %.2f deg",
+           roll_ * 180.0 / M_PI, pitch_ * 180.0 / M_PI);
   return true;
 }
 

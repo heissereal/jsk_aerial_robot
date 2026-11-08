@@ -5,6 +5,7 @@
 #include <ros/ros.h>
 #include <sensor_msgs/Joy.h>
 #include <std_srvs/SetBool.h>
+#include <std_srvs/Trigger.h>
 
 class JoyHumanArmLocomotion
 {
@@ -15,6 +16,7 @@ public:
     pnh.param("disable_button", disable_button_, 5);
     pnh.param("forward_button", forward_button_, 3);
     pnh.param("stop_button", stop_button_, 1);
+    pnh.param("recovery_button", recovery_button_, 2);
     pnh.param("forward_distance_m", forward_distance_m_, 0.100);
 
     target_pub_ = nh.advertise<geometry_msgs::Vector3Stamped>(
@@ -23,14 +25,16 @@ public:
         "attitude_pressure_controller/inchworm_command", 1, false);
     enable_client_ = nh.serviceClient<std_srvs::SetBool>(
         "attitude_pressure_controller/enable");
+    recovery_client_ = nh.serviceClient<std_srvs::Trigger>(
+        "attitude_pressure_controller/recover_posture");
     joy_sub_ = nh.subscribe("joy", 1,
         &JoyHumanArmLocomotion::joyCallback, this);
 
     publishZeroAttitude();
     ROS_WARN("Locomotion Joy control: button %d=enable, %d=disable, "
-             "%d=body-forward %.0f mm, %d=stop",
+             "%d=body-forward %.0f mm, %d=stop, %d=posture recovery",
              enable_button_, disable_button_, forward_button_,
-             1000.0 * forward_distance_m_, stop_button_);
+             1000.0 * forward_distance_m_, stop_button_, recovery_button_);
   }
 
 private:
@@ -100,12 +104,31 @@ private:
              1000.0 * forward_distance_m_);
   }
 
+  void requestPostureRecovery()
+  {
+    // A recovery-only press is self-contained: enable pressure control if
+    // needed, publish the level target, then request the guarded controller
+    // transition.  It never publishes a locomotion displacement command.
+    if (!enabled_ && !setEnabled(true)) return;
+    publishZeroAttitude();
+    std_srvs::Trigger service;
+    if (!recovery_client_.call(service) || !service.response.success)
+      {
+        ROS_ERROR("Could not request posture recovery: %s",
+                  service.response.message.c_str());
+        return;
+      }
+    ROS_WARN("Joy requested posture recovery only: %s",
+             service.response.message.c_str());
+  }
+
   void joyCallback(const sensor_msgs::Joy::ConstPtr& msg)
   {
     const bool enable = pressed(*msg, enable_button_);
     const bool disable = pressed(*msg, disable_button_);
     const bool forward = pressed(*msg, forward_button_);
     const bool stop = pressed(*msg, stop_button_);
+    const bool recovery = pressed(*msg, recovery_button_);
 
     // Stop/disable has priority when two buttons are pressed together.
     if (disable && !previous_disable_)
@@ -115,6 +138,8 @@ private:
         publishStop();
         ROS_WARN("Locomotion stop requested; pressure remains enabled");
       }
+    else if (recovery && !previous_recovery_)
+      requestPostureRecovery();
     else if (enable && !previous_enable_)
       setEnabled(true);
     else if (forward && !previous_forward_)
@@ -124,21 +149,24 @@ private:
     previous_disable_ = disable;
     previous_forward_ = forward;
     previous_stop_ = stop;
+    previous_recovery_ = recovery;
   }
 
   ros::Subscriber joy_sub_;
   ros::Publisher target_pub_, command_pub_;
-  ros::ServiceClient enable_client_;
+  ros::ServiceClient enable_client_, recovery_client_;
   int enable_button_ = 4;
   int disable_button_ = 5;
   int forward_button_ = 3;
   int stop_button_ = 1;
+  int recovery_button_ = 2;
   double forward_distance_m_ = 0.100;
   bool enabled_ = false;
   bool previous_enable_ = false;
   bool previous_disable_ = false;
   bool previous_forward_ = false;
   bool previous_stop_ = false;
+  bool previous_recovery_ = false;
 };
 
 int main(int argc, char** argv)

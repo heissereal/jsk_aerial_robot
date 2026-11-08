@@ -94,6 +94,13 @@ void AttitudePressureController::updatePostureRecovery(
             ROS_INFO_THROTTLE(1.0,
                 "GRASP waiting for all arm pressures to reach %.1f +/- %.1f kPa",
                 base_pressure_kpa_, pressure_tolerance_kpa_);
+          if (manual_posture_recovery_requested_ &&
+              attitude_error - recovery_stop_angle <= 0.0)
+            {
+              manual_posture_recovery_requested_ = false;
+              ROS_INFO("Operator posture-recovery request already satisfies the %.2f-deg final band",
+                       recovery_stop_angle * 180.0 / M_PI);
+            }
           // Re-selection is a discrete, supported boundary.  Merely crossing
           // the angle threshold while thrust/pressure are still changing must
           // not unlock the pair and make actuation chatter.  GRASP publishes
@@ -143,7 +150,9 @@ void AttitudePressureController::updatePostureRecovery(
               action_c_posture_resume_rad_ +
                   2.0 * roll_recovery_config_.stop_margin);
           const double active_correction_trigger =
-              (recovery_candidate_reselect_pending_ ||
+              manual_posture_recovery_requested_
+              ? recovery_stop_angle
+              : (recovery_candidate_reselect_pending_ ||
                continuous_recovery_retry_opposite_pending_)
               ? action_c_posture_resume_rad_
               : (action_c_resume_pending_
@@ -181,7 +190,8 @@ void AttitudePressureController::updatePostureRecovery(
           const bool stable_c_roll = c_trend_mode && !c_hard_roll &&
               action_c_roll_trend_.ready && !action_c_roll_trend_.worsening;
           const bool c_recovery_requested = !c_trend_mode || c_hard_roll ||
-              c_preload_roll || action_c_roll_trend_.worsening;
+              c_preload_roll || action_c_roll_trend_.worsening ||
+              manual_posture_recovery_requested_;
           // A contact-conditioned grasp is a valid recovery result only in
           // the requested final roll band.  A quiet 10--20-deg bias is not an
           // equilibrium to accept: it still leaves little margin for the
@@ -228,7 +238,9 @@ void AttitudePressureController::updatePostureRecovery(
               angular_rate < correction_max_angular_rate_ &&
               attitude_error > active_correction_trigger &&
               completed_recovery_restart_allowed &&
-              (recovery_candidate_reselect_pending_ ||
+              (!manual_posture_recovery_requested_ || grasp_pressure_ready) &&
+              (manual_posture_recovery_requested_ ||
+               recovery_candidate_reselect_pending_ ||
                continuous_recovery_retry_opposite_pending_ ||
                (action_c_resume_pending_ && !continuous_recovery_started_ &&
                 !retained_contact_equilibrium) || c_hard_roll);
@@ -280,6 +292,7 @@ void AttitudePressureController::updatePostureRecovery(
             }
           const bool correction_confirmed = correction_entry_gate_.update(
               target_received_ && body_imu_fresh && pressure_valid && neurons_fresh &&
+              (!manual_posture_recovery_requested_ || grasp_pressure_ready) &&
               (!continuous_c_recovery || (!continuous_recovery_blocked_ &&
                recovery_pressure_fresh && geometry_reestimate_ready &&
                angular_rate < correction_max_angular_rate_)) &&
@@ -493,6 +506,7 @@ void AttitudePressureController::updatePostureRecovery(
                         }
                       break;
                     }
+                  manual_posture_recovery_requested_ = false;
                   // Hybrid locomotion may hand recovery ownership over as
                   // soon as the opposite two-arm anchor reaches the measured
                   // support floor.  Recheck that condition after the shared
@@ -3043,6 +3057,125 @@ void AttitudePressureController::updatePostureRecovery(
                       recovery_rejected_candidate_mask_ |= candidate_bit;
                       recovery_rejected_direction_sign_ =
                           roll_error >= 0.0 ? 1 : -1;
+                      // A quiet no-progress contact can be replaced by the
+                      // other pressure/topology candidate of the SAME rotor
+                      // pair without first removing useful rotor authority.
+                      // This is deliberately forbidden for a measured
+                      // wrong-way response, a direction change, or the final
+                      // target envelope: those cases still use the ordinary
+                      // monotonic rundown and supported re-selection.
+                      bool same_pair_continuation = false;
+                      if (handoff_candidate_stalled &&
+                          !handoff_candidate_worsening &&
+                          !recovery_handoff_braking_ &&
+                          recovery_preferred_pair_locked_ &&
+                          abs_error > handoff_drive_stop +
+                              roll_recovery_config_.stop_margin &&
+                          signed_rate >= -roll_recovery_config_.start_rate)
+                        {
+                          const size_t old_pair = recovery_selected_pair_index_;
+                          const auto old_active = prepare_arm_active_;
+                          const bool old_release = recovery_selected_pair_release_;
+                          const double old_pressure = recovery_selected_pair_pressure_kpa_;
+                          const size_t old_pressure_index =
+                              recovery_selected_pressure_candidate_index_;
+                          const bool old_pivot_enabled =
+                              recovery_selected_contact_pivot_enabled_;
+                          const Vector3 old_pivot = recovery_selected_contact_pivot_;
+                          const double old_depth = recovery_selected_pair_mean_depth_rad_;
+                          const double old_support_loss =
+                              recovery_selected_support_loss_moment_nm_;
+                          const PressureArray old_release_start =
+                              recovery_selected_release_start_pressure_;
+                          const bool old_path_zero =
+                              recovery_selected_path_requires_zero_thrust_;
+                          const double old_path_lever =
+                              recovery_selected_path_min_lever_m_;
+                          const bool old_extension_latch =
+                              recovery_extension_mode_latched_;
+                          const int old_extension_direction =
+                              recovery_extension_direction_sign_;
+                          const int old_unified_candidate =
+                              recovery_unified_selected_candidate_index_;
+                          const bool old_selection_available =
+                              recovery_pair_selection_available_;
+
+                          const auto measured_model_before_reselection =
+                              measuredRecoveryModel();
+                          selectContinuousRecoveryPair(roll_error);
+                          same_pair_continuation =
+                              recovery_pair_selection_available_ &&
+                              recovery_selected_pair_index_ == old_pair &&
+                              measured_model_before_reselection.valid &&
+                              std::isfinite(measured_model_before_reselection.lever) &&
+                              measured_model_before_reselection.lever >=
+                                  roll_recovery_config_.min_lever;
+                          if (same_pair_continuation)
+                            {
+                              continuous_roll_recovery_.retargetKeepingThrust(
+                                  attitude_error, now.toSec(),
+                                  selected_handoff_thrust);
+                              resetRecoveryHandoffState();
+                              for (size_t arm = 0; arm < ARM_COUNT; ++arm)
+                                {
+                                  const bool selected_arm =
+                                      prepare_arm_active_[arm];
+                                  prepare_pressure_[arm] = selected_arm &&
+                                      recovery_selected_pair_release_
+                                      ? recoverySelectedPairPressure(arm)
+                                      : nominal_regrasp_pressure(arm);
+                                }
+                              recovery_handoff_target_pressure_ =
+                                  prepare_pressure_;
+                              recovery_candidate_reselect_pending_ = false;
+                              continuous_recovery_started_ = true;
+                              continuous_recovery_waiting_for_settle_ = false;
+                              posture_recovery_phase_ =
+                                  hugmy::PostureRecoveryPhase::RECOVERY;
+                              recovery_response_probe_since_ = ros::Time(0);
+                              recovery_wrong_geometry_probe_target_valid_ = false;
+                              publishPressureTarget(prepare_pressure_,
+                                  std::numeric_limits<double>::infinity());
+                              publishCorrectionThrust(prepare_shape_thrust_);
+                              enterState(PREPARE, now);
+                              ROS_WARN("Recovery re-selection retained pair %zu+%zu: carrying %.2f N without a zero-thrust gap; terminal taper remains active inside %.2f deg",
+                                  old_pair == 0 ? 0ul : 2ul,
+                                  old_pair == 0 ? 1ul : 3ul,
+                                  selected_handoff_thrust,
+                                  handoff_drive_stop * 180.0 / M_PI);
+                              break;
+                            }
+
+                          // The alternative is not the same safe physical
+                          // pair. Restore the running candidate state and use
+                          // the existing zero-thrust support transfer before
+                          // any different pair can be energised.
+                          prepare_arm_active_ = old_active;
+                          recovery_selected_pair_index_ = old_pair;
+                          recovery_selected_pair_release_ = old_release;
+                          recovery_selected_pair_pressure_kpa_ = old_pressure;
+                          recovery_selected_pressure_candidate_index_ =
+                              old_pressure_index;
+                          recovery_selected_contact_pivot_enabled_ =
+                              old_pivot_enabled;
+                          recovery_selected_contact_pivot_ = old_pivot;
+                          recovery_selected_pair_mean_depth_rad_ = old_depth;
+                          recovery_selected_support_loss_moment_nm_ =
+                              old_support_loss;
+                          recovery_selected_release_start_pressure_ =
+                              old_release_start;
+                          recovery_selected_path_requires_zero_thrust_ =
+                              old_path_zero;
+                          recovery_selected_path_min_lever_m_ = old_path_lever;
+                          recovery_extension_mode_latched_ =
+                              old_extension_latch;
+                          recovery_extension_direction_sign_ =
+                              old_extension_direction;
+                          recovery_unified_selected_candidate_index_ =
+                              old_unified_candidate;
+                          recovery_pair_selection_available_ =
+                              old_selection_available;
+                        }
                       recovery_candidate_reselect_pending_ = true;
                       recovery_handoff_thrust_wrong_way_ = true;
                       recovery_handoff_pair_was_wrong_ = false;
@@ -3977,6 +4110,12 @@ void AttitudePressureController::selectContinuousRecoveryPair(
           recovery_unified_active_enabled_,
           recovery_unified_selected_candidate_index_);
     }
+  bool unified_support_available = false;
+  if (circle_fresh)
+    for (const auto& candidate : unified_plan.candidates)
+      unified_support_available = unified_support_available ||
+          (candidate.contact_feasible &&
+           hugmy::recovery::finite(candidate.support_body));
 
   recovery_pair_selection_available_ = false;
   Candidate selected;
@@ -4209,6 +4348,7 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   // rotor command with the wrong signed lever; keep support and wait for a
   // fresh contact estimate instead.
   if (recovery_circle_selection_enabled_ && circle_fresh &&
+      (!recovery_unified_active_enabled_ || unified_support_available) &&
       recovery_preferred_pair_locked_)
     {
       prepare_arm_active_.fill(false);
@@ -4226,6 +4366,7 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   // has a restoring signed lever, do not silently fall back to the fixed pair
   // and repeat an actuator state which has already failed.
   if (recovery_circle_selection_enabled_ && circle_fresh &&
+      (!recovery_unified_active_enabled_ || unified_support_available) &&
       recovery_rejected_candidate_mask_ != 0)
     {
       prepare_arm_active_.fill(false);
@@ -4236,12 +4377,13 @@ void AttitudePressureController::selectContinuousRecoveryPair(
       return;
     }
 
-  // Active unified mode is deliberately fail-closed.  The lower-side fallback
-  // below belongs to the legacy selector and would silently defeat the launch
-  // request by actuating a pair which the four-candidate planner did not find
-  // feasible.  Returning unavailable lets the caller restore/equalise support
-  // and re-estimate geometry with zero rotor thrust.
-  if (recovery_unified_active_enabled_)
+  // With a valid support hypothesis, active unified mode remains fail-closed:
+  // a model-valid but infeasible/rejected candidate must not be replaced by a
+  // speculative command.  Missing circle/support geometry is different.  In
+  // that case use the long-standing fixed bottom contact and lower-side pair
+  // below so a temporary estimator dropout cannot cancel posture recovery.
+  if (recovery_unified_active_enabled_ && circle_fresh &&
+      unified_support_available)
     {
       prepare_arm_active_.fill(false);
       recovery_selected_contact_pivot_enabled_ = false;
@@ -4249,6 +4391,8 @@ void AttitudePressureController::selectContinuousRecoveryPair(
       ROS_ERROR("Unified recovery ACTIVE found no unused feasible candidate; refusing legacy lower-side actuation");
       return;
     }
+  if (recovery_unified_active_enabled_)
+    ROS_WARN("Unified recovery geometry/support unavailable; using the fixed-contact lower-side fallback without stopping recovery");
 
   // If circle fitting is temporarily unavailable, preserve the same
   // lower-side topology used by the hardware convention instead of choosing
@@ -4257,7 +4401,8 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   // controller to move actuation to the upper pair.  The physical lower side
   // is determined from body roll itself: negative roll puts arms 0+1 lower,
   // positive roll puts arms 2+3 lower.
-  const size_t lower_pair = roll_ < 0.0 ? 0 : 1;
+  const size_t lower_pair = recovery_preferred_pair_locked_
+      ? recovery_preferred_pair_index_ : (roll_ < 0.0 ? 0 : 1);
   prepare_arm_active_ = lower_pair == 0
       ? std::array<bool, ARM_COUNT>{{true, true, false, false}}
       : std::array<bool, ARM_COUNT>{{false, false, true, true}};
@@ -4268,6 +4413,9 @@ void AttitudePressureController::selectContinuousRecoveryPair(
   recovery_selected_pressure_candidate_index_ = 0;
   recovery_selected_contact_pivot_enabled_ = false;
   recovery_selected_pair_index_ = lower_pair;
+  recovery_preferred_pair_index_ = lower_pair;
+  recovery_preferred_pair_locked_ = true;
+  recovery_preferred_pair_used_fallback_ = true;
   recovery_pair_selection_available_ = true;
   recovery_selected_pair_mean_depth_rad_ =
       std::numeric_limits<double>::quiet_NaN();

@@ -714,6 +714,20 @@ int main() {
                         std::numeric_limits<double>::quiet_NaN(),true);
   }
   assert(release_gate.wrong_way);
+  // A same-physical-pair pressure/topology re-selection retains the command
+  // which already produced the desired moment.  Candidate/terminal evidence
+  // belongs to the old contact state and must be cleared.
+  ContinuousRollRecovery same_pair;same_pair.reset(12*deg,0.);
+  same_pair.thrust=2.3;same_pair.filtered_rate=.04;
+  same_pair.filtered_acceleration=.2;same_pair.rate_initialized=true;
+  same_pair.acceleration_initialized=true;same_pair.terminal_brake_latched=true;
+  same_pair.wrong_way=true;same_pair.stalled=true;
+  same_pair.retargetKeepingThrust(10*deg,.5,2.1);
+  assert(std::abs(same_pair.thrust-2.1)<1e-12 &&
+         std::abs(same_pair.filtered_rate-.04)<1e-12 &&
+         same_pair.rate_initialized && !same_pair.terminal_brake_latched &&
+         !same_pair.wrong_way && !same_pair.stalled &&
+         same_pair.feedforward_initialized);
   puts("PASS: model FF, signed rate PI, overspeed priority despite saturated FF/I, rundown prediction, 4N/slew limits, faults and learning gates");
 }
 '''

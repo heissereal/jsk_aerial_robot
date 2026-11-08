@@ -64,6 +64,7 @@ assert args['hand_relative_mocap_enabled'] == 'false'
 assert args['hand_target_selects_direction'] == 'false'
 assert args['enable_button'] == '4' and args['disable_button'] == '5'
 assert args['forward_button'] == '3' and args['stop_button'] == '1'
+assert args['recovery_button'] == '2'
 assert abs(float(args['ppg_settle_sec'])) < 1e-12
 assert abs(float(args['hybrid_lift_rear_release_start_ratio']) - .10) < 1e-12
 assert abs(float(args['hybrid_lift_rear_pressure_floor_kpa']) - 0.) < 1e-12
@@ -84,4 +85,8 @@ assert forwarded['hybrid_lift_rear_pressure_floor_kpa'] == '$(arg hybrid_lift_re
 assert forwarded['hybrid_slip_preserve_rear_grasp'] == '$(arg hybrid_slip_preserve_rear_grasp)'
 assert forwarded['hybrid_rear_support_probe_stable'] == '$(arg hybrid_rear_support_probe_stable)'
 assert forwarded['hybrid_regrip_rear_hold_pressure_kpa'] == '$(arg hybrid_regrip_rear_hold_pressure_kpa)'
+joy_source = (root / 'src/nodes/joy_human_arm_locomotion_node.cpp').read_text()
+assert 'attitude_pressure_controller/recover_posture' in joy_source
+assert 'std_srvs::Trigger' in joy_source
+assert 'requestPostureRecovery()' in joy_source
 print('PASS: robot-only default, optional ID2 position reference, 100-mm Joy goal, online optimization enabled')

@@ -41,6 +41,7 @@ struct Controller {
   bool continuous_recovery_waiting_for_settle_=false, model_c_recovery=false;
   bool continuous_recovery_started_=false, c_hard_roll=false;
   bool recovery_candidate_reselect_pending_=false;
+  bool manual_posture_recovery_requested_=false;
   bool continuous_recovery_retry_opposite_pending_=false;
   bool retained_contact_equilibrium=false;
   bool recovery_restart_support_ready=true;
@@ -53,6 +54,7 @@ struct Controller {
   double action_c_requested_recovery_trigger_rad_=std::numeric_limits<double>::quiet_NaN();
   double action_c_posture_resume_rad_=8*M_PI/180., correction_stop_angle_=5*M_PI/180.;
   double completed_recovery_restart_angle=5*M_PI/180.;
+  double recovery_stop_angle=5*M_PI/180.;
   bool geometry_reestimate_ready=true;
   bool completed_recovery_restart_allowed=true;
   double correction_trigger_confirm_sec_=.3;

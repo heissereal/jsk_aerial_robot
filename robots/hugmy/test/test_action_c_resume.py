@@ -214,6 +214,7 @@ public:
  double recovery_unified_unlock_hold_sec_=.25;
  ros::Time recovery_unified_unlock_since_;
  bool recovery_unified_unlock_ready_=false;
+ bool manual_posture_recovery_requested_=false;
  int recovery_unified_selected_candidate_index_=-1;
  bool recovery_mocap_pose_valid_=false;
  hugmy::recovery::Pose recovery_mocap_pose_;
@@ -578,6 +579,19 @@ int main() {
  assert(no_circle.prepare_arm_active_[2] &&
         no_circle.prepare_arm_active_[3]);
  assert(!no_circle.recovery_selected_pair_release_);
+ // Active unified control must not stop merely because the circle/support
+ // estimate is temporarily absent. It uses and latches the fixed-contact
+ // lower-side topology instead.
+ AttitudePressureController active_no_circle;
+ active_no_circle.recovery_unified_active_enabled_=true;
+ active_no_circle.roll_=-.2;
+ active_no_circle.select(.2);
+ assert(active_no_circle.recovery_pair_selection_available_ &&
+        active_no_circle.recovery_preferred_pair_used_fallback_ &&
+        active_no_circle.recovery_preferred_pair_locked_ &&
+        active_no_circle.recovery_preferred_pair_index_==0 &&
+        active_no_circle.prepare_arm_active_[0] &&
+        active_no_circle.prepare_arm_active_[1]);
  // The earlier large-error release latch was deliberately cleared when the
  // subsequent small residual became quiet, so this valid grasped state is
  // retained rather than returning to the straight-arm topology.
