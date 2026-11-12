@@ -20,6 +20,10 @@ assert 'pwm_test_output_rise_n_s_' in output_safety
 assert 'publishPwmTest(thrust);' not in output_safety
 assert 'const bool c_preload_roll = continuous_c_recovery &&' in source
 assert 'action_c_preload_recovery_trigger_rad_' in source
+assert 'c_extension_emergency_raw' in source
+assert 'recovery_extension_emergency_confirm_sec_' in source
+assert 'recovery_extension_emergency_error_rad_' in source
+assert 'c_extension_emergency_confirmation_pending' in source
 start = source.index('case PREPARE:')
 branch = source[start:source.index('publishCorrectionThrust(fixed_arm_test_enabled_', start)]
 assert 'continuous_roll_recovery_.update(' in branch
@@ -33,8 +37,11 @@ assert 'publishBottomTarget(0.0)' in branch
 assert 'hugmy::recoveryExitDecision(' in branch
 assert 'beginPostureSafeTransfer(now,' in branch
 assert 'continuous_roll_recovery_.finished = true;' not in branch.split(
-    'ROS_WARN("Action C continuous recovery ended:')[1]
+    'ROS_WARN("Action C rotor phase ended:')[1]
 assert 'measuredRecoveryModel()' in branch
+assert 'planned_grasp_feedforward' in branch
+assert 'recovery_selected_required_thrust_n_' in branch
+assert 'conditional_grasp_probe_pending' in branch
 assert 'crossed_recovery_target' not in branch
 assert 'roll_recovery_response_[correction_axis_[0] > 0.0 ? 0 : 1]' in branch
 assert '(now - state_start_).toSec() >= prepare_timeout_' in branch
@@ -104,6 +111,20 @@ int main() {
   // Part of this interval still recovers from the preceding rate brake;
   // slew anti-windup correctly suspends integration until thrust catches up.
   assert(c.boost>integral+.15);
+  // Once retained body motion confirms that static contact released, unload
+  // the search integral at the dedicated fast rate. The model feed-forward
+  // remains available, so this is not an actuator OFF pulse.
+  ContinuousRollRecovery unload_i;unload_i.reset(25*deg,0.);
+  unload_i.thrust=3.;unload_i.boost=2.5;
+  unload_i.running_feedforward=unload_i.feedforward=.5;
+  unload_i.feedforward_initialized=true;
+  unload_i.progress_observed=true;unload_i.moving=true;
+  unload_i.filtered_rate=.10;unload_i.rate_initialized=true;
+  const double unload_before=unload_i.boost;
+  unload_i.update(25*deg,.10,.02,.02,m,cfg,response);
+  assert(unload_i.boost<=unload_before-
+         cfg.response_integral_unload_rate*.02+1e-9);
+  assert(unload_i.feedforward>0.);
   // Outward-rate arrest searches only until the contact actually breaks
   // free.  A filtered acceleration/rate event latches the measured authority,
   // stops further I growth, and passes that force continuously into the angle
@@ -258,10 +279,35 @@ int main() {
   moderate.filtered_rate=.121;moderate.rate_initialized=true;
   moderate.update(25*deg,.121,.02,.02,m,cfg,response);
   assert(!moderate.speed_braking && !moderate.fault);
-  // A genuinely excessive retained rate still has priority over FF and I.
+  // Before retained angle progress exists, a compliant-contact rate impulse
+  // cannot unload and then rebuild the same authority. This was the human-arm
+  // high/low limit cycle in the 2026-11-12 bag.
+  ContinuousRollRecovery contact_impulse;contact_impulse.reset(25*deg,0.);
+  contact_impulse.thrust=1.2;contact_impulse.filtered_rate=.384;
+  contact_impulse.rate_initialized=true;
+  contact_impulse.update(25*deg,.384,.02,.02,m,cfg,response);
+  assert(!contact_impulse.speed_braking &&
+         contact_impulse.pre_response_authority_hold &&
+         contact_impulse.thrust>=1.2-1e-9);
+  ContinuousRollRecovery compliant_cycle;
+  compliant_cycle.reset(25*deg,0.);
+  double compliant_last=0.;
+  for(int i=1;i<=200;++i) {
+    const double rate=(i/6)%2 ? .55 : -.55;
+    const double command=compliant_cycle.update(
+        25*deg,rate,i*.02,.02,m,cfg,response,
+        std::numeric_limits<double>::quiet_NaN(),true,1.5);
+    assert(command+1e-9>=compliant_last && command<=1.5+1e-9);
+    compliant_last=command;
+  }
+  assert(!compliant_cycle.progress_observed &&
+         compliant_cycle.pre_response_authority_hold);
+  // Once averaged roll-angle progress confirms a body response, a genuinely
+  // excessive rate still has priority over FF and I.
   for(double rate: {.25,.384}) {
     ContinuousRollRecovery fast;fast.reset(25*deg,0.);
     fast.thrust=2.39;fast.boost=.72;fast.filtered_rate=rate;fast.rate_initialized=true;
+    fast.progress_observed=true;
     const double before=fast.thrust, old_i=fast.boost;
     fast.update(25*deg,rate,.02,.02,m,cfg,response);
     assert(fast.speed_braking && fast.thrust<before);
@@ -271,19 +317,121 @@ int main() {
   }
   // Include command rundown: at 15 deg and 0.384 rad/s, a fixed 0.2-s
   // prediction would not brake, whereas 3.17 N takes another 0.53 s to remove.
-  // This is outside the terminal envelope, so prediction may reduce thrust
-  // continuously but cannot latch a complete zero-thrust rundown.
+  // This is the bounded high-energy exception to the ordinary 7-deg
+  // terminal envelope: the real 160-mm-cylinder release crossed zero before
+  // its 3-N command could run down.
   ContinuousRollRecovery early;early.reset(15*deg,0.);early.thrust=3.17;
   early.update(15*deg,.384,.02,.02,m,cfg,response);
   assert(15*deg-.384*cfg.horizon>cfg.stop);
   assert(early.predicted_braking && early.thrust<3.17 &&
-         !early.low_authority_reapproach && !early.terminal_brake_latched);
+         early.low_authority_reapproach && early.terminal_brake_latched &&
+         early.boost==0.);
   assert(std::abs(early.braking_horizon-(.2+3.17/6.))<1e-9);
+  // Pair 2+3 on the 160-mm cylinder crossed the target after reaching
+  // 0.376 rad/s at only 2.09 N.  This is already a high-energy release even
+  // though it is below the former 2.5-N threshold, so latch the rundown while
+  // 7.5 deg of stopping distance remains.
+  ContinuousRollRecovery positive_roll_release;
+  positive_roll_release.reset(7.52*deg,0.);
+  positive_roll_release.thrust=2.09;
+  positive_roll_release.filtered_rate=.376;
+  positive_roll_release.rate_initialized=true;
+  positive_roll_release.progress_observed=true;
+  positive_roll_release.update(7.52*deg,.376,.02,.02,m,cfg,response);
+  assert(positive_roll_release.predicted_braking &&
+         positive_roll_release.terminal_brake_latched &&
+         positive_roll_release.low_authority_reapproach &&
+         positive_roll_release.thrust<2.09);
+  // The 160-mm cylinder accumulated 2.64 N of PI authority at 7.2 deg while
+  // rate was only 0.033 rad/s. Contact released before the next sample and
+  // the old velocity-only predictor missed it. Retained angle progress plus
+  // stored authority must latch the same monotonic rundown before that rate
+  // spike; a high-force contact with no retained progress must not do so.
+  RollRecoveryConfig stored_cfg=cfg;
+  stored_cfg.stop=3*deg;
+  stored_cfg.stored_authority_brake_max_error=8*deg;
+  stored_cfg.stored_authority_brake_min_integral=1.5;
+  ContinuousRollRecovery stored;stored.reset(9*deg,0.);
+  stored.last_update=1.;stored.last_progress=1.;stored.thrust=2.8;
+  stored.boost=2.4;stored.rate_initialized=true;stored.filtered_rate=.02;
+  stored.progress_history.clear();
+  stored.progress_history.push_back({.02,9*deg,2.6});
+  stored.progress_history.push_back({1.,7.8*deg,2.8});
+  stored.update(7.8*deg,.02,1.02,.02,m,stored_cfg,response);
+  assert(stored.stored_authority_braking &&
+         stored.terminal_brake_latched && stored.boost==0. &&
+         stored.thrust<2.8);
+  ContinuousRollRecovery stored_no_progress;
+  stored_no_progress.reset(7.8*deg,0.);
+  stored_no_progress.last_update=1.;stored_no_progress.last_progress=1.;
+  stored_no_progress.thrust=2.8;stored_no_progress.boost=2.4;
+  stored_no_progress.rate_initialized=true;
+  stored_no_progress.filtered_rate=.02;
+  stored_no_progress.progress_history.clear();
+  stored_no_progress.progress_history.push_back({.02,7.8*deg,2.6});
+  stored_no_progress.progress_history.push_back({1.,7.8*deg,2.8});
+  stored_no_progress.update(7.8*deg,.02,1.02,.02,m,stored_cfg,response);
+  assert(!stored_no_progress.stored_authority_braking &&
+         !stored_no_progress.terminal_brake_latched);
+  // A rigid cylinder still gets the unchanged first complete rundown.  If the
+  // same soft contact then rebounds, re-arm it behind 1.5 N and retain a small
+  // damping floor on subsequent capture passes instead of repeating a
+  // 0-to-3-N breakaway search.
+  RollRecoveryConfig soft_retry=cfg;
+  soft_retry.stop=3*deg;soft_retry.stop_margin=1*deg;
+  soft_retry.capture_margin_factor=2.;
+  soft_retry.terminal_brake_max_error=7*deg;
+  soft_retry.terminal_rebound_hold_thrust=.5;
+  soft_retry.reapproach_limit=1.5;
+  soft_retry.reapproach_escalation_delay=.5;
+  ContinuousRollRecovery rebound;rebound.reset(10*deg,0.);
+  rebound.thrust=0.;rebound.terminal_brake_latched=true;
+  rebound.terminal_best_error=5*deg; // measured rebound to 10 deg
+  rebound.low_authority_reapproach=true;
+  rebound.reapproach_authority=.05;
+  rebound.progress_observed=true;rebound.rate_initialized=true;
+  for(int i=1;i<=12;++i)
+    rebound.update(10*deg,0.,i*.02,.02,m,soft_retry,response,
+                   std::numeric_limits<double>::quiet_NaN(),false);
+  assert(rebound.terminal_rebound_retry &&
+         !rebound.terminal_brake_latched &&
+         rebound.low_authority_reapproach &&
+         rebound.reapproach_authority<=1.5+1e-9);
+  rebound.thrust=1.;rebound.terminal_brake_latched=true;
+  rebound.terminal_best_error=2*deg; // second rebound to 4 deg
+  for(int i=13;i<=40;++i)
+    rebound.update(4*deg,0.,i*.02,.02,m,soft_retry,response,
+                   std::numeric_limits<double>::quiet_NaN(),false);
+  assert(rebound.thrust>=.5-1e-9 &&
+         rebound.thrust<=soft_retry.reapproach_limit+1e-9 &&
+         !rebound.finished);
+  for(int i=41;i<=100 && !rebound.finished;++i)
+    rebound.update(2.5*deg,0.,i*.02,.02,m,soft_retry,response,
+                   std::numeric_limits<double>::quiet_NaN(),false);
+  assert(rebound.finished && rebound.thrust<=.05);
+  // A rebound first returns behind bounded authority, but a quiet residual
+  // outside the real stop band must recover authority.  The 160-mm cylinder
+  // otherwise remained at 1.5 N and about 7.5 deg until the watchdog.
+  ContinuousRollRecovery retry_growth;retry_growth.reset(10*deg,0.);
+  retry_growth.thrust=1.5;retry_growth.progress_observed=true;
+  retry_growth.low_authority_reapproach=true;
+  retry_growth.terminal_rebound_retry=true;
+  retry_growth.reapproach_authority=1.5;
+  retry_growth.boost=4.5; // stale PI energy must be back-calculated to the cap
+  for(int i=1;i<=75;++i)
+    retry_growth.update(10*deg,0.,i*.02,.02,m,soft_retry,response,
+                        std::numeric_limits<double>::quiet_NaN(),false);
+  assert(retry_growth.reapproach_authority>1.5);
+  assert(retry_growth.thrust>1.5);
+  assert(retry_growth.boost<=
+         std::max(0.,retry_growth.reapproach_authority-
+                     retry_growth.feedforward-
+                     retry_growth.effective_kp*retry_growth.target_rate)+1e-6);
   // The same stopping-distance prediction outside 15 deg reduces thrust
   // continuously, but cannot latch a zero-thrust/re-approach cycle.
   ContinuousRollRecovery far_velocity;far_velocity.reset(30*deg,0.);
   far_velocity.thrust=3.5;far_velocity.filtered_rate=.70;
-  far_velocity.rate_initialized=true;
+  far_velocity.rate_initialized=true;far_velocity.progress_observed=true;
   far_velocity.update(30*deg,.70,.02,.02,m,cfg,response);
   assert(far_velocity.predicted_braking && far_velocity.speed_braking &&
          !far_velocity.terminal_brake_latched &&
@@ -545,6 +693,7 @@ int main() {
   // must not discard the 1.5-N integral and cause seconds of re-search.
   ContinuousRollRecovery retained;retained.reset(9*deg,0.);
   retained.thrust=2.1;retained.boost=1.5;retained.moving=true;
+  retained.progress_observed=true;
   RollRecoveryConfig three=cfg;three.stop=3*deg;
   m.moment=.01;m.lever=.05;
   // A slow measured state in the approach band may start rundown, but cannot
