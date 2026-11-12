@@ -163,6 +163,9 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   recovery_param("recovery_rate_kp_n_s_rad", roll_recovery_config_.rate_kp, 0.1, 10.0);
   recovery_param("recovery_rate_ki_n_rad", roll_recovery_config_.rate_ki, 0.0, 10.0);
   recovery_param("recovery_integral_slew_n_s", roll_recovery_config_.integral_rate, 0.05, 1.0);
+  recovery_param("recovery_response_integral_unload_n_s",
+                 roll_recovery_config_.response_integral_unload_rate,
+                 0.1, 10.0);
   recovery_param("recovery_thrust_rise_n_s", roll_recovery_config_.rise, 0.2, 4.0);
   recovery_nominal_thrust_rise_n_s_ = roll_recovery_config_.rise;
   recovery_preinflate_thrust_rise_n_s_ =
@@ -178,8 +181,27 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   recovery_param("recovery_terminal_brake_max_error_rad",
                  roll_recovery_config_.terminal_brake_max_error,
                  roll_recovery_config_.stop, 0.785398);
+  recovery_param("recovery_dynamic_terminal_brake_max_error_rad",
+                 roll_recovery_config_.dynamic_terminal_brake_max_error,
+                 roll_recovery_config_.terminal_brake_max_error, 0.785398);
+  recovery_param("recovery_dynamic_terminal_brake_min_thrust_n",
+                 roll_recovery_config_.dynamic_terminal_brake_min_thrust,
+                 0.0, roll_recovery_config_.limit);
+  recovery_param("recovery_dynamic_terminal_brake_min_rate_rad_s",
+                 roll_recovery_config_.dynamic_terminal_brake_min_rate,
+                 0.0, roll_recovery_config_.max_rate);
+  recovery_param("recovery_stored_authority_brake_max_error_rad",
+                 roll_recovery_config_.stored_authority_brake_max_error,
+                 roll_recovery_config_.stop,
+                 roll_recovery_config_.dynamic_terminal_brake_max_error);
+  recovery_param("recovery_stored_authority_brake_min_integral_n",
+                 roll_recovery_config_.stored_authority_brake_min_integral,
+                 0.0, roll_recovery_config_.limit);
   recovery_param("recovery_reapproach_max_thrust_n",
                  roll_recovery_config_.reapproach_limit, 0.25, 3.0);
+  recovery_param("recovery_terminal_rebound_hold_thrust_n",
+                 roll_recovery_config_.terminal_rebound_hold_thrust,
+                 0.0, roll_recovery_config_.reapproach_limit);
   recovery_param("recovery_reapproach_rate_rad_s",
                  roll_recovery_config_.reapproach_rate, 0.01, 0.10);
   recovery_param("recovery_reapproach_authority_rise_n_s",
@@ -247,19 +269,26 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
                  recovery_handoff_trim_margin_rad_, 0.005, 0.0872665);
   recovery_param("recovery_handoff_trim_confirm_sec",
                  recovery_handoff_trim_confirm_sec_, 0.05, 2.0);
-  recovery_param("recovery_handoff_contact_equilibrium_rad",
-                 recovery_handoff_contact_equilibrium_rad_,
-                 0.05236, 0.174533);
   pnh_.param("recovery_circle_selection_enabled",
              recovery_circle_selection_enabled_, true);
-  pnh_.param("recovery_unified_shadow_enabled",
-             recovery_unified_shadow_enabled_, false);
   pnh_.param("recovery_unified_active_enabled",
              recovery_unified_active_enabled_, true);
   recovery_param("recovery_unified_extension_target_bend_rad",
                  recovery_unified_extension_target_bend_rad_, 0.0, 1.570796);
   recovery_param("recovery_unified_thrust_step_n",
                  recovery_unified_thrust_step_n_, 0.02, 0.5);
+  recovery_param("recovery_grasp_probe_initial_thrust_n",
+                 recovery_grasp_probe_initial_thrust_n_, 0.1, 2.0);
+  recovery_param("recovery_grasp_probe_min_thrust_n",
+                 recovery_grasp_probe_min_thrust_n_, 0.1, 3.0);
+  recovery_param("recovery_grasp_probe_max_thrust_n",
+                 recovery_grasp_probe_max_thrust_n_, 0.5, 5.5);
+  recovery_param("recovery_grasp_probe_confirm_sec",
+                 recovery_grasp_probe_confirm_sec_, 0.1, 2.0);
+  recovery_param("recovery_grasp_probe_timeout_sec",
+                 recovery_grasp_probe_timeout_sec_, 0.2, 3.0);
+  recovery_param("recovery_grasp_probe_min_progress_rad",
+                 recovery_grasp_probe_min_progress_rad_, 0.0, 0.05);
   recovery_param("recovery_unified_pair_switch_penalty_n",
                  recovery_unified_pair_switch_penalty_n_, 0.0, 2.0);
   recovery_param("recovery_unified_unlock_angle_rad",
@@ -288,20 +317,29 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
                  recovery_circle_side_margin_rad_, 0.0, 0.35);
   recovery_param("recovery_circle_pair_depth_ambiguity_rad",
                  recovery_circle_pair_depth_ambiguity_rad_, 0.0, 0.35);
-  recovery_param("recovery_circle_small_radius_m",
-                 recovery_circle_small_radius_m_, 0.02, 0.08);
-  recovery_param("recovery_circle_small_radius_capture_margin_factor",
-                 recovery_circle_small_radius_capture_margin_factor_, 0.5, 6.0);
-  recovery_param("recovery_circle_small_radius_support_pressure_kpa",
-                 recovery_circle_small_radius_support_pressure_kpa_, 5.0, 40.0);
+  recovery_param("recovery_geometry_max_support_rotor_distance_m",
+                 recovery_geometry_max_support_rotor_distance_m_, 0.20, 1.0);
+  recovery_param("recovery_geometry_update_max_roll_rate_rad_s",
+                 recovery_geometry_update_max_roll_rate_rad_s_, 0.01, 0.8);
+  recovery_param("recovery_grasp_worsening_rate_rad_s",
+                 recovery_grasp_worsening_rate_rad_s_, 0.0, 0.35);
+  recovery_param("recovery_below_side_capture_margin_factor",
+                 recovery_below_side_capture_margin_factor_, 0.5, 6.0);
+  recovery_param("recovery_below_side_support_pressure_kpa",
+                 recovery_below_side_support_pressure_kpa_, 5.0, 40.0);
   recovery_param("recovery_circle_flexed_max_error_rad",
                  recovery_circle_flexed_max_error_rad_, 0.05, 1.0);
+  recovery_param("recovery_extension_emergency_error_rad",
+                 recovery_extension_emergency_error_rad_,
+                 recovery_circle_flexed_max_error_rad_, 1.2);
   recovery_param("recovery_circle_release_penalty_n",
                  recovery_circle_release_penalty_n_, 0.0, 3.0);
   recovery_param("recovery_circle_min_signed_lever_m",
                  recovery_circle_min_signed_lever_m_, 0.001, 0.05);
   recovery_param("recovery_extension_prediction_sec",
                  recovery_extension_prediction_sec_, 0.05, 1.0);
+  recovery_param("recovery_extension_emergency_confirm_sec",
+                 recovery_extension_emergency_confirm_sec_, 0.04, 0.5);
   recovery_param("recovery_rate_arrest_min_thrust_n",
                  recovery_rate_arrest_min_thrust_n_, 0.5, 4.0);
   recovery_param("recovery_rate_arrest_max_thrust_n",
@@ -1031,6 +1069,11 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   recovery_circle_geometry_pub_ =
       pnh_.advertise<std_msgs::Float32MultiArray>(
           "recovery_circle_geometry", 1);
+  // Latched so an observer which connects after circle acquisition still
+  // receives the retained estimator state immediately.
+  recovery_circle_estimate_valid_pub_ =
+      pnh_.advertise<std_msgs::Bool>(
+          "recovery_circle_estimate_valid", 1, true);
   hand_relative_position_pub_ =
       pnh_.advertise<geometry_msgs::Vector3Stamped>(
           "hand_relative_position", 1);

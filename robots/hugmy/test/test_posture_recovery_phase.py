@@ -27,9 +27,9 @@ assert "recovery_contact_restore_thrust_limit_n_" in source
 assert "if (!pressure_geometry_settled || !support_transfer_equalized)" in source
 assert '"contact restoration lost near-target capture"' in source
 
-rotor_exit = source[source.index('ROS_WARN("Action C continuous recovery ended:'):
+rotor_exit = source[source.index('ROS_WARN("Action C rotor phase ended:'):
                     source.index("resetRecoveryHandoffState();\n                  enterState(RECOVER",
-                                 source.index('ROS_WARN("Action C continuous recovery ended:'))]
+                                 source.index('ROS_WARN("Action C rotor phase ended:'))]
 assert "recoveryExitDecision(" in rotor_exit
 assert "beginPostureSafeTransfer(now," in rotor_exit
 assert "continuous_roll_recovery_.finished = true" not in rotor_exit
@@ -75,6 +75,18 @@ int main() {
   assert(!recoveryResponseCanBeJudged(true,true,3.17,1.,.6,1.2));
   assert(!recoveryResponseCanBeJudged(true,false,3.17,1.,2.,1.2));
   assert(recoveryResponseCanBeJudged(true,true,3.17,1.,1.21,1.2));
+
+  // Extension authority follows the slower selected arm's measured
+  // decompression.  It starts at the old 1.5-N probe but is no longer capped
+  // there: at half pressure it reaches 3.1 N and at release it reaches the
+  // 4.7-N lookup-table force.
+  assert(std::abs(recoveryPressureReleaseProgress(30.,30.,0.))<1.e-9);
+  assert(std::abs(recoveryPressureReleaseProgress(15.,30.,0.)-.5)<1.e-9);
+  assert(std::abs(recoveryPressureReleaseProgress(0.,30.,0.)-1.)<1.e-9);
+  assert(std::abs(recoveryScheduledExtensionAuthority(1.5,4.7,0.,5.5)-1.5)<1.e-9);
+  assert(std::abs(recoveryScheduledExtensionAuthority(1.5,4.7,.5,5.5)-3.1)<1.e-9);
+  assert(std::abs(recoveryScheduledExtensionAuthority(1.5,4.7,1.,5.5)-4.7)<1.e-9);
+  assert(std::abs(recoveryScheduledExtensionAuthority(1.5,4.7,1.,4.)-4.)<1.e-9);
 
   // Ordinary candidate comparison waits for a physically settled support
   // boundary. Each emergency source independently bypasses that dwell.

@@ -46,6 +46,7 @@ struct Controller {
   bool retained_contact_equilibrium=false;
   bool recovery_restart_support_ready=true;
   bool recovery_pressure_fresh=true;
+  bool recovery_candidate_selection_ready=true;
   double angular_rate=0., correction_max_angular_rate_=.8;
   bool stable_c_roll=false, c_recovery_requested=true, hard_roll=false;
   struct {bool worsening=true;} action_c_roll_trend_; // Legacy/non-C test fixture.

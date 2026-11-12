@@ -52,6 +52,7 @@ struct AttitudePressureController {
  ros::Time recovery_unified_unlock_since_;
  bool recovery_unified_unlock_ready_=false;
  bool recovery_rate_arrest_active_=false;
+ double recovery_selected_required_thrust_n_=std::numeric_limits<double>::quiet_NaN();
  ros::Time recovery_event_start_;
  bool recovery_event_active_=false;
  hugmy::RecoveryFaultReason recovery_fault_reason_=

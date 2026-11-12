@@ -16,6 +16,7 @@
 #include <spinal/Thrust.h>
 #include <std_msgs/Float32MultiArray.h>
 #include <std_msgs/Float32.h>
+#include <std_msgs/Bool.h>
 #include <std_msgs/UInt8.h>
 #include <std_srvs/SetBool.h>
 #include <std_srvs/Trigger.h>
@@ -68,7 +69,7 @@ private:
   hugmy::recovery::Selection evaluateUnifiedRecoveryCandidates(
       double roll_error, double required_moment,
       const hugmy::recovery::Vec3& circle_center_body,
-      bool actuating, int previous_candidate_index);
+      int previous_candidate_index);
   bool enableCallback(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res);
   bool postureRecoveryCallback(std_srvs::Trigger::Request& req,
                                std_srvs::Trigger::Response& res);
@@ -171,6 +172,7 @@ private:
   ros::Publisher arm_shape_error_pub_, arm_shape_active_pub_;
   ros::Publisher arm_bend_angle_deg_pub_;
   ros::Publisher recovery_circle_geometry_pub_;
+  ros::Publisher recovery_circle_estimate_valid_pub_;
   ros::Publisher hand_relative_position_pub_;
   ros::Publisher desired_moment_pub_, achieved_moment_pub_;
   ros::Publisher correction_thrust_pub_, root_correction_thrust_pub_;
@@ -374,8 +376,6 @@ private:
   double recovery_handoff_min_pressure_kpa_ = 15.0;
   double recovery_handoff_trim_margin_rad_ = 1.0 * M_PI / 180.0;
   double recovery_handoff_trim_confirm_sec_ = 0.30;
-  double recovery_handoff_contact_equilibrium_rad_ =
-      5.5 * M_PI / 180.0;
   double recovery_handoff_integral_n_ = 0.0;
   double recovery_handoff_brake_error_rad_ = 0.0;
   double recovery_handoff_best_error_rad_ = std::numeric_limits<double>::infinity();
@@ -421,9 +421,6 @@ private:
   // The estimate selects both the rotor pair and whether that pair should
   // remain flexed/grasping or be released to obtain a useful moment arm.
   bool recovery_circle_selection_enabled_ = true;
-  // Non-actuating comparison of the standalone four-candidate planner against
-  // the legacy controller.  Intentionally opt-in until real bag validation.
-  bool recovery_unified_shadow_enabled_ = false;
   // Connect the four-candidate planner to the existing pressure/thrust state
   // machine by default. SAFE_TRANSFER and all measured response guards remain
   // owned by the parent recovery controller; false selects the legacy planner.
@@ -433,6 +430,17 @@ private:
   // selected thrust; execution still supervises the measured transition.
   double recovery_unified_extension_target_bend_rad_ = 0.0;
   double recovery_unified_thrust_step_n_ = 0.1;
+  double recovery_grasp_probe_initial_thrust_n_ = 0.8;
+  double recovery_grasp_probe_min_thrust_n_ = 1.0;
+  double recovery_grasp_probe_max_thrust_n_ = 3.0;
+  double recovery_grasp_probe_confirm_sec_ = 0.5;
+  double recovery_grasp_probe_timeout_sec_ = 1.0;
+  double recovery_grasp_probe_min_progress_rad_ = 0.25 * M_PI / 180.0;
+  bool recovery_conditional_grasp_probe_active_ = false;
+  bool recovery_conditional_grasp_response_observed_ = false;
+  ros::Time recovery_conditional_grasp_probe_start_;
+  double recovery_conditional_grasp_probe_start_error_rad_ =
+      std::numeric_limits<double>::quiet_NaN();
   // Changing the physical pair moves the support topology.  Charge a modest
   // score margin so close candidates do not alternate across re-selections.
   double recovery_unified_pair_switch_penalty_n_ = 0.20;
@@ -455,6 +463,11 @@ private:
   // passes every sensor, pressure, angular-rate and actuator safety gate.
   bool manual_posture_recovery_requested_ = false;
   int recovery_unified_selected_candidate_index_ = -1;
+  // Steady-state force selected by the four-candidate planner.  For a
+  // grasped topology this becomes the bounded inner-loop feed-forward floor;
+  // the previous implementation logged it but restarted actuation at 0.5 N.
+  double recovery_selected_required_thrust_n_ =
+      std::numeric_limits<double>::quiet_NaN();
   double recovery_unsafe_roll_rad_ = 45.0 * M_PI / 180.0;
   double recovery_extension_response_sec_ = 0.5;
   hugmy::recovery::Pose recovery_mocap_pose_;
@@ -470,13 +483,27 @@ private:
   // If the inferred pair depths are closer than this uncertainty, select the
   // lower side from measured body roll instead of locking to circle-fit noise.
   double recovery_circle_pair_depth_ambiguity_rad_ = 5.0 * M_PI / 180.0;
-  double recovery_circle_small_radius_m_ = 0.035;
-  double recovery_circle_small_radius_capture_margin_factor_ = 3.0;
-  double recovery_circle_small_radius_support_pressure_kpa_ = 25.0;
-  // Keeping the active pair grasped avoids the large support-transfer impulse
-  // seen when a 12-deg correction immediately released two arms.  Larger
-  // errors transfer support and use the released long-arm geometry.
+  // Reject contact/support hypotheses outside the complete robot envelope.
+  // This turns a metre-scale frame error into invalid geometry rather than
+  // an apparently excellent roll lever.
+  double recovery_geometry_max_support_rotor_distance_m_ = 0.50;
+  // While the body/contact is moving rapidly, retain the event-entry circle
+  // in the body frame instead of recomputing it through a transient pose.
+  double recovery_geometry_update_max_roll_rate_rad_s_ =
+      10.0 * M_PI / 180.0;
+  // A grasped candidate may remain useful at any object radius while roll is
+  // not materially moving away. Geometry and signed rotor force direction,
+  // rather than an object-radius class, decide whether grasp is feasible.
+  double recovery_grasp_worsening_rate_rad_s_ =
+      2.0 * M_PI / 180.0;
+  double recovery_below_side_capture_margin_factor_ = 3.0;
+  double recovery_below_side_support_pressure_kpa_ = 25.0;
+  // Boundary used to release an old extension latch and return to a fresh
+  // four-candidate comparison.  Emergency extension has a separate, larger
+  // predicted-error threshold below; conflating the two forced a straight-arm
+  // mode on the human arm even when a grasped candidate needed only 0.68 N.
   double recovery_circle_flexed_max_error_rad_ = 15.0 * M_PI / 180.0;
+  double recovery_extension_emergency_error_rad_ = 30.0 * M_PI / 180.0;
   double recovery_circle_release_penalty_n_ = 0.75;
   double recovery_circle_min_signed_lever_m_ = 0.005;
   // Finite pressure choices for the correcting pair.  They turn the old
@@ -576,6 +603,9 @@ private:
   double recovery_rate_arrest_reference_error_rad_ =
       std::numeric_limits<double>::quiet_NaN();
   double recovery_extension_prediction_sec_ = 0.30;
+  double recovery_extension_emergency_confirm_sec_ = 0.12;
+  ros::Time recovery_extension_emergency_since_;
+  bool recovery_extension_emergency_confirmed_ = false;
   double recovery_rate_arrest_min_thrust_n_ = 2.0;
   double recovery_rate_arrest_max_thrust_n_ = 4.0;
   double recovery_rate_arrest_release_sec_ = 0.10;

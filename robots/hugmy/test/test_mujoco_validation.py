@@ -60,7 +60,7 @@ assert 'if(!s.fresh || dt<0. || dt>.1 || clock<hybrid_task_start_)' in src
 assert 'reverse_reference_x = hybrid_start_mean_valid_' in src
 assert 'locomotion_position[0]-reverse_reference_x' in src
 validator=Path(module.__file__).read_text()
-assert "parser.add_argument('--unload-pitch-deg', type=float, default=4." in validator
+assert "parser.add_argument('--unload-pitch-deg', type=float, default=3." in validator
 assert "parser.add_argument('--lateral-limit', type=float, default=.03" in validator
 assert "abs(result['lateral_displacement'])<args.lateral_limit" in validator
 assert "abs(result['lateral_displacement'])<.02" in validator  # grasp-only negative control remains strict

@@ -215,6 +215,39 @@ inline bool recoveryResponseCanBeJudged(bool pressure_settled,
       effective_probe_sec >= required_probe_sec;
 }
 
+// Open extension authority from a low initial shaping force to the force
+// selected by the pressure/thrust/bend lookup table. Pressure, rather than
+// the still-transitioning kinematic lever, is the independent progress
+// variable: requiring a restoring lever before permitting the force needed
+// to create that lever is a deadlock.
+inline double recoveryPressureReleaseProgress(double measured_pressure,
+                                              double loaded_pressure,
+                                              double released_pressure) {
+  if (!std::isfinite(measured_pressure) ||
+      !std::isfinite(loaded_pressure) ||
+      !std::isfinite(released_pressure) ||
+      loaded_pressure <= released_pressure + 1.0e-9)
+    return 0.0;
+  return std::max(0.0, std::min(1.0,
+      (loaded_pressure - measured_pressure) /
+          (loaded_pressure - released_pressure)));
+}
+
+inline double recoveryScheduledExtensionAuthority(double initial_thrust,
+                                                  double planned_thrust,
+                                                  double pressure_progress,
+                                                  double force_limit) {
+  if (!std::isfinite(initial_thrust) ||
+      !std::isfinite(planned_thrust) ||
+      !std::isfinite(pressure_progress) ||
+      !std::isfinite(force_limit) || force_limit < 0.0)
+    return 0.0;
+  const double low = std::max(0.0, std::min(initial_thrust, force_limit));
+  const double high = std::max(low, std::min(planned_thrust, force_limit));
+  const double progress = std::max(0.0, std::min(1.0, pressure_progress));
+  return low + progress * (high - low);
+}
+
 // Candidate geometry should normally be sampled only at a quiet pneumatic
 // boundary.  An emergency is different: waiting for a cleaner model sample
 // would allow the roll error to grow faster than the recovery actuator can

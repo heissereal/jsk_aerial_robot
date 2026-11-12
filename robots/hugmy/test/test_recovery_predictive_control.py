@@ -24,8 +24,9 @@ assert 'recovery_error_decay_rate <' in branch
 assert 'recovery_wrong_geometry_min_error_decay_rate_rad_s_' in branch
 assert 'const bool retained_candidate_worsening =' in branch
 assert 'Recovery candidate lost retained progress at %.2f deg/s' in branch
-assert 'std::max(recovery_wrong_sign_shaping_thrust_n_,' in branch
-assert 'roll_recovery_config_.response_fault_min_thrust)' in branch
+assert 'recoveryPressureReleaseProgress(' in branch
+assert 'recoveryScheduledExtensionAuthority(' in branch
+assert 'extension_shape_authority' in branch
 assert 'geometry_authority_limit)' in branch
 assert 'recovery_rate_arrest_min_thrust_n_' in branch
 assert 'recovery_rate_arrest_max_thrust_n_' in branch
@@ -89,11 +90,12 @@ int main() {
   RollRecoveryResponse response;
   ContinuousRollRecovery actual;actual.reset(.4,0.);
   actual.thrust=2.;actual.boost=1.;
+  actual.progress_observed=true;
   const double output=actual.update(.4,.3,.02,.02,model,bounds,response,4.);
   assert(output<2. && actual.speed_braking && actual.boost==1.);
   actual.update(.4,-.81,.04,.02,model,bounds,response,4.);
   assert(actual.fault && actual.thrust==0.);
-  actual.reset(.4,0.);actual.thrust=2.;
+  actual.reset(.4,0.);actual.thrust=2.;actual.progress_observed=true;
   assert(actual.update(.4,.81,.02,.02,model,bounds,response,4.)<2.);
   assert(!actual.fault && actual.predicted_braking);
   actual.reset(.4,0.);assert(actual.update(.4,0.,.02,.02,model,bounds,response,100.)<=.030001);

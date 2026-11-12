@@ -29,6 +29,7 @@ public:
   hugmy::PressureThrustBendModel bend_model_;
   hugmy::RollRecoveryConfig roll_recovery_config_;
   double recovery_circle_min_signed_lever_m_=.005;
+  double recovery_geometry_max_support_rotor_distance_m_=.5;
   double recovery_circle_release_penalty_n_=.1;
   double recovery_circle_contact_pressure_kpa_=10.;
   double pressure_tolerance_kpa_=1.;
@@ -41,6 +42,9 @@ public:
   double recovery_unified_extension_target_bend_rad_=0.;
   double recovery_unified_thrust_step_n_=.1;
   double recovery_unified_pair_switch_penalty_n_=.2;
+  double recovery_grasp_probe_initial_thrust_n_=.8;
+  double recovery_circle_side_margin_rad_=5.*M_PI/180.;
+  double mock_rotor_depth_=2.0;
   double roll_=-.2,pitch_=0.;
   Vector3 body_angular_velocity_{{0.,0.,0.}};
   double measuredArmBendAngle(size_t)const{return 1.8;}
@@ -49,6 +53,9 @@ public:
   }
   Vector3 rotorPositionFromAngle(size_t arm,double bend)const{
     return {{0.,arm<2?.08:-.08,.02*std::cos(bend)}};
+  }
+  double rotorDepthAngleAbout(size_t,double,const Vector3&)const{
+    return mock_rotor_depth_;
   }
   static Vector3 rotateAboutLocalY(const Vector3& a,double theta) {
     return {{std::cos(theta)*a[0]-std::sin(theta)*a[2], a[1],
@@ -59,7 +66,7 @@ public:
              std::sin(theta)*a[0]+std::cos(theta)*a[1],a[2]}};
   }
   hugmy::recovery::Selection evaluateUnifiedRecoveryCandidates(
-      double,double,const hugmy::recovery::Vec3&,bool,int);
+      double,double,const hugmy::recovery::Vec3&,int);
 };
 METHOD
 int main() {
@@ -67,19 +74,46 @@ int main() {
   c.roll_recovery_config_.limit = 5.5;
   c.recovery_circle_event_estimate_.valid = true;
   c.recovery_circle_event_estimate_.radius = 0.04;
-  const auto shadow = c.evaluateUnifiedRecoveryCandidates(
-      .2,.02,{{0.,0.,-.07}},false,-1);
-  assert(shadow.valid);
-  assert(shadow.candidates[shadow.index].contact_feasible);
-  assert(std::isfinite(shadow.candidates[1].extension_min_thrust));
-  assert(shadow.candidates[1].extension_min_thrust > 0.0);
-  assert(shadow.candidates[1].extension_min_thrust ==
-         shadow.candidates[3].extension_min_thrust);
+  const auto active = c.evaluateUnifiedRecoveryCandidates(
+      .2,.02,{{0.,0.,-.07}},-1);
+  assert(active.valid);
+  assert(active.candidates[active.index].contact_feasible);
+  assert(active.candidates[0].support_vertex_count == 4);
+  assert(active.candidates[1].support_vertex_count == 2);
+  // Both pairs are geometrically below the side, but their actual thrust
+  // vectors turn the object in opposite directions. Only the pair whose
+  // centre-based cross product has the requested sign may run a probe.
+  assert(active.candidates[0].below_object_side);
+  assert(active.candidates[2].below_object_side);
+  assert(active.candidates[0].signed_center_lever < 0.0);
+  assert(active.candidates[2].signed_center_lever > 0.0);
+  assert(!active.candidates[0].conditional_grasp_probe);
+  assert(active.candidates[2].conditional_grasp_probe);
+  assert(active.alternatives[active.index].support_vertex_count >= 2);
+  assert(std::isfinite(active.alternatives[active.index].worst_support_body[1]));
+  assert(std::isfinite(active.candidates[1].extension_min_thrust));
+  assert(active.candidates[1].extension_min_thrust > 0.0);
+  assert(active.candidates[1].extension_min_thrust ==
+         active.candidates[3].extension_min_thrust);
   c.measured_pressure_[0] = 0.;
-  c.evaluateUnifiedRecoveryCandidates(.2,.02,{{0.,0.,-.07}},true,
-                                       shadow.index);
+  const auto reduced_support = c.evaluateUnifiedRecoveryCandidates(
+      .2,.02,{{0.,0.,-.07}},active.index);
+  assert(!reduced_support.candidates[0].contact_feasible);
+  c.measured_pressure_[0] = 30.;
+  c.mock_rotor_depth_ = 1.0;
+  const auto above_side = c.evaluateUnifiedRecoveryCandidates(
+      .2,.02,{{0.,0.,-.07}},-1);
+  assert(!above_side.candidates[0].conditional_grasp_probe);
+  assert(!above_side.candidates[2].conditional_grasp_probe);
+  c.mock_rotor_depth_ = 2.0;
+  const auto reverse_moment = c.evaluateUnifiedRecoveryCandidates(
+      -.2,-.02,{{0.,0.,-.07}},-1);
+  assert(reverse_moment.candidates[0].signed_center_lever > 0.0);
+  assert(reverse_moment.candidates[2].signed_center_lever < 0.0);
+  assert(reverse_moment.candidates[0].conditional_grasp_probe);
+  assert(!reverse_moment.candidates[2].conditional_grasp_probe);
   const auto invalid = c.evaluateUnifiedRecoveryCandidates(
-      .2,.02,{{0.,NAN,-.07}},false,-1);
+      .2,.02,{{0.,NAN,-.07}},-1);
   assert(!invalid.valid);
   std::puts("PASS: ROS-independent compile/smoke of actual recovery planner adapter");
 }

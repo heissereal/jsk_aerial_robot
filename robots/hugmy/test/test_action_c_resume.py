@@ -64,8 +64,11 @@ assert 're-evaluating legacy current-bend candidates' in source
 assert 'recovery_preferred_pair_locked_ = false;' in source
 assert 'requiring the opposite physical pair' in source
 assert 'recovery_preferred_pair_index_ = 1 - previous_pair;' in source
-assert 'const bool large_error_emergency =' in source
-assert 'if (large_error_emergency || predicted_emergency)' in source
+assert 'recovery_human_arm_max_radius_m_' not in source
+assert 'const bool materially_worsening_roll =' in source
+assert 'recovery_grasp_worsening_rate_rad_s_' in source
+assert 'const bool predicted_emergency =' in source
+assert 'if (predicted_emergency)' in source
 selector_request = source[source.index(
     'const bool emergency_extension_requested ='
 ):source.index('if (emergency_extension_requested)', source.index(
@@ -164,6 +167,8 @@ assert 'const bool strict_target_observed_before_regrasp =' in source
 assert 'recovery_handoff_best_error_rad_ <= handoff_settle_error' in source
 assert 'const double handoff_measurement_margin = std::min(\n                  0.25 * M_PI / 180.0,\n                  0.25 * roll_recovery_config_.stop_margin);' in source
 assert 'const double active_handoff_settle_error =' in source
+assert 'const double handoff_settle_error = recovery_stop_angle;' in source
+assert 'active_handoff_settle_error =\n                  handoff_settle_error;' in source
 assert 'recovery_candidate_reselect_pending_ = true;' in source
 assert 'continuous_recovery_retry_opposite_pending_ ||' in source
 assert 'const double retained_equilibrium_limit =\n              action_c_posture_resume_rad_;' in source
@@ -223,7 +228,6 @@ public:
  hugmy::CircularGraspEstimate recovery_circle_event_estimate_;
  bool recovery_event_contact_pivot_locked_=false;
  Vector3 recovery_event_contact_pivot_{{0.,0.,-.07}};
- bool recovery_unified_shadow_enabled_=false;
  bool recovery_unified_active_enabled_=false;
  double recovery_unified_unlock_angle_rad_=7.*M_PI/180.;
  double recovery_unified_unlock_rate_rad_s_=5.*M_PI/180.;
@@ -265,6 +269,7 @@ public:
  std::array<double,4> prepare_shape_thrust_{{2.,2.,2.,2.}}, grasp_pressure_{{30.,30.,30.,30.}};
  std::array<double,4> prepare_pressure_{{30.,30.,30.,30.}};
  std::array<double,4> measured_pressure_{{30.,30.,30.,30.}};
+ std::array<double,4> last_pressure_{{30.,30.,30.,30.}};
  std::array<double,4> recovery_selected_release_start_pressure_{{30.,30.,30.,30.}};
  std::array<double,4> angles{{M_PI/2,M_PI/2,M_PI/2,M_PI/2}};
  std::array<double,4> recovery_handoff_target_pressure_{};
@@ -315,8 +320,13 @@ public:
  double recovery_circle_min_confidence_=.35,recovery_circle_max_age_sec_=30.;
  double recovery_circle_side_margin_rad_=5*M_PI/180.;
  double recovery_circle_pair_depth_ambiguity_rad_=5*M_PI/180.;
+ double recovery_geometry_max_support_rotor_distance_m_=.5;
+ double recovery_geometry_update_max_roll_rate_rad_s_=10*M_PI/180.;
+ double recovery_grasp_worsening_rate_rad_s_=2*M_PI/180.;
  double recovery_circle_flexed_max_error_rad_=15*M_PI/180.;
+ double recovery_extension_emergency_error_rad_=30*M_PI/180.;
  double recovery_circle_contact_pressure_kpa_=10.;
+ double pressure_tolerance_kpa_=1.;
  double recovery_circle_release_penalty_n_=.75,recovery_circle_min_signed_lever_m_=.005;
  std::array<double,4> recovery_circle_pressure_candidates_kpa_{{0.,10.,20.,30.}};
  double recovery_circle_release_support_scale_=.20;
@@ -331,6 +341,12 @@ public:
  bool recovery_wrong_geometry_response_observed_=false;
  PressureArray recovery_wrong_geometry_probe_pressure_target_{};
  bool recovery_wrong_geometry_probe_target_valid_=false;
+ bool recovery_conditional_grasp_probe_active_=false;
+ bool recovery_conditional_grasp_response_observed_=false;
+ ros::Time recovery_conditional_grasp_probe_start_;
+ double recovery_conditional_grasp_probe_start_error_rad_=NAN;
+ double recovery_selected_required_thrust_n_=NAN;
+ bool recovery_extension_emergency_confirmed_=false;
  double roll_moment_kp_=.1,roll_moment_kd_=0.,target_roll_=0.,roll_=-.2,pitch_=0.;
  Vector3 body_angular_velocity_{{0.,0.,0.}};
  Vector3 gravity_body_{{0.,0.,-9.81}};
@@ -351,7 +367,7 @@ public:
  }
  void selectContinuousRecoveryPair(double);
  hugmy::recovery::Selection evaluateUnifiedRecoveryCandidates(
-     double,double,const hugmy::recovery::Vec3&,bool,int) {return {};}
+     double,double,const hugmy::recovery::Vec3&,int) {return {};}
  double measuredArmBendAngle(size_t arm)const{return angles[arm];}
  Vector3 armContactPointFromAngle(size_t arm,double bend)const{
    return {{0.,arm<2?.04:-.04,-.07-.01*std::sin(bend)}};
@@ -452,9 +468,12 @@ int main() {
  circle.select(.2);
  assert(!circle.recovery_pair_selection_available_);
  circle.recovery_rejected_candidate_mask_=0;
- // A large roll cannot use the flexed-contact shortcut even when that pair
- // remains below the circle side; it must transfer support before recovery.
- circle.body_angular_velocity_[0]=-.2;
+ // A sustained outward prediction cannot use the flexed-contact shortcut
+ // even when that pair remains below the circle side; it must transfer
+ // support before recovery. The production state machine supplies this flag
+ // only after the configured confirmation dwell.
+ circle.body_angular_velocity_[0]=-1.2;
+ circle.recovery_extension_emergency_confirmed_=true;
  circle.select(.35);
  assert(circle.recovery_selected_pair_release_);
  assert(circle.recovery_extension_mode_latched_ &&
@@ -515,8 +534,26 @@ int main() {
         normal_choice.recovery_selected_pair_index_);
  assert(urgent_small_choice.recovery_selected_pair_release_==
         normal_choice.recovery_selected_pair_release_);
- // The same small present error still uses straight-arm recovery when its
- // measured outward rate predicts crossing the 15-deg emergency boundary.
+ // The 2026-11-12 human-arm case began at about 11 deg and -43 deg/s. Its
+ // 0.3-s prediction was only 24 deg, so it must retain the ordinary unified
+ // candidate comparison (which preferred the 0.68-N grasp) rather than force
+ // a 4.7-N straight-arm transfer.
+ AttitudePressureController human_arm_prediction;
+ human_arm_prediction.recovery_circle_selection_enabled_=true;
+ human_arm_prediction.recovery_circle_estimate_=circle.recovery_circle_estimate_;
+ human_arm_prediction.recovery_circle_stamp_={9.9};
+ human_arm_prediction.recovery_circle_release_support_scale_=0.;
+ human_arm_prediction.recovery_circle_release_penalty_n_=0.;
+ human_arm_prediction.straight_pair_swap_=true;
+ human_arm_prediction.body_angular_velocity_[0]=-.75;
+ human_arm_prediction.recovery_extension_emergency_confirmed_=true;
+ human_arm_prediction.select(.2);
+ assert(human_arm_prediction.recovery_selected_pair_index_==
+        normal_choice.recovery_selected_pair_index_);
+ assert(human_arm_prediction.recovery_selected_pair_release_==
+        normal_choice.recovery_selected_pair_release_);
+ // A genuinely sustained prediction beyond 30 deg still forces the bounded
+ // emergency straight-arm topology.
  AttitudePressureController predicted_emergency_choice;
  predicted_emergency_choice.recovery_circle_selection_enabled_=true;
  predicted_emergency_choice.recovery_circle_estimate_=
@@ -525,21 +562,39 @@ int main() {
  predicted_emergency_choice.recovery_circle_release_support_scale_=0.;
  predicted_emergency_choice.recovery_circle_release_penalty_n_=0.;
  predicted_emergency_choice.straight_pair_swap_=true;
- predicted_emergency_choice.body_angular_velocity_[0]=-.35;
+ predicted_emergency_choice.body_angular_velocity_[0]=-1.2;
+ predicted_emergency_choice.recovery_extension_emergency_confirmed_=true;
  predicted_emergency_choice.select(.2);
  assert(predicted_emergency_choice.prepare_arm_active_[2] &&
         predicted_emergency_choice.prepare_arm_active_[3]);
  assert(predicted_emergency_choice.recovery_selected_pair_release_ &&
         predicted_emergency_choice.recovery_extension_mode_latched_);
- AttitudePressureController emergency_choice;
- emergency_choice.recovery_circle_selection_enabled_=true;
- emergency_choice.recovery_circle_estimate_=circle.recovery_circle_estimate_;
- emergency_choice.recovery_circle_stamp_={9.9};
- emergency_choice.recovery_circle_release_support_scale_=0.;
- emergency_choice.straight_pair_swap_=true;
+ // Radius is diagnostic only. At both 50- and 80-mm radii, a large but quiet
+ // error retains the lower-cost grasp topology when its signed rotor moment
+ // is valid.
+ AttitudePressureController quiet_large_choice;
+ quiet_large_choice.recovery_circle_selection_enabled_=true;
+ quiet_large_choice.recovery_circle_estimate_=circle.recovery_circle_estimate_;
+ quiet_large_choice.recovery_circle_stamp_={9.9};
+ quiet_large_choice.recovery_circle_release_support_scale_=0.;
+ quiet_large_choice.recovery_circle_release_penalty_n_=3.;
+ quiet_large_choice.straight_pair_swap_=true;
+ quiet_large_choice.body_angular_velocity_[0]=0.;
+ quiet_large_choice.select(.35);
+ assert(!quiet_large_choice.recovery_selected_pair_release_);
+ AttitudePressureController quiet_large_radius=quiet_large_choice;
+ quiet_large_radius.recovery_preferred_pair_locked_=false;
+ quiet_large_radius.recovery_extension_mode_latched_=false;
+ quiet_large_radius.recovery_circle_estimate_.radius=.08;
+ quiet_large_radius.select(.35);
+ assert(!quiet_large_radius.recovery_selected_pair_release_);
+ // The same geometry switches to emergency extension only when the measured
+ // roll is materially moving outward and predicts a large residual.
+ AttitudePressureController emergency_choice=quiet_large_radius;
+ emergency_choice.recovery_preferred_pair_locked_=false;
+ emergency_choice.body_angular_velocity_[0]=-1.2;
+ emergency_choice.recovery_extension_emergency_confirmed_=true;
  emergency_choice.select(.35);
- assert(emergency_choice.prepare_arm_active_[2] &&
-        emergency_choice.prepare_arm_active_[3]);
  assert(emergency_choice.recovery_selected_pair_release_);
  assert(emergency_choice.recovery_extension_mode_latched_ &&
         emergency_choice.recovery_extension_direction_sign_==1 &&
