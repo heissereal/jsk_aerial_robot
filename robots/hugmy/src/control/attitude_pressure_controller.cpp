@@ -1232,7 +1232,7 @@ AttitudePressureController::AttitudePressureController(ros::NodeHandle& nh,
   pnh_.param("hybrid_motion2_release_start_ratio",
       hybrid_single_config_.motion2_release_start_ratio,.10);
   pnh_.param("hybrid_motion2_paired_extension_handoff_enabled",
-      hybrid_single_config_.motion2_paired_extension_handoff_enabled,false);
+      hybrid_single_config_.motion2_paired_extension_handoff_enabled,true);
   pnh_.param("hybrid_motion2_handoff_max_extension_rad",
       hybrid_single_config_.motion2_handoff_max_extension,45.*M_PI/180.);
   pnh_.param("hybrid_motion2_handoff_stall_seconds",

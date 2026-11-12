@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in Motion-2 anchor search and direct paired-extension handoff tests."""
+"""Motion-2 anchor search and default paired-extension handoff tests."""
 from pathlib import Path
 import subprocess
 import tempfile
@@ -34,6 +34,9 @@ int main() {
   assert(rear.update(30.,20.,.10,.2618,.04,true,false,.02)==30.);
 
   SinglePassConfig k;
+  // Isolate the mutually exclusive diagnostic pressure-step search. The
+  // paired-extension fallback is enabled by default in production.
+  k.motion2_paired_extension_handoff_enabled=false;
   k.motion2_rear_anchor_search_enabled=true;
   assert(k.valid());
   auto invalid=k; invalid.motion2_rear_min_pressure=31.;
@@ -188,8 +191,10 @@ with tempfile.TemporaryDirectory() as tmp:
     ], check=True)
     subprocess.run([str(exe)], check=True)
 
-# The opt-in policy must remain off in all launch presets, including the
-# previously successful human-arm configuration, and must reach the ROS node.
+# The paired-extension fallback is the production default in every launch
+# preset and must reach the ROS node. The mutually exclusive rear-anchor
+# pressure-step search remains disabled and is checked by the C++ validation
+# above.
 name = 'hybrid_motion2_paired_extension_handoff_enabled'
 for launch in ('attitude_pressure_controller.launch', 'bringup.launch',
                'human_arm_locomotion.launch'):
@@ -197,11 +202,10 @@ for launch in ('attitude_pressure_controller.launch', 'bringup.launch',
     matching = [arg for arg in tree.findall('.//arg')
                 if arg.get('name') == name]
     assert matching, launch
+    assert any(arg.get('default') == 'true' for arg in matching), launch
     if launch == 'attitude_pressure_controller.launch':
-        assert any(arg.get('default') == 'false' for arg in matching)
         assert tree.find(".//param[@name='" + name + "']") is not None
-    elif launch == 'human_arm_locomotion.launch':
-        assert any(arg.get('default') == 'false' for arg in matching)
     assert any(arg.get('value') == '$(arg ' + name + ')' for arg in matching) \
         or launch == 'attitude_pressure_controller.launch'
-assert name in (root / 'config' / 'attitude_pressure_controller.yaml').read_text()
+yaml = (root / 'config' / 'attitude_pressure_controller.yaml').read_text()
+assert name + ': true' in yaml

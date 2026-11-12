@@ -572,7 +572,7 @@ struct SinglePassConfig {
   // The first reach must either settle at the measured travel or encounter
   // the bounded excursion limit; subsequent reaches reuse the measured first
   // Motion-2 extension rather than a universal 15-degree terminal angle.
-  bool motion2_paired_extension_handoff_enabled=false;
+  bool motion2_paired_extension_handoff_enabled=true;
   double motion2_handoff_max_extension=.78539816; // 45 deg from grasp
   double motion2_handoff_stall_seconds=.25;
   double motion2_handoff_stall_rate=.08726646; // 5 deg/s

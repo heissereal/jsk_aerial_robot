@@ -27,12 +27,12 @@
   <arg name="hybrid_trajectory_extension_rate_rad_s" default="0.70" />
   <arg name="hybrid_lift_rear_release_start_ratio" default="0.10" />
   <arg name="hybrid_lift_rear_pressure_floor_kpa" default="0.0" />
-  <!-- Opt-in: short Motion-2 paired extension with stall-triggered rear
-       pressure steps. Keep disabled until a fixture-supported dry run. -->
+  <!-- The paired-extension fallback complements the measured load-relief
+       handoff. The separate rear-anchor pressure-step search remains off. -->
   <arg name="hybrid_motion2_rear_anchor_search_enabled" default="false" />
   <arg name="hybrid_motion2_rear_min_pressure_kpa" default="20.0" />
   <arg name="hybrid_motion2_release_start_ratio" default="0.10" />
-  <arg name="hybrid_motion2_paired_extension_handoff_enabled" default="false" />
+  <arg name="hybrid_motion2_paired_extension_handoff_enabled" default="true" />
   <arg name="hybrid_motion2_handoff_max_extension_rad" default="0.7853981633974483" />
   <arg name="hybrid_motion2_handoff_stall_seconds" default="0.25" />
   <arg name="hybrid_motion2_handoff_stall_rate_rad_s" default="0.08726646259971647" />

@@ -124,10 +124,12 @@ hybrid_lift_rear_pressure_floor_kpa: 0.0
 hybrid_motion2_rear_anchor_search_enabled: false
 hybrid_motion2_rear_min_pressure_kpa: 20.0 # primary per-object tuning knob
 hybrid_motion2_release_start_ratio: 0.10 # primary per-object tuning knob
-# Independent optional handoff for large/rigid contacts with little body
-# pitch/height response. First Motion-2 still identifies powered extension;
-# later strokes reuse measured travel. Enable only after simulation/dry-run.
-hybrid_motion2_paired_extension_handoff_enabled: false
+# Independent fallback handoff for contacts with little body pitch/height
+# response. First Motion-2 still identifies powered extension; later strokes
+# reuse measured travel. The ordinary measured load-relief event remains the
+# primary handoff and this path acts only when its paired-extension, rear
+# measured-pressure and roll-safety conditions are all satisfied.
+hybrid_motion2_paired_extension_handoff_enabled: true
 hybrid_motion2_handoff_max_extension_rad: 0.7853981633974483 # 45 deg
 hybrid_motion2_handoff_stall_seconds: 0.25
 hybrid_motion2_handoff_stall_rate_rad_s: 0.08726646259971647 # 5 deg/s
