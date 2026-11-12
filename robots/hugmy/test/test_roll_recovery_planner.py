@@ -68,10 +68,71 @@ int main() {
   assert(small_choice.alternatives[2].failure_reason ==
          EvaluationFailureReason::WRONG_MOMENT_SIGN);
 
+  // A pressure-weighted/averaged pivot can hide a sign reversal.  Robust
+  // selection evaluates all support-region vertices and rejects a candidate
+  // if even the least favourable plausible support has the wrong sign.
+  auto sign_ambiguous = candidate(0, false, 0.12);
+  sign_ambiguous.support_vertex_count = 2;
+  sign_ambiguous.support_vertices[0] = {{0.0, 0.0, 0.0}};
+  sign_ambiguous.support_vertices[1] = {{0.0, 0.13, 0.0}};
+  sign_ambiguous.support_body = {{0.0, 0.065, 0.0}};
+  const auto ambiguous_eval = evaluate(sign_ambiguous, 0.2, cfg);
+  assert(!ambiguous_eval.feasible);
+  assert(ambiguous_eval.failure_reason ==
+         EvaluationFailureReason::WRONG_MOMENT_SIGN);
+  assert(near(ambiguous_eval.signed_lever, -0.02));
+  assert(near(ambiguous_eval.maximum_signed_lever, 0.24));
+  assert(near(ambiguous_eval.worst_support_body[1], 0.13));
+
+  // The same uncertain support geometry is testable only when the adapter
+  // has proved that both rotor application points are below the object side.
+  // Its maximum lever admits a low-force response probe but never sizes the
+  // final recovery thrust.
+  sign_ambiguous.conditional_grasp_probe = true;
+  cfg.grasp_probe_thrust = 0.8;
+  const auto conditional_grasp_eval = evaluate(sign_ambiguous, 0.2, cfg);
+  assert(conditional_grasp_eval.feasible);
+  assert(conditional_grasp_eval.response_probe_required);
+  assert(near(conditional_grasp_eval.command_thrust, 0.8));
+  sign_ambiguous.release = true;
+  const auto released_ambiguous_eval = evaluate(sign_ambiguous, 0.2, cfg);
+  assert(!released_ambiguous_eval.feasible);
+  assert(!released_ambiguous_eval.response_probe_required);
+
+  auto robust_positive = candidate(0, false, 0.12);
+  robust_positive.support_vertex_count = 2;
+  robust_positive.support_vertices[0] = {{0.0, 0.0, 0.0}};
+  robust_positive.support_vertices[1] = {{0.0, 0.02, 0.0}};
+  const auto robust_positive_eval = evaluate(robust_positive, 0.2, cfg);
+  assert(robust_positive_eval.feasible);
+  assert(!robust_positive_eval.response_probe_required);
+  assert(near(robust_positive_eval.signed_lever, 0.20));
+  assert(near(robust_positive_eval.roll_thrust, 1.0));
+
+  Config force_floor_cfg = cfg;
+  force_floor_cfg.minimum_command_thrust = 1.2;
+  const auto force_floor_eval = evaluate(robust_positive, 0.02,
+                                         force_floor_cfg);
+  assert(force_floor_eval.feasible);
+  assert(near(force_floor_eval.command_thrust, 1.2));
+
   auto unsupported = small[0];
   unsupported.contact_feasible = false;
   assert(evaluate(unsupported, 0.2, cfg).failure_reason ==
          EvaluationFailureReason::SUPPORT_UNAVAILABLE);
+
+  // A frame glitch must not turn a metre-scale fictitious pivot into a very
+  // favourable lever. Hugmy supplies a finite mechanism envelope.
+  auto impossible_span = robust_positive;
+  impossible_span.support_vertex_count = 1;
+  impossible_span.support_vertices[0] = {{0.0, -2.0, -1.2}};
+  Config bounded_geometry = cfg;
+  bounded_geometry.max_support_rotor_distance = 0.5;
+  const auto impossible_eval = evaluate(
+      impossible_span, 0.2, bounded_geometry);
+  assert(!impossible_eval.feasible);
+  assert(impossible_eval.failure_reason ==
+         EvaluationFailureReason::INVALID_ROTOR_GEOMETRY);
 
   // Geometry change (a different radius/contact configuration) can make the
   // released 2+3 pair superior WITHOUT an object-specific if statement.
@@ -98,6 +159,15 @@ int main() {
   const auto coupled_eval = evaluateCoupled(coupled, 0.2, cfg,
                                              geometry_at_thrust, 0.1);
   assert(coupled_eval.feasible && near(coupled_eval.command_thrust, 1.0));
+
+  coupled.support_vertex_count = 2;
+  coupled.support_vertices[0] = {{0.0, 0.0, 0.0}};
+  coupled.support_vertices[1] = {{0.0, 0.02, 0.0}};
+  const auto coupled_robust = evaluateCoupled(coupled, 0.16, cfg,
+                                               geometry_at_thrust, 0.1);
+  assert(coupled_robust.feasible);
+  assert(near(coupled_robust.command_thrust, 1.0));
+  assert(near(coupled_robust.signed_lever, 0.16));
 
   // A released topology must not be accepted below the thrust at which the
   // calibrated pressure/thrust/bend lookup predicts the target extension.

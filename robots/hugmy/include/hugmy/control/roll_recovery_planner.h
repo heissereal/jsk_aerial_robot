@@ -3,9 +3,10 @@
 
 // Contact-conditioned roll recovery planning, independent of ROS and of the
 // pressure/thrust actuator loops.  This deliberately does NOT estimate contact
-// forces from pneumatic pressure.  A support point is a hypothesis supplied
-// by the contact-state estimator, and its validity must be checked against
-// measured motion before enabling closed-loop selection on hardware.
+// forces from pneumatic pressure.  A candidate supplies the vertices of its
+// geometrically plausible support region.  Selection uses the least favourable
+// signed roll lever over those vertices, rather than a pressure-weighted or
+// averaged support point.
 
 #include <algorithm>
 #include <array>
@@ -118,11 +119,29 @@ struct Candidate {
   // was evaluated while pneumatic state was still moving toward its command.
   bool support_pressure_transitioning = false;
   bool actuated_pressure_transitioning = false;
+  // Vertices of the possible support region in the body frame.  Since the
+  // roll lever is affine in the support position, its minimum over the convex
+  // hull occurs at one of these vertices; no interior sampling is necessary.
+  // A zero count retains support_body as a backwards-compatible single-point
+  // candidate for standalone callers.
+  std::array<Vec3, 4> support_vertices{};
+  std::size_t support_vertex_count = 0;
+  // Centroid for diagnostics only.  It is not used for robust selection when
+  // support_vertex_count is non-zero.
   Vec3 support_body{{0.0, 0.0, 0.0}};
   std::array<Rotor, 2> rotors;
   double extension_min_thrust = 0.0;  // Per rotor, N; 0 for grasped candidates.
   double transition_seconds = 0.0;
   double release_fraction = 0.0;
+  // The circle/gravity adapter may admit a below-side grasp whose worst-case
+  // support-point lever is uncertain.  It is then used only for a bounded
+  // measured-response probe, never directly at full PI authority.
+  bool conditional_grasp_probe = false;
+  // Diagnostics for object-relative actuation. The first flag describes the
+  // rotor application points; the signed centre lever also includes each
+  // rotor's actual thrust direction about the inferred object centre.
+  bool below_object_side = false;
+  double signed_center_lever = NAN;
 };
 
 enum class EvaluationFailureReason {
@@ -159,6 +178,13 @@ inline const char* evaluationFailureReasonName(
 struct Config {
   double min_signed_lever = 0.005;       // m per 1 N commanded to each rotor
   double thrust_limit = 4.0;           // N per rotor
+  // A support hypothesis farther from every physical rotor than the complete
+  // mechanism can span is a frame/estimation fault, not a large useful
+  // moment arm. Infinity preserves the standalone planner default; the
+  // Hugmy adapter supplies a bound derived from the robot envelope.
+  double max_support_rotor_distance = INFINITY;
+  double minimum_command_thrust = 0.0; // N per rotor; calibrated actuator floor
+  double grasp_probe_thrust = 0.8;     // N per rotor; response check only
   double release_penalty = 0.0;        // N equivalent, not an estimated force
   double transition_penalty = 0.0;     // N equivalent per second
   double switch_improvement = 0.1;     // N equivalent, hysteresis
@@ -169,20 +195,89 @@ struct Evaluation {
   EvaluationFailureReason failure_reason =
       EvaluationFailureReason::INVALID_INPUT;
   double signed_lever = NAN;
+  double maximum_signed_lever = NAN;
+  Vec3 worst_support_body{{NAN, NAN, NAN}};
+  std::size_t support_vertex_count = 0;
   double roll_thrust = INFINITY;
   double command_thrust = INFINITY;
   double score = INFINITY;
+  bool response_probe_required = false;
 };
+
+inline std::size_t supportVertexCount(const Candidate& c) {
+  return c.support_vertex_count == 0 ? 1 :
+      std::min(c.support_vertex_count, c.support_vertices.size());
+}
+
+inline Vec3 supportVertex(const Candidate& c, std::size_t index) {
+  return c.support_vertex_count == 0 ? c.support_body :
+      c.support_vertices[index];
+}
+
+template <typename RotorArray>
+inline bool supportRotorGeometryPlausible(const Candidate& c,
+                                          const RotorArray& rotors,
+                                          double maximum_distance) {
+  if (!std::isfinite(maximum_distance)) return true;
+  if (maximum_distance <= 0.0) return false;
+  const double maximum_distance_sq = maximum_distance * maximum_distance;
+  for (std::size_t support_index = 0;
+       support_index < supportVertexCount(c); ++support_index) {
+    const Vec3 support = supportVertex(c, support_index);
+    if (!finite(support)) return false;
+    for (const auto& rotor : rotors) {
+      if (!finite(rotor.position)) return false;
+      const Vec3 span = subtract(rotor.position, support);
+      if (dot(span, span) > maximum_distance_sq) return false;
+    }
+  }
+  return true;
+}
+
+template <typename RotorArray>
+inline bool robustSignedRollLever(const Candidate& c,
+                                  const RotorArray& rotors,
+                                  double moment_sign,
+                                  double& minimum_signed_lever,
+                                  double& maximum_signed_lever,
+                                  Vec3& worst_support) {
+  if (!c.contact_feasible || c.support_vertex_count > c.support_vertices.size())
+    return false;
+  minimum_signed_lever = std::numeric_limits<double>::infinity();
+  maximum_signed_lever = -std::numeric_limits<double>::infinity();
+  for (std::size_t support_index = 0;
+       support_index < supportVertexCount(c); ++support_index) {
+    const Vec3 support = supportVertex(c, support_index);
+    if (!finite(support)) return false;
+    double lever = 0.0;
+    for (const auto& rotor : rotors)
+      lever += rollLever(rotor.position, rotor.unit_force, support);
+    const double signed_lever = moment_sign * lever;
+    if (!std::isfinite(signed_lever)) return false;
+    if (signed_lever < minimum_signed_lever) {
+      minimum_signed_lever = signed_lever;
+      worst_support = support;
+    }
+    maximum_signed_lever = std::max(maximum_signed_lever, signed_lever);
+  }
+  return std::isfinite(minimum_signed_lever) &&
+      std::isfinite(maximum_signed_lever);
+}
 
 inline Evaluation evaluate(const Candidate& c, double required_moment,
                            const Config& cfg) {
   Evaluation e;
-  if (!c.contact_feasible || !finite(c.support_body)) {
+  if (!c.contact_feasible || c.support_vertex_count > c.support_vertices.size() ||
+      (c.support_vertex_count == 0 && !finite(c.support_body))) {
     e.failure_reason = EvaluationFailureReason::SUPPORT_UNAVAILABLE;
     return e;
   }
   if (!std::isfinite(required_moment) || !std::isfinite(cfg.thrust_limit) ||
-      cfg.thrust_limit <= 0.0 || !std::isfinite(c.transition_seconds) ||
+      cfg.thrust_limit <= 0.0 ||
+      !std::isfinite(cfg.minimum_command_thrust) ||
+      cfg.minimum_command_thrust < 0.0 ||
+      cfg.minimum_command_thrust > cfg.thrust_limit ||
+      !std::isfinite(c.transition_seconds) ||
       c.transition_seconds < 0.0 || !std::isfinite(c.release_fraction) ||
       c.release_fraction < 0.0 || c.release_fraction > 1.0) return e;
   if (!std::isfinite(c.extension_min_thrust) ||
@@ -192,18 +287,53 @@ inline Evaluation evaluate(const Candidate& c, double required_moment,
         : EvaluationFailureReason::INVALID_INPUT;
     return e;
   }
-  double lever = 0.0;
   for (const auto& rotor : c.rotors) {
     if (!finite(rotor.position) || !finite(rotor.unit_force) ||
         std::abs(dot(rotor.unit_force, rotor.unit_force) - 1.0) > 0.02) {
       e.failure_reason = EvaluationFailureReason::INVALID_ROTOR_GEOMETRY;
       return e;
     }
-    lever += rollLever(rotor.position, rotor.unit_force, c.support_body);
   }
-  e.signed_lever = (required_moment >= 0.0 ? 1.0 : -1.0) * lever;
-  if (!std::isfinite(e.signed_lever)) {
+  if (!supportRotorGeometryPlausible(
+          c, c.rotors, cfg.max_support_rotor_distance)) {
     e.failure_reason = EvaluationFailureReason::INVALID_ROTOR_GEOMETRY;
+    return e;
+  }
+  if (!robustSignedRollLever(c, c.rotors,
+          required_moment >= 0.0 ? 1.0 : -1.0,
+          e.signed_lever, e.maximum_signed_lever,
+          e.worst_support_body)) {
+    e.failure_reason = EvaluationFailureReason::INVALID_ROTOR_GEOMETRY;
+    return e;
+  }
+  e.support_vertex_count = supportVertexCount(c);
+  // The minimum answers whether the sign is guaranteed for every plausible
+  // support point.  A below-side grasp can still be useful when only some
+  // support hypotheses are restorative.  Admit that uncertainty solely as a
+  // low-authority response probe; maximum_signed_lever is not used to size
+  // the final recovery thrust.
+  const bool conditional_grasp = !c.release &&
+      c.conditional_grasp_probe &&
+      std::isfinite(e.maximum_signed_lever) &&
+      e.maximum_signed_lever > 0.0 &&
+      e.signed_lever < std::max(1.0e-9, cfg.min_signed_lever);
+  if (conditional_grasp) {
+    if (!std::isfinite(cfg.grasp_probe_thrust) ||
+        cfg.grasp_probe_thrust <= 0.0) {
+      e.failure_reason = EvaluationFailureReason::INVALID_INPUT;
+      return e;
+    }
+    e.roll_thrust = INFINITY;
+    e.command_thrust = std::max(cfg.minimum_command_thrust,
+                                cfg.grasp_probe_thrust);
+    if (e.command_thrust > cfg.thrust_limit) {
+      e.failure_reason = EvaluationFailureReason::THRUST_LIMIT;
+      return e;
+    }
+    e.score = e.command_thrust;
+    e.response_probe_required = true;
+    e.feasible = true;
+    e.failure_reason = EvaluationFailureReason::NONE;
     return e;
   }
   if (e.signed_lever <= 0.0) {
@@ -217,8 +347,9 @@ inline Evaluation evaluate(const Candidate& c, double required_moment,
   e.roll_thrust = std::abs(required_moment) / e.signed_lever;
   // If ONE thrust input both straightens the arm and produces roll moment,
   // its two lower bounds are combined by max(), not blindly added.
-  e.command_thrust = std::max(e.roll_thrust,
-                              c.release ? c.extension_min_thrust : 0.0);
+  e.command_thrust = std::max(cfg.minimum_command_thrust,
+      std::max(e.roll_thrust,
+               c.release ? c.extension_min_thrust : 0.0));
   if (!std::isfinite(e.command_thrust) || e.command_thrust > cfg.thrust_limit) {
     e.failure_reason = EvaluationFailureReason::THRUST_LIMIT;
     return e;
@@ -245,12 +376,16 @@ inline Evaluation evaluateCoupled(const Candidate& c, double required_moment,
                                   GeometryAtThrust geometry_at_thrust,
                                   double thrust_step = 0.1) {
   Evaluation result;
-  if (!c.contact_feasible || !finite(c.support_body)) {
+  if (!c.contact_feasible || c.support_vertex_count > c.support_vertices.size() ||
+      (c.support_vertex_count == 0 && !finite(c.support_body))) {
     result.failure_reason = EvaluationFailureReason::SUPPORT_UNAVAILABLE;
     return result;
   }
   if (!std::isfinite(required_moment) || !std::isfinite(cfg.thrust_limit) ||
       cfg.thrust_limit <= 0.0 || !std::isfinite(thrust_step) ||
+      !std::isfinite(cfg.minimum_command_thrust) ||
+      cfg.minimum_command_thrust < 0.0 ||
+      cfg.minimum_command_thrust > cfg.thrust_limit ||
       thrust_step <= 0.0 || !std::isfinite(c.release_fraction) ||
       c.release_fraction < 0.0 || c.release_fraction > 1.0 ||
       !std::isfinite(c.transition_seconds) || c.transition_seconds < 0.0)
@@ -267,7 +402,8 @@ inline Evaluation evaluateCoupled(const Candidate& c, double required_moment,
   // calibrated pressure/thrust/bend lookup predicts that both arms can reach
   // the configured extension shape.  The same thrust then supplies roll
   // moment, so this is a lower bound rather than an additive force cost.
-  const double minimum_thrust = c.release ? c.extension_min_thrust : 0.0;
+  const double minimum_thrust = std::max(cfg.minimum_command_thrust,
+      c.release ? c.extension_min_thrust : 0.0);
   if (minimum_thrust > cfg.thrust_limit) {
     result.failure_reason = EvaluationFailureReason::EXTENSION_UNREACHABLE;
     return result;
@@ -280,25 +416,34 @@ inline Evaluation evaluateCoupled(const Candidate& c, double required_moment,
   for (int j = first_step; j <= steps; ++j) {
     const double thrust = std::min(cfg.thrust_limit, j * thrust_step);
     const auto rotors = geometry_at_thrust(thrust);
-    double lever = 0.0;
     bool geometry_valid = true;
     for (const auto& rotor : rotors) {
       geometry_valid = geometry_valid && finite(rotor.position) &&
           finite(rotor.unit_force) &&
           std::abs(dot(rotor.unit_force, rotor.unit_force) - 1.0) <= 0.02;
       if (!geometry_valid) break;
-      lever += rollLever(rotor.position, rotor.unit_force, c.support_body);
     }
     if (!geometry_valid) continue;
+    if (!supportRotorGeometryPlausible(
+            c, rotors, cfg.max_support_rotor_distance))
+      continue;
     saw_valid_geometry = true;
-    const double signed_lever = moment_sign * lever;
+    double signed_lever = NAN;
+    double maximum_signed_lever = NAN;
+    Vec3 worst_support{{NAN, NAN, NAN}};
+    if (!robustSignedRollLever(c, rotors, moment_sign, signed_lever,
+                              maximum_signed_lever, worst_support))
+      continue;
+    result.signed_lever = signed_lever;
+    result.maximum_signed_lever = maximum_signed_lever;
+    result.worst_support_body = worst_support;
+    result.support_vertex_count = supportVertexCount(c);
     if (signed_lever > 0.0) saw_restoring_sign = true;
     if (signed_lever < std::max(1.0e-9, cfg.min_signed_lever)) continue;
     saw_usable_lever = true;
     if (thrust * signed_lever < std::abs(required_moment)) continue;
     result.feasible = true;
     result.failure_reason = EvaluationFailureReason::NONE;
-    result.signed_lever = signed_lever;
     result.roll_thrust = thrust;
     result.command_thrust = thrust;
     result.score = thrust + cfg.release_penalty * c.release_fraction +
