@@ -46,20 +46,20 @@ time, and selection hysteresis.  These are **not** contact-force estimates.
 
 Emergency risk is separately evaluated from outward roll rate and the time
 remaining to an unsafe angle.  In particular, a large angle with an inward
-rate is not by itself an emergency trigger.  The existing safety latch remains
-unchanged until the new model is calibrated and deliberately enabled.
+rate is not by itself an emergency trigger.  The existing emergency latch and
+SAFE_TRANSFER remain the final runtime safety layers.
 
-## Diagnostic use
+## Active robust-lever selection
 
 In `config/attitude_pressure_controller.yaml`:
 
 ```yaml
-recovery_unified_shadow_enabled: true
+recovery_unified_active_enabled: true
 recovery_unsafe_roll_rad: 0.7853981633974483 # 45 deg, illustrative only
 recovery_extension_response_sec: 0.5       # calibrate from real inflation/vent logs
 ```
 
-Search ROS logs for `Unified recovery SHADOW`.  The four indices are:
+Search ROS logs for `Unified robust recovery ACTIVE`.  The four indices are:
 
 | Index | Candidate |
 | --- | --- |
@@ -68,11 +68,11 @@ Search ROS logs for `Unified recovery SHADOW`.  The four indices are:
 | 2 | 2+3 grasped |
 | 3 | 2+3 released |
 
-For each trial, compare the four **signed** levers and required thrusts with
-the legacy selected pair, measured roll/error rate, pressure, and the eventual
-roll acceleration after pneumatic transients.  Include both a ~80-mm
-forearm-like cylinder and a larger cylinder.  Do **not** infer correct sign
-from a static no-motion probe; stiction may prevent measurable acceleration.
+Each grasped candidate uses the minimum signed lever over all four projected
+arm-contact vertices.  Each released candidate uses the minimum over the two
+opposite-pair vertices.  A candidate is rejected if the lever changes sign at
+any plausible support vertex.  There is no parallel contact-constraint shadow
+model; measured response supervision remains a runtime safety check.
 
 For a static cylinder the adapter locks its centre in the mocap world frame
 and transforms it into the changing body frame when a fresh mocap pose is
