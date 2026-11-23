@@ -3,30 +3,35 @@
 namespace mujoco_ros_control
 {
 
-  bool AerialRobotHWSim::init(const std::string& robot_namespace,
-                              ros::NodeHandle model_nh,
-                              mjModel* mujoco_model,
-                              mjData* mujoco_data
-                              )
+  bool AerialRobotHWSim::InitSim(const mjModel* m_ptr, mjData* d_ptr,
+                                 mujoco_ros::MujocoEnv* mujoco_env_ptr,
+                                 const std::string& robot_namespace,
+                                 ros::NodeHandle model_nh,
+                                 const urdf::Model* const urdf_model,
+                                 std::vector<transmission_interface::TransmissionInfo> transmissions,
+                                 bool ignore_actuators)
   {
-    DefaultRobotHWSim::init(robot_namespace, model_nh, mujoco_model, mujoco_data);
+    mujoco_ros::control::DefaultRobotHWSim::InitSim(m_ptr, d_ptr, mujoco_env_ptr,
+                                                    robot_namespace, model_nh,
+                                                    urdf_model, transmissions,
+                                                    ignore_actuators);
 
     rotor_list_.resize(0);
 
     // get entire mass
     float mass = 0.0;
-    for(int i = 0; i < mujoco_model_->nbody; i++)
+    for(int i = 0; i < m_ptr_->nbody; i++)
       {
-       mass += mujoco_model_->body_mass[i];
+       mass += m_ptr_->body_mass[i];
       }
     ROS_INFO_STREAM("[mujoco] robot mass is " << mass);
 
 
     // get rotor names from mujoco model
     int motor_num = 0;
-    for(int i = 0; i < mujoco_model_->nu; i++)
+    for(int i = 0; i < m_ptr_->nu; i++)
       {
-        std::string actuator_name = mj_id2name(mujoco_model_, mjtObj_::mjOBJ_ACTUATOR, i);
+        std::string actuator_name = mj_id2name(m_ptr_, mjtObj_::mjOBJ_ACTUATOR, i);
         if(actuator_name.find("rotor") != std::string::npos)
           {
             rotor_list_.push_back(actuator_name);
@@ -75,7 +80,7 @@ namespace mujoco_ros_control
                     // use param of servo
                     init_value = static_cast<double>(servo_params.second["simulation"][init_value_param_name]);
                   }
-                control_input_.at((mj_name2id(mujoco_model_, mjtObj_::mjOBJ_ACTUATOR, servo_name.c_str()))) = init_value;
+                d_ptr_->ctrl[mj_name2id(m_ptr_, mjtObj_::mjOBJ_ACTUATOR, servo_name.c_str())] = init_value;
               }
           }
       }
@@ -106,11 +111,11 @@ namespace mujoco_ros_control
     return true;
   }
 
-  void AerialRobotHWSim::read(const ros::Time& time, const ros::Duration& period)
+  void AerialRobotHWSim::ReadSim(ros::Time time, ros::Duration period)
   {
-    int fc_id = mj_name2id(mujoco_model_, mjtObj_::mjOBJ_SITE, "fc");
-    mjtNum* site_xpos = mujoco_data_->site_xpos;
-    mjtNum* site_xmat = mujoco_data_->site_xmat;
+    int fc_id = mj_name2id(m_ptr_, mjtObj_::mjOBJ_SITE, "fc");
+    mjtNum* site_xpos = d_ptr_->site_xpos;
+    mjtNum* site_xmat = d_ptr_->site_xmat;
     tf::Matrix3x3 fc_rot_mat = tf::Matrix3x3(site_xmat[9 * fc_id + 0], site_xmat[9 * fc_id + 1], site_xmat[9 * fc_id + 2],
                                              site_xmat[9 * fc_id + 3], site_xmat[9 * fc_id + 4], site_xmat[9 * fc_id + 5],
                                              site_xmat[9 * fc_id + 6], site_xmat[9 * fc_id + 7], site_xmat[9 * fc_id + 8]);
@@ -118,27 +123,27 @@ namespace mujoco_ros_control
     fc_rot_mat.getRotation(fc_quat);
 
     tf::Vector3 acc, gyro, mag;
-    for(int i = 0; i < mujoco_model_->nsensor; i++)
+    for(int i = 0; i < m_ptr_->nsensor; i++)
       {
-        if(std::string(mj_id2name(mujoco_model_, mjtObj_::mjOBJ_SENSOR, i)) == "acc")
+        if(std::string(mj_id2name(m_ptr_, mjtObj_::mjOBJ_SENSOR, i)) == "acc")
           {
-            for(int j = 0; j < mujoco_model_->sensor_dim[i]; j++)
+            for(int j = 0; j < m_ptr_->sensor_dim[i]; j++)
               {
-                acc[j] = mujoco_data_->sensordata[mujoco_model_->sensor_adr[i] + j];
+                acc[j] = d_ptr_->sensordata[m_ptr_->sensor_adr[i] + j];
               }
           }
-        if(std::string(mj_id2name(mujoco_model_, mjtObj_::mjOBJ_SENSOR, i)) == "gyro")
+        if(std::string(mj_id2name(m_ptr_, mjtObj_::mjOBJ_SENSOR, i)) == "gyro")
           {
-            for(int j = 0; j < mujoco_model_->sensor_dim[i]; j++)
+            for(int j = 0; j < m_ptr_->sensor_dim[i]; j++)
               {
-                gyro[j] = mujoco_data_->sensordata[mujoco_model_->sensor_adr[i] + j];
+                gyro[j] = d_ptr_->sensordata[m_ptr_->sensor_adr[i] + j];
               }
           }
-        if(std::string(mj_id2name(mujoco_model_, mjtObj_::mjOBJ_SENSOR, i)) == "mag")
+        if(std::string(mj_id2name(m_ptr_, mjtObj_::mjOBJ_SENSOR, i)) == "mag")
           {
-            for(int j = 0; j < mujoco_model_->sensor_dim[i]; j++)
+            for(int j = 0; j < m_ptr_->sensor_dim[i]; j++)
               {
-                mag[j] = mujoco_data_->sensordata[mujoco_model_->sensor_adr[i] + j];
+                mag[j] = d_ptr_->sensordata[m_ptr_->sensor_adr[i] + j];
               }
           }
       }
@@ -186,21 +191,21 @@ namespace mujoco_ros_control
         last_mocap_time_ = time;
       }
 
-    DefaultRobotHWSim::read(time, period);
+    mujoco_ros::control::DefaultRobotHWSim::ReadSim(time, period);
   }
 
-  void AerialRobotHWSim::write(const ros::Time& time, const ros::Duration& period)
+  void AerialRobotHWSim::WriteSim(ros::Time time, ros::Duration period)
   {
     for(int i = 0; i < spinal_interface_.getMotorNum(); i++)
       {
-        int rotor_id = mj_name2id(mujoco_model_, mjOBJ_ACTUATOR, rotor_list_.at(i).c_str());
+        int rotor_id = mj_name2id(m_ptr_, mjOBJ_ACTUATOR, rotor_list_.at(i).c_str());
         double rotor_force = spinal_interface_.getForce(i);
-        control_input_.at(rotor_id) = rotor_force;
+        d_ptr_->ctrl[rotor_id] = rotor_force;
       }
 
-      DefaultRobotHWSim::write(time, period);
+    mujoco_ros::control::DefaultRobotHWSim::WriteSim(time, period);
   }
 
 }
 
-PLUGINLIB_EXPORT_CLASS(mujoco_ros_control::AerialRobotHWSim, mujoco_ros_control::RobotHWSim)
+PLUGINLIB_EXPORT_CLASS(mujoco_ros_control::AerialRobotHWSim, mujoco_ros::control::RobotHWSim)

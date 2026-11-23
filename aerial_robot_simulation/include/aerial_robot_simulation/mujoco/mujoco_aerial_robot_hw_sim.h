@@ -3,26 +3,28 @@
 #include <aerial_robot_simulation/mujoco/mujoco_spinal_interface.h>
 #include <aerial_robot_simulation/noise_model.h>
 #include <geometry_msgs/PoseStamped.h>
-#include <mujoco_ros_control/mujoco_default_robot_hw_sim.h>
+#include <mujoco_ros_control/default_robot_hw_sim.hpp>
 #include <nav_msgs/Odometry.h>
 
 namespace mujoco_ros_control
 {
-  class AerialRobotHWSim : public mujoco_ros_control::DefaultRobotHWSim
+  class AerialRobotHWSim : public mujoco_ros::control::DefaultRobotHWSim
   {
   public:
     AerialRobotHWSim() {};
     ~AerialRobotHWSim() {}
 
-    bool init(const std::string& robot_namespace,
-              ros::NodeHandle model_nh,
-              mjModel* mujoco_model,
-              mjData* mujoco_data
-              ) override;
+    bool InitSim(const mjModel* m_ptr, mjData* d_ptr,
+                 mujoco_ros::MujocoEnv* mujoco_env_ptr,
+                 const std::string& robot_namespace,
+                 ros::NodeHandle model_nh,
+                 const urdf::Model* const urdf_model,
+                 std::vector<transmission_interface::TransmissionInfo> transmissions,
+                 bool ignore_actuators = false) override;
 
-    void read(const ros::Time& time, const ros::Duration& period) override;
+    void ReadSim(ros::Time time, ros::Duration period) override;
 
-    void write(const ros::Time& time, const ros::Duration& period) override;
+    void WriteSim(ros::Time time, ros::Duration period) override;
 
   protected:
     hardware_interface::MujocoSpinalInterface spinal_interface_;
