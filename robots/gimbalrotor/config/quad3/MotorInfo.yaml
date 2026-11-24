@@ -1,0 +1,54 @@
+motor_info:
+        min_pwm: 0.525 # = 1100 [ms]
+        max_pwm: 0.975  # = 1840 [ms]
+        min_thrust: 0 #[N]
+        force_landing_thrust: 6 #[N]
+        m_f_rate: -0.0163
+        pwm_conversion_mode: 1 # Polynominal Mode
+        vel_ref_num: 5
+
+        ref1:
+                voltage: 25.2
+                max_thrust: 29.1187 # N
+                polynominal4: -1.16914243  # x10^4
+                polynominal3: 9.08980110  # x10^3
+                polynominal2: -24.36207550  # x10^2
+                polynominal1: 38.41475405  # x10^1
+                polynominal0: 51.58324324  # x10^0
+        ref2:
+                voltage: 24.2
+                max_thrust: 27.6090 # N
+                polynominal4: -1.50425753  # x10^4
+                polynominal3: 11.00439848  # x10^3
+                polynominal2: -27.87927811  # x10^2
+                polynominal1: 41.34707798  # x10^1
+                polynominal0: 51.48854887  # x10^0
+        ref3:
+                voltage: 23.2
+                max_thrust: 26.0843 # N
+                polynominal4: -2.02548014  # x10^4
+                polynominal3: 13.73141947  # x10^3
+                polynominal2: -32.57005826  # x10^2
+                polynominal1: 45.06023034  # x10^1
+                polynominal0: 51.36130048  # x10^0
+        ref4:
+                voltage: 22.2
+                max_thrust: 24.4616 # N
+                polynominal4: -2.36868921  # x10^4
+                polynominal3: 15.54145551  # x10^3
+                polynominal2: -35.76255472  # x10^2
+                polynominal1: 47.98817097  # x10^1
+                polynominal0: 51.33322856  # x10^0
+        ref5:
+                voltage: 21.2
+                max_thrust: 22.7925 # N
+                polynominal4: -3.06823416  # x10^4
+                polynominal3: 18.94940690  # x10^3
+                polynominal2: -41.23032583  # x10^2
+                polynominal1: 52.00626527  # x10^1
+                polynominal0: 51.38570089  # x10^0
+
+
+        # for simualtion
+        rotor_damping_rate: 0.1 # = 0.001 / (0.01 + 0.001); 0.01: time constant; 0.001: dt
+        rotor_force_noise: 0.01 # [N] but good performance in gazebo
